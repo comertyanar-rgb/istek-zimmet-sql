@@ -362,7 +362,12 @@ try {
     $doneFile = Join-Path $JobDir ("photoshop_{0}.done" -f $stamp)
     $errorFile = Join-Path $JobDir ("photoshop_{0}.error.txt" -f $stamp)
     $jobFile = Join-Path $JobDir "photoshop-job.js"
-    $photoshopScript = Join-Path $ScriptsDir "photoshop-generate-signatures.jsx"
+    $bundledPhotoshopScript = Join-Path $PSScriptRoot "photoshop-generate-signatures.jsx"
+    $photoshopScript = if (Test-Path -LiteralPath $bundledPhotoshopScript) {
+      $bundledPhotoshopScript
+    } else {
+      Join-Path $ScriptsDir "photoshop-generate-signatures.jsx"
+    }
 
     Remove-Item -LiteralPath $doneFile, $errorFile -ErrorAction SilentlyContinue
 
