@@ -101,3 +101,38 @@ export async function uploadFileThroughGoogleBridge({ fileBuffer, fileName, mime
 
   return { url: data.url || data.fileUrl || '', fileHash, pdfHash: fileHash, delivery: 'google', response: data };
 }
+
+export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, replyTo, name }) {
+  if (!config.googleBridge.url || !config.googleBridge.secret) {
+    if (config.nodeEnv !== 'production') {
+      console.info(`[DEV EMAIL] ${to}: ${subject}\n${body}`);
+      return { delivery: 'console' };
+    }
+    throw new Error('Google e-posta köprüsü ayarlı değil. GOOGLE_BRIDGE_URL ve GOOGLE_BRIDGE_SECRET tanımlayın.');
+  }
+
+  const response = await fetch(config.googleBridge.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      action: 'sendBridgeEmail',
+      secret: config.googleBridge.secret,
+      to,
+      subject,
+      body,
+      cc,
+      replyTo,
+      name
+    })
+  });
+
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { success: false, error: text }; }
+
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || `Google e-posta köprüsü hata döndürdü: ${response.status}`);
+  }
+
+  return { delivery: 'email', response: data };
+}

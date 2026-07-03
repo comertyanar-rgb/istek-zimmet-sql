@@ -1751,6 +1751,33 @@ function handleGeneratedPdfUpload_(data) {
   });
 }
 
+function handleBridgeEmail_(data) {
+  var props = PropertiesService.getScriptProperties();
+  var expectedSecret = props.getProperty("PDF_BRIDGE_SECRET") || props.getProperty("GOOGLE_BRIDGE_SECRET");
+  if (!expectedSecret || data.secret !== expectedSecret) {
+    return jsonOut({ success: false, error: "Yetkisiz e-posta köprüsü." });
+  }
+
+  if (!data.to || data.to.toString().indexOf("@") === -1) {
+    throw new Error("E-posta alıcısı geçersiz.");
+  }
+
+  var options = {
+    name: data.name || "İSTEK Demirbaş Yönetimi"
+  };
+  if (data.cc) options.cc = data.cc;
+  if (data.replyTo) options.replyTo = data.replyTo;
+
+  GmailApp.sendEmail(
+    data.to,
+    data.subject || "İSTEK Bilgilendirme",
+    data.body || "",
+    options
+  );
+
+  return jsonOut({ success: true });
+}
+
 function buildPersonIndexByAd_(ss) {
   var table = readSheetTable(ss, "Kullanıcılar");
   var headers = table.headers;
@@ -2107,6 +2134,7 @@ function doPost(e) {
     verifyOTP: true,
     syncGLPI: true,
     uploadGeneratedPdf: true,
+    sendBridgeEmail: true,
     enqueueOperation: true,
     fetchOperationQueue: true,
     runOperationQueue: true,
@@ -2130,6 +2158,10 @@ function doPost(e) {
 
     if (data.action === "uploadGeneratedPdf") {
       return handleGeneratedPdfUpload_(data);
+    }
+
+    if (data.action === "sendBridgeEmail") {
+      return handleBridgeEmail_(data);
     }
 
     if (data.action === "fetchADPasswordJobs") {

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
+import { sendEmailThroughGoogleBridge } from './googleBridge.js';
 
 const OTP_TTL_MS = 180 * 1000;
 const APPROVAL_TTL_MS = 10 * 60 * 1000;
@@ -89,12 +90,12 @@ async function sendSmsViaMobildev(phone, message) {
 }
 
 async function sendEmailOtp(email, message) {
-  if (isDevelopment()) {
-    console.info(`[DEV EMAIL OTP] ${email}: ${message}`);
-    return { delivery: 'console' };
-  }
-
-  throw new Error('E-posta OTP gönderimi SQL API tarafında henüz yapılandırılmadı. Şimdilik SMS seçin.');
+  return sendEmailThroughGoogleBridge({
+    to: email,
+    subject: 'GÜVENLİK KODU: Donanım Teslim/İade Onayı',
+    body: message,
+    name: 'İSTEK Demirbaş Yönetimi'
+  });
 }
 
 export async function sendOtpChallenge({ personEmail, personName, personPhone, channel }) {
