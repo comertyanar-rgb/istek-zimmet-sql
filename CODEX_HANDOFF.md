@@ -9,6 +9,7 @@ Mevcut odak:
 - GLPI senkronunu SQL API'ye almak.
 - Imza, AD sifre sifirlama ve PDF uretim gibi yan servisleri SQL kuyruk/agent modeliyle calistirmak.
 - PDF uretimini Apps Script kotasindan uzaklastirip daha hizli/asenkron hale getirmek.
+- GitHub'a ayrilan SQL repo uzerinden kontrollu commit/push akisini surdurmek.
 
 ## Files Changed
 
@@ -41,6 +42,23 @@ Mevcut odak:
 - `imza/windows/README.md`
   - Yeni SQL imza agent calisma sekli ve gereken environment variable'lar dokumante edildi.
 
+- `ad/windows/Run-ADPasswordAgent.ps1`
+  - SQL API'deki `fetchADPasswordJobs` kuyruğundan is ceken Windows AD sifre ajani eklendi.
+  - RSA-OAEP-SHA256 private key ile sifreyi yerelde cozer, AD'de uygular ve `completeADPasswordJob` ile sonucu geri yazar.
+  - Opsiyonel e-posta/SMS bildirimini ajan tarafinda destekler.
+
+- `ad/windows/README.md`
+  - AD ajan kurulumu, environment variable'lar ve gorev zamanlayici ayarlari dokumante edildi.
+
+- `backend/src/googleBridge.js`
+  - `sendEmailThroughGoogleBridge` eklendi.
+
+- `backend/src/otpService.js`
+  - E-posta OTP artik Google Apps Script bridge uzerinden GmailApp ile gonderilir.
+
+- `Code.full.gs`
+  - `sendBridgeEmail` bridge aksiyonu eklendi.
+
 ## Important Decisions Made
 
 - Uygulamanin ana veri kaynagi SQL Server olacak; Google Sheets artik kalici ana veritabani olarak dusunulmemeli.
@@ -51,6 +69,8 @@ Mevcut odak:
   2. Seri no
   3. Bilgisayar ismi
 - Agent endpointleri normal kullanici oturumu istemiyor; paylasilan secret ile korunuyor.
+- AD private key dosyalari repoya alinmayacak; `.gitignore` icine `*.pem` ve `*.key` eklendi.
+- SQL API e-posta OTP icin Gmail yetkisini direkt backend'e tasimiyor; Apps Script bridge uzerinden kullanmaya devam ediyor.
 - SQL gecisi canliya alinmadan once localde her akis tek tek dogrulanacak.
 - Bu klasor artik ayri Git repo olarak baslatildi ve `origin` `https://github.com/comertyanar-rgb/istek-zimmet-sql.git` adresine ayarlandi.
 
@@ -84,6 +104,15 @@ node --check src\repositories\inventoryRepository.js
 
 Son kontrol sonucu: hata yok.
 
+Son eklenen commitler:
+
+```powershell
+git log --oneline -3
+# 4a7fb16 add google bridge email otp
+# 1d3c17a add sql ad password agent
+# ed675ea document sql repo setup
+```
+
 Kodda son eklenen agent actionlarini bulmak icin:
 
 ```powershell
@@ -98,6 +127,9 @@ Passed:
 - `backend/src/repositories/inventoryRepository.js` syntax check
 - `imza/windows/Run-ImzaPipeline.ps1` PowerShell parse check
 - `fetchSignatureJobs` endpoint testi: kuyruk bostayken `success:true`, `leased:0` dondu.
+- `ad/windows/Run-ADPasswordAgent.ps1` PowerShell parse check
+- `npm run build`
+- `backend/src/googleBridge.js` ve `backend/src/otpService.js` node syntax check
 - PDF HTML template testi: ikinci sayfa yonerge var; `2.20299E+14` seri no HTML'de genisletilmis sekilde uretiliyor.
 - `OperationQueue` SQL kontrolu: mevcut son durumda 2 PDF isi `TAMAMLANDI`, hata yok.
 - Daha once `/health` endpointi SQL baglantisi icin `connected` donmustu.
@@ -106,6 +138,8 @@ Passed:
 
 Failed / Known issues:
 - `imza/windows/Run-ImzaPipeline.ps1` SQL API'den is cekmeye tasindi; uctan uca canli imza testi henuz yapilmadi.
+- `sendBridgeEmail` icin Apps Script kodunun yeni surum olarak deploy edilmesi gerekir; deploy edilmeden production e-posta OTP eski /exec'te hata alabilir.
+- AD ajani repoya eklendi ama gercek AD uzerinde uctan uca test henuz yapilmadi.
 - PDF uretiminde yeni bridge formatinin eski iki sayfalik zimmet/iade PDF formatina birebir donmesi gerekiyor.
 - Kuyruk popup/layer duzeni UI'da daha once toolbar arkasinda kalabiliyordu; son durum tekrar gorsel test edilmeli.
 
@@ -129,6 +163,7 @@ Failed / Known issues:
 7. QR sayim/depo/hurda islemlerinin SQL tarafinda anlik UI geri bildirimiyle calistigini tekrar test et.
 8. Canliya gecmeden once Vercel/production CORS, API URL ve secret stratejisini netlestir.
 9. GitHub repo push edildi; bundan sonraki degisiklikler normal commit/push akisiyle ilerleyecek.
+10. Apps Script `Code.full.gs` yeni surum deploy edilecek; `sendBridgeEmail` ve `uploadGeneratedPdf` ayni `GOOGLE_BRIDGE_SECRET` ile calisacak.
 
 ## Exact Next Command To Continue
 
