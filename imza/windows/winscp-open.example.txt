@@ -1,0 +1,1 @@
+open "ftp://USERNAME:PASSWORD@ftp.example.com/"

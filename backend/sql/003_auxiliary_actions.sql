@@ -1,0 +1,85 @@
+USE IstekZimmet;
+GO
+
+IF OBJECT_ID('dbo.SignatureTitles', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.SignatureTitles (
+    TitleId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SignatureTitles PRIMARY KEY,
+    TitleTr NVARCHAR(240) NOT NULL,
+    TitleEn NVARCHAR(240) NULL,
+    TemplateKey NVARCHAR(20) NULL,
+    IsActive BIT NOT NULL CONSTRAINT DF_SignatureTitles_IsActive DEFAULT 1,
+    CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_SignatureTitles_CreatedAt DEFAULT SYSUTCDATETIME(),
+    UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_SignatureTitles_UpdatedAt DEFAULT SYSUTCDATETIME()
+  );
+  CREATE UNIQUE INDEX UX_SignatureTitles_TitleTr ON dbo.SignatureTitles(TitleTr);
+END;
+GO
+
+IF OBJECT_ID('dbo.ADPasswordQueue', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.ADPasswordQueue (
+    QueueId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ADPasswordQueue PRIMARY KEY,
+    PublicId NVARCHAR(80) NOT NULL CONSTRAINT UQ_ADPasswordQueue_PublicId UNIQUE,
+    CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_ADPasswordQueue_CreatedAt DEFAULT SYSUTCDATETIME(),
+    StartedAt DATETIME2 NULL,
+    FinishedAt DATETIME2 NULL,
+    Status NVARCHAR(40) NOT NULL CONSTRAINT DF_ADPasswordQueue_Status DEFAULT N'BEKLIYOR',
+    Priority INT NOT NULL CONSTRAINT DF_ADPasswordQueue_Priority DEFAULT 3,
+    PersonId NVARCHAR(160) NOT NULL,
+    PersonName NVARCHAR(240) NOT NULL,
+    PersonEmail NVARCHAR(320) NULL,
+    AdUsername NVARCHAR(160) NOT NULL,
+    PasswordMode NVARCHAR(40) NOT NULL,
+    PasswordCiphertext NVARCHAR(MAX) NOT NULL,
+    EncryptionAlg NVARCHAR(80) NOT NULL,
+    EncryptionKeyId NVARCHAR(120) NULL,
+    Reason NVARCHAR(1000) NULL,
+    NotifyEmail BIT NOT NULL CONSTRAINT DF_ADPasswordQueue_NotifyEmail DEFAULT 0,
+    NotifySms BIT NOT NULL CONSTRAINT DF_ADPasswordQueue_NotifySms DEFAULT 0,
+    NotifyPhone NVARCHAR(20) NULL,
+    RequestedBy NVARCHAR(320) NOT NULL,
+    CampusId UNIQUEIDENTIFIER NULL,
+    CampusName NVARCHAR(160) NULL,
+    ResultMessage NVARCHAR(MAX) NULL,
+    ErrorMessage NVARCHAR(MAX) NULL,
+    AttemptCount INT NOT NULL CONSTRAINT DF_ADPasswordQueue_AttemptCount DEFAULT 0,
+    UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_ADPasswordQueue_UpdatedAt DEFAULT SYSUTCDATETIME(),
+    ClientIp NVARCHAR(120) NULL,
+    UserAgent NVARCHAR(500) NULL
+  );
+END;
+GO
+
+IF OBJECT_ID('dbo.SignatureJobs', 'U') IS NULL
+BEGIN
+  CREATE TABLE dbo.SignatureJobs (
+    JobId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_SignatureJobs PRIMARY KEY,
+    PublicId NVARCHAR(80) NOT NULL CONSTRAINT UQ_SignatureJobs_PublicId UNIQUE,
+    SignatureId NVARCHAR(80) NOT NULL,
+    Status NVARCHAR(40) NOT NULL CONSTRAINT DF_SignatureJobs_Status DEFAULT N'BEKLIYOR',
+    PersonId NVARCHAR(160) NOT NULL,
+    PersonName NVARCHAR(240) NOT NULL,
+    PersonEmail NVARCHAR(320) NOT NULL,
+    TitleTr NVARCHAR(240) NOT NULL,
+    TitleEn NVARCHAR(240) NULL,
+    SignatureCampus NVARCHAR(160) NULL,
+    AddressText NVARCHAR(500) NULL,
+    CampusImage NVARCHAR(1000) NULL,
+    ImageUrl NVARCHAR(1000) NOT NULL,
+    TemplateKey NVARCHAR(20) NULL,
+    GamCommand NVARCHAR(1000) NULL,
+    DatasetJson NVARCHAR(MAX) NOT NULL,
+    RequestedBy NVARCHAR(320) NOT NULL,
+    ErrorMessage NVARCHAR(MAX) NULL,
+    CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_SignatureJobs_CreatedAt DEFAULT SYSUTCDATETIME(),
+    UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_SignatureJobs_UpdatedAt DEFAULT SYSUTCDATETIME(),
+    FinishedAt DATETIME2 NULL
+  );
+END;
+GO
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.SignatureTitles TO zimmet_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.ADPasswordQueue TO zimmet_api;
+GRANT SELECT, INSERT, UPDATE, DELETE ON dbo.SignatureJobs TO zimmet_api;
+GO

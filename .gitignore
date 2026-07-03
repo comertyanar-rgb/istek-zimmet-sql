@@ -1,0 +1,17 @@
+node_modules/
+.npm-cache/
+dist/
+backend/generated-pdfs/
+
+.env
+.env.*
+!.env.example
+
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+*.log
+
+import-data/
+*.xlsx

@@ -1,0 +1,22 @@
+{
+  "name": "istek-zimmet-sql-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "check": "node --check src/server.js",
+    "import:xlsx": "node scripts/import-sheets-xlsx.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "mssql": "^11.0.1",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "xlsx": "^0.18.5"
+  }
+}
