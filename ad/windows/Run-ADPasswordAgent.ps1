@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$ApiUrl = "",
   [string]$AgentSecret = "",
   [string]$PrivateKeyPath = "",
@@ -176,11 +176,12 @@ function Send-MobildevSms {
 "@
 
   $response = Invoke-WebRequest -Uri $apiUrl -Method Post -ContentType "application/xml; charset=utf-8" -Body $xml -UseBasicParsing
-  $body = [string]$response.Content
-  if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300 -or ($body.Trim() -notmatch "^(?i:id\s*:|\d+$)")) {
+  $body = ([string]$response.Content).Trim()
+  $okBody = ($body -match '^\s*ID\s*:\s*\d+\s*$') -or ($body -match '^\s*\d+\s*$')
+  if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300 -or -not $okBody) {
     throw "Mobildev SMS basarisiz: $($response.StatusCode) / $body"
   }
-  return $body.Trim()
+  return $body
 }
 
 function Send-PasswordEmail {
