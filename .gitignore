@@ -12,6 +12,8 @@ backend/.env.*
 !backend/.env.example
 
 *.log
+*.pem
+*.key
 
 import-data/
 *.xlsx

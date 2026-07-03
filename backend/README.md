@@ -83,6 +83,6 @@ GENERATED_EXPORT_DIR=C:\ZimmetApi\exports
 
 ## AD ve Imza Ajanlari
 
-AD sifre sifirlama kuyrugu SQL'deki `ADPasswordQueue` tablosuna tasindi. Windows AD ajaninin artik SQL API'deki `fetchADPasswordJobs` ve `completeADPasswordJob` aksiyonlarini kullanmasi gerekir. Bunun icin backend `.env` icinde `AD_AGENT_SECRET` tanimli olmalidir.
+AD sifre sifirlama kuyrugu SQL'deki `ADPasswordQueue` tablosuna tasindi. Windows AD ajani artik SQL API'deki `fetchADPasswordJobs` ve `completeADPasswordJob` aksiyonlarini kullanir. Ornek ajan: `../ad/windows/Run-ADPasswordAgent.ps1`. Bunun icin backend `.env` icinde `AD_AGENT_SECRET`, ajan makinesinde de ayni secret tanimli olmalidir.
 
 Imza olusturma istegi SQL'deki `SignatureJobs` tablosuna dusurulur ve personelin `Signature...` alanlari guncellenir. Windows Photoshop/GAM imza ajani `fetchSignatureJobs` ile SQL API'den is cekip `completeSignatureJob` ile sonucu geri yazar. Bunun icin backend `.env` icinde `SIGNATURE_AGENT_SECRET` veya gecis surecinde `AD_AGENT_SECRET` tanimli olmalidir.

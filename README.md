@@ -9,6 +9,7 @@ Bu repo su parcalari icerir:
 - SQL sema ve gecis scriptleri (`sql/`, `backend/sql/`)
 - GLPI senkron PowerShell ajani (`sync-glpi.ps1`)
 - Imza Photoshop/GAM ajani (`imza/windows/`)
+- AD sifre sifirlama ajani (`ad/windows/`)
 - Apps Script gecis/kopru kodlari (`Code.full.gs`, `*.gs`)
 
 ## Hizli Baslangic
@@ -89,7 +90,13 @@ powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipelin
 ```
 
 AD sifre sifirlama ajani SQL API'deki `fetchADPasswordJobs` ve
-`completeADPasswordJob` aksiyonlariyla calisir.
+`completeADPasswordJob` aksiyonlariyla calisir:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File ".\ad\windows\Run-ADPasswordAgent.ps1" -WhatIfOnly -Limit 1
+```
+
+Kurulum ayrintisi: `ad/windows/README.md`
 
 ## Not
 
