@@ -52,7 +52,7 @@ Mevcut odak:
   3. Bilgisayar ismi
 - Agent endpointleri normal kullanici oturumu istemiyor; paylasilan secret ile korunuyor.
 - SQL gecisi canliya alinmadan once localde her akis tek tek dogrulanacak.
-- Git durumu bu klasorde okunamadi: `git status --short` komutu `not a git repository` hatasi verdi.
+- Bu klasor artik ayri Git repo olarak baslatildi ve `origin` `https://github.com/comertyanar-rgb/istek-zimmet-sql.git` adresine ayarlandi.
 
 ## Commands Already Run
 
@@ -105,7 +105,6 @@ Passed:
 - Daha once temel donanim islemleri, GLPI'dan donanima ekleme ve hurda/transfer denemeleri localde test edildi.
 
 Failed / Known issues:
-- `git status --short` calismadi; klasor Git repository degil gibi gorunuyor.
 - `imza/windows/Run-ImzaPipeline.ps1` SQL API'den is cekmeye tasindi; uctan uca canli imza testi henuz yapilmadi.
 - PDF uretiminde yeni bridge formatinin eski iki sayfalik zimmet/iade PDF formatina birebir donmesi gerekiyor.
 - Kuyruk popup/layer duzeni UI'da daha once toolbar arkasinda kalabiliyordu; son durum tekrar gorsel test edilmeli.
@@ -129,7 +128,7 @@ Failed / Known issues:
 6. AD sifre sifirlama agent akisini SQL API tarafina tamamen bagli olarak tekrar test et.
 7. QR sayim/depo/hurda islemlerinin SQL tarafinda anlik UI geri bildirimiyle calistigini tekrar test et.
 8. Canliya gecmeden once Vercel/production CORS, API URL ve secret stratejisini netlestir.
-9. StackBlitz/GitHub akisi icin bu lokal klasor Git repo degilse dogru repo klasorune dosyalari tasiyip commit/push yap.
+9. GitHub repo push edildi; bundan sonraki degisiklikler normal commit/push akisiyle ilerleyecek.
 
 ## Exact Next Command To Continue
 
