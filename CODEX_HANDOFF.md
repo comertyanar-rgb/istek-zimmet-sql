@@ -176,3 +176,47 @@ Ardindan ayri bir PowerShell penceresinde GLPI sync testine devam etmek icin:
 ```powershell
 cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet; .\sync-glpi.ps1
 ```
+
+## Latest Continuation - 2026-07-03
+
+Eklenen commitler:
+
+```powershell
+# c5a9790 show signature jobs in operation queue
+# 42c83b6 improve pdf queue result display
+# 1da7dc6 fix mobildev success response in ad agent
+```
+
+Bu devamda yapilanlar:
+- PDF kuyrugu tamamlandiginda donanim gecmisine islem tipine gore daha acik kayit yaziliyor: Zimmet/Iade/Transfer PDF Belgesi Olusturuldu.
+- PDF kuyrugu sonucuna documentStatus ve url eklendi.
+- Islem Kuyrugu panelinde tamamlanan PDF isleri icin Ac linki gosteriliyor.
+- SQL API'ye kullanici oturumuyla okunabilen fetchSignatureQueue aksiyonu eklendi.
+- Islem Kuyrugu paneli artik PDF, AD sifre ve Imza olusturma islerini tek yerde gosteriyor.
+
+Calisan kontroller:
+
+```powershell
+node --check .\backend\src\pdfQueueWorker.js
+node --check .\backend\src\repositories\inventoryRepository.js
+node --check .\backend\src\actionRouter.js
+npm run build
+```
+
+Notlar:
+- Build basarili; sadece Vite buyuk chunk uyarisi var.
+- Code.full.gs yeni Apps Script surumu olarak deploy edilmezse sendBridgeEmail / uploadGeneratedPdf koprusu production tarafinda eski kalabilir.
+
+Siradaki en mantikli test:
+
+```powershell
+cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend
+npm run dev
+```
+
+Ayri pencerede imza agent testi:
+
+```powershell
+cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet
+pwsh -ExecutionPolicy Bypass -File .\imza\windows\Run-ImzaPipeline.ps1
+```
