@@ -21,6 +21,7 @@ import {
   fetchOperationQueueForUser,
   fetchSignatureAgentJobs,
   fetchSignatureMetaForUser,
+  fetchSignatureQueueForUser,
   getAuthorizedUser,
   importMissingGlpiDevicesForUser,
   manualAssignOrUploadMissingDocumentForUser,
@@ -131,6 +132,11 @@ export async function handleAction(data) {
 
   if (action === 'fetchSignatureMeta') {
     const payload = await fetchSignatureMetaForUser(currentUser);
+    return success(payload);
+  }
+
+  if (action === 'fetchSignatureQueue') {
+    const payload = await fetchSignatureQueueForUser(currentUser, data);
     return success(payload);
   }
 

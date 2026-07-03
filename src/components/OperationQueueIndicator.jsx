@@ -27,6 +27,7 @@ const actionLabel = (action) => {
   if (action === 'GENERATE_RETURN_PDF') return 'İade PDF';
   if (action === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF';
   if (action === 'AD_PASSWORD_RESET') return 'Bilgisayar/Wi‑Fi Şifresi';
+  if (action === 'SIGNATURE_CREATE') return 'İmza Oluşturma';
   return action || 'İşlem';
 };
 
@@ -81,6 +82,22 @@ export const OperationQueueIndicator = ({
       const adData = await adResponse.json();
       if (!adData.success) throw new Error(adData.error || 'Şifre kuyruğu okunamadı.');
 
+      let signatureData = { jobs: [] };
+      try {
+        const signatureResponse = await fetch(gasUrl, {
+          method: 'POST',
+          body: JSON.stringify({
+            action: 'fetchSignatureQueue',
+            authToken: currentUser.token,
+            limit: 20,
+          }),
+        });
+        const nextSignatureData = await signatureResponse.json();
+        if (nextSignatureData.success) signatureData = nextSignatureData;
+      } catch {
+        signatureData = { jobs: [] };
+      }
+
       const operationJobs = (operationData.jobs || []).map((job) => ({
         ...job,
         kind: 'operation',
@@ -91,8 +108,15 @@ export const OperationQueueIndicator = ({
         action: 'AD_PASSWORD_RESET',
         detail: [job.personName || '-', job.adUser || '-'].join(' / '),
       }));
+      const signatureJobs = (signatureData.jobs || []).map((job) => ({
+        ...job,
+        kind: 'signature',
+        action: 'SIGNATURE_CREATE',
+        detail: [job.personName || '-', job.titleTr || '-'].join(' / '),
+      }));
 
-      const nextJobs = [...operationJobs, ...adJobs].sort((a, b) => {
+
+      const nextJobs = [...operationJobs, ...adJobs, ...signatureJobs].sort((a, b) => {
         const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime() || 0;
         const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime() || 0;
         return bTime - aTime;
@@ -280,7 +304,7 @@ export const OperationQueueIndicator = ({
                             </p>
                           </div>
                           <p className="text-[11px] text-gray-500 mt-1 truncate">
-                            {job.kind === 'ad-password' ? job.detail : job.queueId}
+                            {job.kind === 'ad-password' || job.kind === 'signature' ? job.detail : job.queueId}
                           </p>
                         </div>
                         <span className={`px-2 py-1 rounded-full border text-[10px] font-black shrink-0 ${statusClass}`}>
@@ -317,7 +341,7 @@ export const OperationQueueIndicator = ({
                             <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
                             <span className="truncate">
                               {parsedResult.url
-                                ? 'PDF hazırlandı'
+                                ? parsedResult.resultLabel || (job.kind === 'signature' ? 'İmza hazırlandı' : 'PDF hazırlandı')
                                 : parsedResult.matched !== undefined
                                 ? `${parsedResult.matched} eşleşme güncellendi`
                                 : 'İşlem tamamlandı'}

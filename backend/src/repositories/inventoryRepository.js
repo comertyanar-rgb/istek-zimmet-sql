@@ -1,4 +1,4 @@
-﻿import crypto from 'node:crypto';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1455,6 +1455,75 @@ export async function completeSignatureAgentJob(secret, data = {}) {
   );
 
   return { signatureId: completed.SignatureId, status: personStatus };
+}
+export async function fetchSignatureQueueForUser(user, data = {}) {
+  await ensureSignatureJobsTable();
+  const limit = Math.min(Math.max(Number(data.limit || 20), 1), 100);
+  const isHq = user.role === 'HQ IT' || ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
+
+  const result = await query(
+    `
+      SELECT TOP (@limit)
+        j.PublicId,
+        j.SignatureId,
+        j.Status,
+        j.PersonId,
+        j.PersonName,
+        j.PersonEmail,
+        j.TitleTr,
+        j.SignatureCampus,
+        j.ImageUrl,
+        j.RequestedBy,
+        j.ErrorMessage,
+        j.CreatedAt,
+        j.UpdatedAt,
+        j.FinishedAt,
+        c.Name AS PersonCampus,
+        c.CoreName AS PersonCampusCore
+      FROM dbo.SignatureJobs j
+      LEFT JOIN dbo.Personnel p ON p.PersonId = j.PersonId
+      LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+      WHERE @isHq = 1
+         OR j.RequestedBy = @email
+         OR c.CoreName = @userCore
+      ORDER BY COALESCE(j.FinishedAt, j.UpdatedAt, j.CreatedAt) DESC
+    `,
+    {
+      limit: { type: sql.Int, value: limit },
+      isHq: { type: sql.Bit, value: isHq ? 1 : 0 },
+      email: { type: sql.NVarChar(320), value: user.email },
+      userCore: { type: sql.NVarChar(160), value: core(user.campus) }
+    }
+  );
+
+  return {
+    jobs: result.recordset.map((row) => {
+      const doneUrl = row.Status === 'TAMAMLANDI' && row.ImageUrl ? row.ImageUrl : '';
+      return {
+        queueId: row.PublicId,
+        publicId: row.PublicId,
+        actionType: 'SIGNATURE_CREATE',
+        action: 'SIGNATURE_CREATE',
+        status: row.Status,
+        personId: row.PersonId,
+        personName: row.PersonName,
+        personEmail: row.PersonEmail,
+        titleTr: row.TitleTr,
+        signatureCampus: row.SignatureCampus || row.PersonCampus || '',
+        signatureId: row.SignatureId,
+        imageUrl: row.ImageUrl || '',
+        resultJson: doneUrl ? JSON.stringify({ url: doneUrl, resultLabel: 'İmza hazırlandı' }) : '',
+        result: doneUrl ? JSON.stringify({ url: doneUrl, resultLabel: 'İmza hazırlandı' }) : '',
+        errorMessage: row.ErrorMessage,
+        error: row.ErrorMessage,
+        requestedBy: row.RequestedBy,
+        createdAt: row.CreatedAt,
+        updatedAt: row.FinishedAt || row.UpdatedAt || row.CreatedAt,
+        finishedAt: row.FinishedAt,
+        campus: row.SignatureCampus || row.PersonCampus || ''
+      };
+    })
+  };
 }
 export async function startTransferForUser(user, data) {
   const targetCampus = cleanText(data.targetCampus, 160);
