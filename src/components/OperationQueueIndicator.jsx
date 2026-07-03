@@ -1,8 +1,9 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
   Clock3,
+  ExternalLink,
   ListChecks,
   Loader2,
   Play,
@@ -311,14 +312,29 @@ export const OperationQueueIndicator = ({
                         </p>
                       )}
                       {parsedResult && job.status === 'TAMAMLANDI' && (
-                        <p className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-green-700">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          {parsedResult.url
-                            ? 'PDF hazırlandı'
-                            : parsedResult.matched !== undefined
-                            ? `${parsedResult.matched} eşleşme güncellendi`
-                            : 'İşlem tamamlandı'}
-                        </p>
+                        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg bg-green-50 px-2 py-1.5 text-[11px] font-bold text-green-700">
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate">
+                              {parsedResult.url
+                                ? 'PDF hazırlandı'
+                                : parsedResult.matched !== undefined
+                                ? `${parsedResult.matched} eşleşme güncellendi`
+                                : 'İşlem tamamlandı'}
+                            </span>
+                          </span>
+                          {parsedResult.url && (
+                            <a
+                              href={parsedResult.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded-md border border-green-200 bg-white px-2 py-1 text-[10px] font-black text-green-700 hover:bg-green-100 shrink-0"
+                            >
+                              Aç
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
                       )}
                     </article>
                   );

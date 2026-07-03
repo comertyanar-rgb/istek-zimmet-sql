@@ -119,8 +119,16 @@ async function markJobFailed(queueId, error) {
   );
 }
 
+function historyEventTypeForPdf(actionType) {
+  if (actionType === 'GENERATE_ZIMMET_PDF') return 'Zimmet PDF Belgesi Oluşturuldu';
+  if (actionType === 'GENERATE_RETURN_PDF') return 'İade PDF Belgesi Oluşturuldu';
+  if (actionType === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF Belgesi Oluşturuldu';
+  return 'PDF Belgesi Oluşturuldu';
+}
+
 async function attachPdfToHardware(payload, uploadResult, job) {
   const hardware = Array.isArray(payload.hardware) ? payload.hardware : [];
+  const eventType = historyEventTypeForPdf(job.ActionType);
   for (const item of hardware) {
     if (!item?.hardwareId) continue;
 
@@ -144,7 +152,7 @@ async function attachPdfToHardware(payload, uploadResult, job) {
       `,
       {
         hardwareId: { type: sql.Int, value: item.hardwareId },
-        eventType: { type: sql.NVarChar(120), value: 'PDF Belgesi Oluşturuldu' },
+        eventType: { type: sql.NVarChar(120), value: eventType },
         personId: { type: sql.NVarChar(160), value: payload.person?.id || null },
         personName: { type: sql.NVarChar(240), value: payload.person?.name || null },
         driveLink: { type: sql.NVarChar(1000), value: uploadResult.url || null },
@@ -153,8 +161,10 @@ async function attachPdfToHardware(payload, uploadResult, job) {
           value: JSON.stringify({
             queueId: job.PublicId,
             actionType: job.ActionType,
+            documentStatus: 'PDF hazırlandı',
             pdfHash: uploadResult.pdfHash,
-            delivery: uploadResult.delivery
+            delivery: uploadResult.delivery,
+            url: uploadResult.url || ''
           })
         },
         createdBy: { type: sql.NVarChar(320), value: payload.requestedBy || null }
