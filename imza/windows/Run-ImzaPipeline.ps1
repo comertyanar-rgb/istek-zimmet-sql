@@ -1,4 +1,4 @@
-﻿param(
+param(
   [string]$GamWork = "C:\GAMWork",
   [string]$PhotoshopExe = "C:\Program Files\Adobe\Adobe Photoshop 2026\Photoshop.exe",
   [string]$PsdTemplate = "C:\GAMWork\template\imza-template.psd",
@@ -17,6 +17,11 @@
 )
 
 $ErrorActionPreference = "Stop"
+
+function Write-AgentInfo {
+  param([string]$Message)
+  Write-Host ("[ImzaAgent] " + $Message)
+}
 
 function Resolve-ToolPath {
   param(
@@ -80,6 +85,10 @@ if ([string]::IsNullOrWhiteSpace($SignatureCallbackUrl)) {
     $SignatureCallbackUrl = $SignatureApiUrl
   }
 }
+
+Write-AgentInfo "API: $SignatureApiUrl"
+Write-AgentInfo ("Secret: " + $(if ([string]::IsNullOrWhiteSpace($SignatureAgentSecret)) { "YOK" } else { "VAR" }))
+Write-AgentInfo "GAMWork: $GamWork"
 
 foreach ($dir in @($DatasetDir, $HtmlDir, $CommandDir, $JpgDir, $ProcessedDir, $LogDir, $ScriptsDir, $JobDir)) {
   if (!(Test-Path -LiteralPath $dir)) {
@@ -227,14 +236,19 @@ function New-SignatureInputFilesFromJobs {
 function Receive-SignatureJobsFromSql {
   param([string]$RunLog)
 
-  if ($SkipSignatureFetch) { return 0 }
+  if ($SkipSignatureFetch) {
+    Write-AgentInfo "SQL imza kuyruğu okunmadı: -SkipSignatureFetch verilmiş."
+    return 0
+  }
   if ([string]::IsNullOrWhiteSpace($SignatureAgentSecret)) {
     if (![string]::IsNullOrWhiteSpace($RunLog)) {
       "Signature SQL fetch skipped. SIGNATURE_AGENT_SECRET is empty." | Tee-Object -FilePath $RunLog -Append
     }
+    Write-AgentInfo "SQL imza kuyruğu okunmadı: SIGNATURE_AGENT_SECRET / ZIMMET_SIGNATURE_AGENT_SECRET / AD_AGENT_SECRET boş."
     return 0
   }
 
+  Write-AgentInfo "SQL imza kuyruğu okunuyor..."
   $payload = @{
     action = "fetchSignatureJobs"
     secret = $SignatureAgentSecret
@@ -248,6 +262,8 @@ function Receive-SignatureJobsFromSql {
   }
 
   $jobs = @($response.jobs)
+  Write-AgentInfo "SQL imza kuyruğundan alınan iş: $($jobs.Count)"
+
   if ($jobs.Count -eq 0) {
     if (![string]::IsNullOrWhiteSpace($RunLog)) {
       "No SQL signature jobs found." | Tee-Object -FilePath $RunLog -Append
@@ -287,7 +303,7 @@ try {
   }
 
   if (!$dataset) {
-    Write-Host "No Photoshop dataset found."
+    Write-AgentInfo "İş yok: SQL kuyruğunda bekleyen imza bulunamadı ve C:\GAMWork\datasets içinde hazır dataset yok."
     exit 0
   }
 
@@ -303,6 +319,7 @@ try {
     throw "Matching GAM command file was not found: $gamFile"
   }
 
+  Write-AgentInfo "Dataset bulundu: $($dataset.FullName)"
   "Dataset: $($dataset.FullName)" | Tee-Object -FilePath $runLog -Append
   "GAM file: $gamFile" | Tee-Object -FilePath $runLog -Append
 
@@ -360,6 +377,7 @@ var SIGNATURE_JOB = {
 
     Set-Content -LiteralPath $jobFile -Value $jobConfig -Encoding UTF8
 
+    Write-AgentInfo "Photoshop başlatılıyor: $activePsdTemplate"
     "Starting Photoshop with template variant '$templateVariant': $activePsdTemplate" | Tee-Object -FilePath $runLog -Append
     Start-Process -FilePath $PhotoshopExe -ArgumentList @("-r", "`"$photoshopScript`"")
 
@@ -428,6 +446,7 @@ var SIGNATURE_JOB = {
     $commands.Add("exit")
     Set-Content -LiteralPath $uploadScript -Value ($commands -join "`r`n") -Encoding ASCII
 
+    Write-AgentInfo "JPG dosyaları WinSCP ile yükleniyor..."
     "Uploading JPG files with WinSCP..." | Tee-Object -FilePath $runLog -Append
     & $WinScpCom "/script=$uploadScript" "/log=$uploadLog"
     if ($LASTEXITCODE -ne 0) {
@@ -436,6 +455,7 @@ var SIGNATURE_JOB = {
   }
 
   if (!$SkipGam) {
+    Write-AgentInfo "GAM komutları çalıştırılıyor..."
     "Running GAM commands..." | Tee-Object -FilePath $runLog -Append
     & cmd.exe /c "`"$gamFile`""
     if ($LASTEXITCODE -ne 0) {
@@ -447,6 +467,7 @@ var SIGNATURE_JOB = {
     if ([string]::IsNullOrWhiteSpace($SignatureCallbackUrl) -or [string]::IsNullOrWhiteSpace($SignatureAgentSecret)) {
       "Signature status callback skipped. SIGNATURE_AGENT_SECRET or callback URL is empty." | Tee-Object -FilePath $runLog -Append
     } else {
+      Write-AgentInfo "Zimmet sisteminde imza durumu güncelleniyor..."
       "Updating signature status in Zimmet backend..." | Tee-Object -FilePath $runLog -Append
       foreach ($row in $rows) {
         $signatureId = [string]$row.filename
@@ -484,6 +505,7 @@ var SIGNATURE_JOB = {
     Move-Item -LiteralPath $gamFile -Destination (Join-Path $processedCommandDir (Split-Path $gamFile -Leaf)) -Force
   }
 
+  Write-AgentInfo "Pipeline tamamlandı."
   "Pipeline completed." | Tee-Object -FilePath $runLog -Append
 }
 catch {
