@@ -132,10 +132,10 @@ function getSignatureTemplateVariant(titleTr, titleEn, explicitTemplateKey) {
   const en = String(titleEn || '').replace(/\s+/g, ' ').trim();
   const maxLen = Math.max(tr.length, en.length);
   const combinedLen = tr.length + en.length;
-  if (maxLen > 62 || combinedLen > 118) return 'tiny';
-  if (maxLen > 48 || combinedLen > 96) return 'small';
-  if (maxLen > 36 || combinedLen > 76) return 'compact';
-  return 'normal';
+  if (maxLen > 62 || combinedLen > 118) return '4';
+  if (maxLen > 48 || combinedLen > 96) return '3';
+  if (maxLen > 36 || combinedLen > 76) return '2';
+  return '1';
 }
 function normalizeKey(value) {
   return String(value ?? '').trim().toLocaleLowerCase('tr-TR');

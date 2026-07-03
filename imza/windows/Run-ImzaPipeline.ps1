@@ -1,7 +1,7 @@
 param(
   [string]$GamWork = "C:\GAMWork",
   [string]$PhotoshopExe = "C:\Program Files\Adobe\Adobe Photoshop 2026\Photoshop.exe",
-  [string]$PsdTemplate = "C:\GAMWork\template\imza-template.psd",
+  [string]$PsdTemplate = "C:\GAMWork\template\imza-template-1.psd",
   [string]$TemplateDir = "C:\GAMWork\template",
   [string]$WinScpCom = "C:\Program Files (x86)\WinSCP\WinSCP.com",
   [string]$RemoteBasePath = "/public_html/imza",
@@ -114,18 +114,25 @@ function Format-SignatureCell {
 
 function Get-SignatureTemplateSuffix {
   param([string]$Variant)
+  $fileKey = Get-SignatureTemplateFileKey $Variant
+  if ([string]::IsNullOrWhiteSpace($fileKey)) { return "_tpl1" }
+  return "_tpl$fileKey"
+}
+
+function Get-SignatureTemplateFileKey {
+  param([string]$Variant)
   $key = if ([string]::IsNullOrWhiteSpace($Variant)) { "normal" } else { $Variant.Trim().ToLowerInvariant() }
-  if ($key -eq "normal") { return "" }
-  if ($key -eq "compact") { return "_compact" }
-  if ($key -eq "small") { return "_small" }
-  if ($key -eq "tiny") { return "_tiny" }
+  if ($key -eq "normal") { return "1" }
+  if ($key -eq "compact") { return "2" }
+  if ($key -eq "small") { return "3" }
+  if ($key -eq "tiny") { return "4" }
 
   $key = $key -replace '^imza-template-', ''
   $key = $key -replace '^template-', ''
   $key = $key -replace '^tpl', ''
   $key = $key -replace '[^a-zA-Z0-9_-]', ''
-  if ([string]::IsNullOrWhiteSpace($key)) { return "" }
-  return "_tpl$key"
+  if ([string]::IsNullOrWhiteSpace($key)) { return "1" }
+  return $key
 }
 
 function New-SignatureHtml {
@@ -335,18 +342,17 @@ try {
 
     $activePsdTemplate = $PsdTemplate
     $templateVariant = "normal"
+    $templateFileKey = Get-SignatureTemplateFileKey $templateVariant
     if ($stamp -match "_(compact|small|tiny|tpl[a-zA-Z0-9_-]+)$") {
       $templateVariant = $Matches[1]
-      $templateFileKey = $templateVariant
-      if ($templateVariant -like "tpl*") {
-        $templateFileKey = $templateVariant.Substring(3)
-      }
-      $variantTemplate = Join-Path $TemplateDir ("imza-template-{0}.psd" -f $templateFileKey)
-      if (Test-Path -LiteralPath $variantTemplate) {
-        $activePsdTemplate = $variantTemplate
-      } else {
-        "Template variant '$templateVariant' was requested but not found: $variantTemplate. Falling back to default template." | Tee-Object -FilePath $runLog -Append
-      }
+      $templateFileKey = Get-SignatureTemplateFileKey $templateVariant
+    }
+
+    $variantTemplate = Join-Path $TemplateDir ("imza-template-{0}.psd" -f $templateFileKey)
+    if (Test-Path -LiteralPath $variantTemplate) {
+      $activePsdTemplate = $variantTemplate
+    } else {
+      "Template variant '$templateVariant' was requested but not found: $variantTemplate. Falling back to default template." | Tee-Object -FilePath $runLog -Append
     }
 
     if (!(Test-Path -LiteralPath $activePsdTemplate)) {

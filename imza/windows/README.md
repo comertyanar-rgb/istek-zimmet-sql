@@ -48,16 +48,7 @@ FileZilla Pro CLI kullaniyorsan pipeline'in upload kismi ayrica fzcli komutlarin
 gore uyarlanmalidir. Standart FileZilla Client kullaniliyorsa bu scriptteki WinSCP
 bolumunu korumak en stabil yoldur.
 
-PSD template dosyasini da su yola koy:
-
-```text
-C:\GAMWork\template\imza-template.psd
-```
-
-Uzun unvanlar icin daha dusuk puntolu PSD varyantlari koyabilirsin. `Unvanlar`
-sayfasinda 3. kolona `1`, `2`, `3` gibi sablon numarasi yazilirsa Apps Script
-dataset adina otomatik `_tpl1`, `_tpl2`, `_tpl3` ekler; Windows ajani da ayni
-numarali PSD'yi kullanir:
+PSD template dosyalarini da su yola koy:
 
 ```text
 C:\GAMWork\template\imza-template-1.psd
@@ -66,10 +57,13 @@ C:\GAMWork\template\imza-template-3.psd
 C:\GAMWork\template\imza-template-4.psd
 ```
 
-3. kolon bos birakilirsa sistem eski otomatik uzunluk tahminini kullanir ve
-`imza-template-compact.psd`, `imza-template-small.psd`, `imza-template-tiny.psd`
-dosyalarini arar. Istenen varyant dosyasi yoksa ajan normal `imza-template.psd`
-ile devam eder ve loga not duser.
+`Unvanlar` sayfasinda 3. kolona `1`, `2`, `3` veya `4` sablon numarasi
+yazilirsa SQL kuyrugu ve Windows ajani ayni numarali PSD'yi kullanir. Bu
+kolon bos kalirsa sistem unvan uzunluguna gore otomatik olarak 1-4 arasinda
+bir sablon secer.
+
+Eski `normal`, `compact`, `small`, `tiny` varyantlari da geriye donuk uyumluluk
+icin sirasiyla `1`, `2`, `3`, `4` olarak yorumlanir.
 
 PSD icindeki variable isimleri TXT basliklariyla eslesmeli:
 
