@@ -1,4 +1,4 @@
-import crypto from 'node:crypto';
+﻿import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -949,6 +949,7 @@ export async function fetchAdPasswordQueueForUser(user, data = {}) {
         q.PasswordMode,
         q.RequestedBy,
         q.CampusName,
+        q.ResultMessage,
         q.ErrorMessage,
         q.UpdatedAt
       FROM dbo.ADPasswordQueue q
@@ -975,6 +976,7 @@ export async function fetchAdPasswordQueueForUser(user, data = {}) {
       mode: row.PasswordMode,
       executedBy: row.RequestedBy,
       campus: row.CampusName,
+      result: row.ResultMessage || '',
       error: row.ErrorMessage || '',
       updatedAt: row.UpdatedAt
     }))

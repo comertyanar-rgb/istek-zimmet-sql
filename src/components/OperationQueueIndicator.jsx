@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -25,6 +25,7 @@ const actionLabel = (action) => {
   if (action === 'GENERATE_ZIMMET_PDF') return 'Zimmet PDF';
   if (action === 'GENERATE_RETURN_PDF') return 'İade PDF';
   if (action === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF';
+  if (action === 'AD_PASSWORD_RESET') return 'Bilgisayar/Wi‑Fi Şifresi';
   return action || 'İşlem';
 };
 
@@ -57,7 +58,7 @@ export const OperationQueueIndicator = ({
     setError('');
 
     try {
-      const response = await fetch(gasUrl, {
+      const operationResponse = await fetch(gasUrl, {
         method: 'POST',
         body: JSON.stringify({
           action: 'fetchOperationQueue',
@@ -65,17 +66,43 @@ export const OperationQueueIndicator = ({
           limit: 20,
         }),
       });
-      const data = await response.json();
-      if (!data.success) throw new Error(data.error || 'Kuyruk okunamadı.');
+      const operationData = await operationResponse.json();
+      if (!operationData.success) throw new Error(operationData.error || 'Kuyruk okunamadı.');
 
-      const nextJobs = data.jobs || [];
+      const adResponse = await fetch(gasUrl, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'fetchADPasswordQueue',
+          authToken: currentUser.token,
+          limit: 20,
+        }),
+      });
+      const adData = await adResponse.json();
+      if (!adData.success) throw new Error(adData.error || 'Şifre kuyruğu okunamadı.');
+
+      const operationJobs = (operationData.jobs || []).map((job) => ({
+        ...job,
+        kind: 'operation',
+      }));
+      const adJobs = (adData.jobs || []).map((job) => ({
+        ...job,
+        kind: 'ad-password',
+        action: 'AD_PASSWORD_RESET',
+        detail: [job.personName || '-', job.adUser || '-'].join(' / '),
+      }));
+
+      const nextJobs = [...operationJobs, ...adJobs].sort((a, b) => {
+        const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime() || 0;
+        const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime() || 0;
+        return bTime - aTime;
+      });
       const previous = previousJobsRef.current;
       const completedAfterActive = nextJobs.some((job) => {
-        const oldStatus = previous.get(job.queueId);
+        const oldStatus = previous.get(`${job.kind}:${job.queueId}`);
         return ACTIVE_STATUSES.has(oldStatus) && job.status === 'TAMAMLANDI';
       });
 
-      previousJobsRef.current = new Map(nextJobs.map((job) => [job.queueId, job.status]));
+      previousJobsRef.current = new Map(nextJobs.map((job) => [`${job.kind}:${job.queueId}`, job.status]));
       setJobs(nextJobs);
 
       if (completedAfterActive && onRefreshData) {
@@ -240,7 +267,7 @@ export const OperationQueueIndicator = ({
 
                   return (
                     <article
-                      key={job.queueId}
+                      key={`${job.kind}:${job.queueId}`}
                       className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -252,7 +279,7 @@ export const OperationQueueIndicator = ({
                             </p>
                           </div>
                           <p className="text-[11px] text-gray-500 mt-1 truncate">
-                            {job.queueId}
+                            {job.kind === 'ad-password' ? job.detail : job.queueId}
                           </p>
                         </div>
                         <span className={`px-2 py-1 rounded-full border text-[10px] font-black shrink-0 ${statusClass}`}>
@@ -277,6 +304,12 @@ export const OperationQueueIndicator = ({
                         </p>
                       )}
 
+
+                      {job.kind === 'ad-password' && job.result && (
+                        <p className="mt-2 rounded-lg bg-green-50 px-2 py-1.5 text-[11px] font-bold text-green-700">
+                          {job.result}
+                        </p>
+                      )}
                       {parsedResult && job.status === 'TAMAMLANDI' && (
                         <p className="mt-2 flex items-center gap-1.5 text-[11px] font-bold text-green-700">
                           <CheckCircle2 className="w-3.5 h-3.5" />
