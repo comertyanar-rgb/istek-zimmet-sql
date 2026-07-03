@@ -1177,9 +1177,11 @@ async function getSignatureTitle(titleTr) {
   const target = normalizeSignatureText(titleTr);
   const row = result.recordset.find((item) => normalizeSignatureText(item.TitleTr) === target);
   if (!row) throw new Error('Seçilen ünvan SQL SignatureTitles tablosunda bulunamadı. Ünvanlar sayfasını SQL’e aktarın.');
+  const titleTrValue = row.TitleTr || '';
+  const titleEnValue = row.TitleEn || row.TitleTr || '';
   return {
-    titleTr: row.TitleTr,
-    titleEn: row.TitleEn || '',
+    titleTr: titleTrValue,
+    titleEn: titleEnValue,
     templateKey: row.TemplateKey || ''
   };
 }

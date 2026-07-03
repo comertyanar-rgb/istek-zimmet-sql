@@ -205,6 +205,7 @@ function New-SignatureInputFilesFromJobs {
       $personName = if (![string]::IsNullOrWhiteSpace([string]$job.personName)) { [string]$job.personName } else { [string]$dataset.name }
       $titleTr = if (![string]::IsNullOrWhiteSpace([string]$job.titleTr)) { [string]$job.titleTr } else { [string]$dataset.titleTr }
       $titleEn = if (![string]::IsNullOrWhiteSpace([string]$job.titleEn)) { [string]$job.titleEn } else { [string]$dataset.titleEn }
+      if ([string]::IsNullOrWhiteSpace($titleEn)) { $titleEn = $titleTr }
       $email = if (![string]::IsNullOrWhiteSpace([string]$job.personEmail)) { [string]$job.personEmail } else { [string]$dataset.email }
       $address = if (![string]::IsNullOrWhiteSpace([string]$job.address)) { [string]$job.address } else { [string]$dataset.address }
       $campusImage = if (![string]::IsNullOrWhiteSpace([string]$job.campusImage)) { [string]$job.campusImage } else { [string]$dataset.campusImage }

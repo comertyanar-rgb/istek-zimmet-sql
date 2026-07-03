@@ -219,7 +219,7 @@ function fillSignatureTextLayers(container, row) {
     }
 
     if (marker.indexOf("graphic designer") >= 0) {
-      setTextLayerValue(layer, row.ing);
+      setTextLayerValue(layer, row.ing || row.unvan);
       continue;
     }
 
