@@ -13,11 +13,10 @@ $SyncSecret = if ($env:GLPI_SYNC_SECRET) { $env:GLPI_SYNC_SECRET } else { $env:Z
 # Varsayilan calisma sadece GLPI_Cihazlar sekmesini yeniler.
 # Laptoplar sekmesindeki GLPI eslesme kolonlarini hemen yenilemek icin:
 # $env:ZIMMET_GLPI_RECONCILE = "true"
-# Mesai saatlerinde eslestirmeyi Islem_Kuyrugu'na almak icin:
-# $env:ZIMMET_GLPI_RECONCILE = "queue"
 $RunReconcileRaw = $env:ZIMMET_GLPI_RECONCILE
 if ($RunReconcileRaw -match '^(queue|kuyruk)$') {
-  $RunReconcile = "queue"
+  Write-Warning "GLPI kuyruklu eslestirme henuz desteklenmiyor; sadece GLPI cihaz senkronu yapilacak."
+  $RunReconcile = $false
 } else {
   $RunReconcile = $RunReconcileRaw -match '^(1|true|yes|evet)$'
 }

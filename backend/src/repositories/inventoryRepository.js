@@ -2039,7 +2039,9 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
     lastSync: { type: sql.DateTime2, value: syncStartedAt }
   });
 
-  const reconcile = data.reconcile === false ? { reconciled: 0, matched: 0, warnings: 0 } : await reconcileHardwareWithGlpi();
+  const reconcileMode = typeof data.reconcile === 'string' ? data.reconcile.trim().toLowerCase() : data.reconcile;
+  const shouldReconcile = ![false, 'false', '0', 'queue', 'kuyruk'].includes(reconcileMode);
+  const reconcile = shouldReconcile ? await reconcileHardwareWithGlpi() : { reconciled: 0, matched: 0, warnings: 0 };
   await appendSystemLog(
     'GLPI SYNC',
     { email: 'GLPI Sync Agent' },
@@ -2050,6 +2052,7 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
   return {
     count,
     syncedAt: syncStartedAt.toISOString(),
+    reconcileSkipped: !shouldReconcile,
     matched: reconcile.matched,
     warnings: reconcile.warnings + warnings
   };
