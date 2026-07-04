@@ -44,6 +44,12 @@ export const config = {
   appSecret: process.env.APP_SECRET || 'development-only-change-me',
   adAgentSecret: process.env.AD_AGENT_SECRET || '',
   glpiSyncSecret: process.env.GLPI_SYNC_SECRET || process.env.ZIMMET_SYNC_SECRET || '',
+  personnelSyncSecret:
+    process.env.PERSONNEL_SYNC_SECRET ||
+    process.env.ZIMMET_PERSONNEL_SYNC_SECRET ||
+    process.env.AD_AGENT_SECRET ||
+    process.env.ZIMMET_SYNC_SECRET ||
+    '',
   signatureAgentSecret:
     process.env.SIGNATURE_AGENT_SECRET ||
     process.env.ZIMMET_SIGNATURE_AGENT_SECRET ||

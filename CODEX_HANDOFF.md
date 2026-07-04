@@ -220,3 +220,42 @@ Ayri pencerede imza agent testi:
 cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet
 pwsh -ExecutionPolicy Bypass -File .\imza\windows\Run-ImzaPipeline.ps1
 ```
+
+## Latest Continuation - 2026-07-04
+
+Eklenen personel senkronizasyonu:
+
+- SQL API'ye oturum gerektirmeyen `syncPersonnel` agent aksiyonu eklendi.
+- Backend secret ayari: `PERSONNEL_SYNC_SECRET`.
+- Fallback sirasi: `PERSONNEL_SYNC_SECRET`, `ZIMMET_PERSONNEL_SYNC_SECRET`, `AD_AGENT_SECRET`, `ZIMMET_SYNC_SECRET`.
+- `syncPersonnel` form/Google Admin Apps Scriptlerinden gelen personel listesini `dbo.Personnel` tablosuna upsert eder.
+- Tasinarak desteklenen alanlar:
+  - Google/personel ID
+  - ad soyad
+  - e-posta
+  - unvan/departman
+  - kampus
+  - durum
+  - profil fotografi
+  - AD kullanici adi
+  - telefon
+  - imza linki
+- Sifre, TC kimlik veya gecici hesap parolasi bu endpoint ile SQL'e tasinmaz.
+- Bos gelen `SignatureUrl`, `PhotoUrl`, `Phone` gibi alanlar mevcut dolu veriyi silmez.
+- `docs/personnel-sync-appscript-snippet.gs` eklendi; mevcut Apps Scriptlere kopyalanip SQL API'ye POST etmek icin kullanilabilir.
+
+Calisan kontroller:
+
+```powershell
+node --check backend/src/repositories/inventoryRepository.js
+node --check backend/src/actionRouter.js
+node --check backend/src/config.js
+npm run build
+```
+
+Siradaki net is:
+
+1. Backend `.env` icine `PERSONNEL_SYNC_SECRET=...` ekle.
+2. Apps Script Properties icine ayni secret'i ve `ZIMMET_SQL_API_URL=http://sunucu:8787/api/action` degerini ekle.
+3. `docs/personnel-sync-appscript-snippet.gs` dosyasindaki helper'i mevcut form ve Google Admin scriptlerine ekle.
+4. Once tek test personeli, sonra tum `Kullanıcılar` listesini SQL'e sync et.

@@ -52,6 +52,15 @@ function cleanText(value, max = 1000) {
   return String(value ?? '').trim().slice(0, max);
 }
 
+function pickFirst(source, names) {
+  if (!source || typeof source !== 'object') return '';
+  for (const name of names) {
+    const value = source[name];
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return '';
+}
+
 function safeFileName(name, fallback = 'belge') {
   const safe = cleanText(name || fallback, 260).replace(/[\\/:*?"<>|]/g, '-');
   return safe || fallback;
@@ -101,6 +110,22 @@ function normalizePhone(value) {
   if (digits.startsWith('90') && digits.length === 12) return digits.slice(2);
   if (digits.startsWith('0') && digits.length === 11) return digits.slice(1);
   return digits.slice(0, 10);
+}
+
+function normalizeEmail(value) {
+  const email = cleanText(value, 320).toLocaleLowerCase('tr-TR');
+  return email.includes('@') ? email : '';
+}
+
+function normalizePersonnelStatus(value, suspended) {
+  if (suspended === true || String(suspended).toLocaleLowerCase('tr-TR') === 'true') return 'Pasif';
+  const raw = cleanText(value, 40);
+  if (!raw) return 'Aktif';
+  const key = raw.toLocaleLowerCase('tr-TR');
+  if (['pasif', 'passive', 'suspended', 'askıda', 'askida'].includes(key)) return 'Pasif';
+  if (['aktif', 'active'].includes(key)) return 'Aktif';
+  if (key.includes('bulunamad')) return 'Kullanıcı Bulunamadı';
+  return raw;
 }
 
 function normalizeSignatureText(value) {
@@ -338,6 +363,167 @@ export async function getAuthorizedUser(email) {
     campus: row.Campus || 'Bilinmiyor',
     name: row.FullName || '',
     picture: row.PhotoUrl || ''
+  };
+}
+
+function normalizePersonnelSyncItem(rawItem) {
+  const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
+  const email = normalizeEmail(pickFirst(item, ['email', 'primaryEmail', 'ePosta', 'eposta', 'mail']));
+  const adUsername = normalizeAdLogin(pickFirst(item, ['adUsername', 'adUser', 'windowsUsername', 'kullaniciAdi', 'adKullanici']));
+  const personId =
+    cleanText(pickFirst(item, ['personId', 'googleId', 'googleUserId', 'id', 'userId']), 160) ||
+    email ||
+    adUsername;
+  const fullName =
+    cleanText(pickFirst(item, ['fullName', 'name', 'adSoyad', 'adSoyadi', 'displayName']), 240) ||
+    cleanText(`${pickFirst(item, ['firstName', 'givenName'])} ${pickFirst(item, ['lastName', 'familyName'])}`, 240) ||
+    email ||
+    adUsername ||
+    personId;
+
+  return {
+    personId,
+    fullName,
+    email,
+    department: cleanText(pickFirst(item, ['department', 'title', 'unvan', 'gorev', 'jobTitle']), 240),
+    campus: cleanText(pickFirst(item, ['campus', 'kampus', 'okul']), 160),
+    status: normalizePersonnelStatus(pickFirst(item, ['status', 'durum']), item.suspended),
+    photoUrl: cleanText(pickFirst(item, ['photoUrl', 'picture', 'thumbnailPhotoUrl', 'profilFotografi']), 1000),
+    adUsername,
+    phone: normalizePhone(pickFirst(item, ['phone', 'telefon', 'cellPhone', 'mobile', 'cep'])),
+    signatureUrl: cleanText(pickFirst(item, ['signatureUrl', 'signatureLink', 'imzaLinki', 'imzaLink']), 1000)
+  };
+}
+
+export async function syncPersonnelFromAgent(secret, data = {}) {
+  if (!config.personnelSyncSecret || secret !== config.personnelSyncSecret) {
+    throw new Error('Yetkisiz personel sync isteği.');
+  }
+
+  const items = Array.isArray(data.items) ? data.items : data.person ? [data.person] : [];
+  if (!items.length) return { count: 0, inserted: 0, updated: 0, skipped: 0, warnings: [] };
+  if (items.length > 5000) throw new Error('Tek seferde en fazla 5000 personel kaydı senkronlanabilir.');
+
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+  const warnings = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    const person = normalizePersonnelSyncItem(items[index]);
+    if (!person.personId) {
+      skipped += 1;
+      warnings.push(`${index + 1}. kayıt atlandı: Personel ID/e-posta/AD kullanıcı adı yok.`);
+      continue;
+    }
+
+    const campusId = person.campus ? await ensureCampusId(person.campus) : null;
+    const existing = await query(
+      `
+        SELECT TOP 1 PersonId
+        FROM dbo.Personnel
+        WHERE PersonId = @personId
+           OR (@email <> N'' AND LOWER(Email) = LOWER(@email))
+        ORDER BY CASE WHEN PersonId = @personId THEN 0 ELSE 1 END
+      `,
+      {
+        personId: { type: sql.NVarChar(160), value: person.personId },
+        email: { type: sql.NVarChar(320), value: person.email || '' }
+      }
+    );
+
+    const targetPersonId = existing.recordset[0]?.PersonId || person.personId;
+    if (targetPersonId !== person.personId) {
+      warnings.push(`${person.email || person.personId}: mevcut kayıt e-posta ile bulundu, PersonId korunarak güncellendi.`);
+    }
+
+    if (person.email) {
+      const emailOwner = await query(
+        `
+          SELECT TOP 1 PersonId
+          FROM dbo.Personnel
+          WHERE LOWER(Email) = LOWER(@email)
+            AND PersonId <> @targetPersonId
+        `,
+        {
+          email: { type: sql.NVarChar(320), value: person.email },
+          targetPersonId: { type: sql.NVarChar(160), value: targetPersonId }
+        }
+      );
+
+      if (emailOwner.recordset[0]) {
+        warnings.push(`${person.email}: e-posta başka bir personel kaydında olduğu için güncellenmedi.`);
+        person.email = '';
+      }
+    }
+
+    const result = await query(
+      `
+        MERGE dbo.Personnel AS target
+        USING (SELECT @targetPersonId AS PersonId) AS source
+          ON target.PersonId = source.PersonId
+        WHEN MATCHED THEN
+          UPDATE SET
+            FullName = COALESCE(NULLIF(@fullName, N''), target.FullName),
+            Email = COALESCE(NULLIF(@email, N''), target.Email),
+            Department = COALESCE(NULLIF(@department, N''), target.Department),
+            CampusId = COALESCE(@campusId, target.CampusId),
+            Status = COALESCE(NULLIF(@status, N''), target.Status),
+            PhotoUrl = COALESCE(NULLIF(@photoUrl, N''), target.PhotoUrl),
+            AdUsername = COALESCE(NULLIF(@adUsername, N''), target.AdUsername),
+            Phone = COALESCE(NULLIF(@phone, N''), target.Phone),
+            SignatureUrl = COALESCE(NULLIF(@signatureUrl, N''), target.SignatureUrl),
+            UpdatedAt = SYSUTCDATETIME()
+        WHEN NOT MATCHED THEN
+          INSERT (
+            PersonId, FullName, Email, Department, CampusId, Status,
+            PhotoUrl, AdUsername, Phone, SignatureUrl
+          )
+          VALUES (
+            @targetPersonId,
+            COALESCE(NULLIF(@fullName, N''), NULLIF(@email, N''), NULLIF(@adUsername, N''), @targetPersonId),
+            NULLIF(@email, N''),
+            NULLIF(@department, N''),
+            @campusId,
+            COALESCE(NULLIF(@status, N''), N'Aktif'),
+            NULLIF(@photoUrl, N''),
+            NULLIF(@adUsername, N''),
+            NULLIF(@phone, N''),
+            NULLIF(@signatureUrl, N'')
+          )
+        OUTPUT $action AS MergeAction;
+      `,
+      {
+        targetPersonId: { type: sql.NVarChar(160), value: targetPersonId },
+        fullName: { type: sql.NVarChar(240), value: person.fullName },
+        email: { type: sql.NVarChar(320), value: person.email },
+        department: { type: sql.NVarChar(240), value: person.department },
+        campusId: { type: sql.UniqueIdentifier, value: campusId },
+        status: { type: sql.NVarChar(40), value: person.status },
+        photoUrl: { type: sql.NVarChar(1000), value: person.photoUrl },
+        adUsername: { type: sql.NVarChar(160), value: person.adUsername },
+        phone: { type: sql.NVarChar(20), value: person.phone },
+        signatureUrl: { type: sql.NVarChar(1000), value: person.signatureUrl }
+      }
+    );
+
+    if (result.recordset[0]?.MergeAction === 'INSERT') inserted += 1;
+    else updated += 1;
+  }
+
+  await appendSystemLog(
+    'PERSONEL SYNC',
+    { email: 'Personnel Sync Agent' },
+    `${inserted} yeni, ${updated} güncel, ${skipped} atlandı.`,
+    data.clientIp || data.machine || ''
+  );
+
+  return {
+    count: inserted + updated,
+    inserted,
+    updated,
+    skipped,
+    warnings
   };
 }
 

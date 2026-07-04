@@ -29,6 +29,7 @@ import {
   recordInventoryScanForUser,
   saveZimmetOrReturnForUser,
   startTransferForUser,
+  syncPersonnelFromAgent,
   syncGlpiDevicesFromAgent,
   updateHardwareForUser,
   updatePersonnelPhoneForUser
@@ -82,6 +83,11 @@ export async function handleAction(data) {
 
   if (action === 'syncGLPI') {
     const payload = await syncGlpiDevicesFromAgent(data.secret, data);
+    return success(payload);
+  }
+
+  if (action === 'syncPersonnel') {
+    const payload = await syncPersonnelFromAgent(data.secret, data);
     return success(payload);
   }
 
