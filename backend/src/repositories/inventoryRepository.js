@@ -1218,7 +1218,14 @@ async function makeSignatureId() {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const id = crypto.randomUUID().replace(/-/g, '').slice(0, 11).toUpperCase();
     const result = await query(
-      `SELECT TOP 1 1 AS Found FROM dbo.Personnel WHERE SignatureId = @id`,
+      `
+        SELECT TOP 1 1 AS Found
+        FROM (
+          SELECT SignatureId FROM dbo.Personnel WHERE SignatureId = @id
+          UNION ALL
+          SELECT SignatureId FROM dbo.SignatureJobs WHERE SignatureId = @id
+        ) existing
+      `,
       { id: { type: sql.NVarChar(80), value: id } }
     );
     if (!result.recordset.length) return id;
@@ -1237,13 +1244,9 @@ export async function createPersonnelSignatureForUser(user, data) {
   const campusInfo = await getSignatureCampusInfo(user, data.signatureCampus, person.campus);
   const templateVariant = getSignatureTemplateVariant(title.titleTr, title.titleEn, title.templateKey);
 
-  const existingSignature = await query(
-    `SELECT SignatureId FROM dbo.Personnel WHERE PersonId = @personId`,
-    { personId: { type: sql.NVarChar(160), value: person.id } }
-  );
-  const currentId = cleanText(existingSignature.recordset[0]?.SignatureId, 80);
-  const signatureId = currentId || await makeSignatureId();
-  const imageUrl = `https://istek.site/imza/${signatureId}/${signatureId}.jpg`;
+  const signatureId = await makeSignatureId();
+  const cacheKey = crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase();
+  const imageUrl = `https://istek.site/imza/${signatureId}/${signatureId}.jpg?v=${cacheKey}`;
   const gamCommand = `gam user "${person.email}" signature file "signature/${signatureId}.html" html`;
   const publicId = `SIG-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const dataset = {
