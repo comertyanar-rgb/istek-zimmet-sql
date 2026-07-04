@@ -1973,6 +1973,136 @@ async function reconcileHardwareWithGlpi() {
   return { reconciled, matched, warnings };
 }
 
+async function enqueueGlpiReconcileJob() {
+  const existing = await query(
+    `
+      SELECT TOP 1 QueueId, PublicId, Status
+      FROM dbo.OperationQueue
+      WHERE ActionType = N'RECONCILE_GLPI'
+        AND Status IN (N'BEKLIYOR', N'ISLENIYOR')
+      ORDER BY CreatedAt DESC
+    `
+  );
+
+  if (existing.recordset[0]) {
+    return { ...existing.recordset[0], reused: true };
+  }
+
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+  const publicId = `GLPI-${stamp}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const result = await query(
+    `
+      INSERT INTO dbo.OperationQueue (PublicId, ActionType, Status, PayloadJson, RequestedBy, CampusId)
+      OUTPUT INSERTED.QueueId, INSERTED.PublicId, INSERTED.Status
+      VALUES (@publicId, N'RECONCILE_GLPI', N'BEKLIYOR', @payloadJson, N'GLPI Sync Agent', NULL)
+    `,
+    {
+      publicId: { type: sql.NVarChar(80), value: publicId },
+      payloadJson: {
+        type: sql.NVarChar(sql.MAX),
+        value: JSON.stringify({ requestedBy: 'GLPI Sync Agent', requestedAt: new Date().toISOString() })
+      }
+    }
+  );
+
+  return { ...result.recordset[0], reused: false };
+}
+
+async function claimGlpiReconcileJobs(maxJobs, { includeFailed = false } = {}) {
+  const result = await query(
+    `
+      ;WITH NextJobs AS (
+        SELECT TOP (@maxJobs) QueueId
+        FROM dbo.OperationQueue WITH (READPAST, UPDLOCK, ROWLOCK)
+        WHERE (Status = N'BEKLIYOR' OR (@includeFailed = 1 AND Status = N'HATA'))
+          AND ActionType = N'RECONCILE_GLPI'
+        ORDER BY CreatedAt
+      )
+      UPDATE q
+      SET Status = N'ISLENIYOR',
+          StartedAt = COALESCE(StartedAt, SYSUTCDATETIME()),
+          FinishedAt = NULL,
+          ErrorMessage = NULL,
+          AttemptCount = AttemptCount + 1
+      OUTPUT INSERTED.QueueId, INSERTED.PublicId, INSERTED.ActionType
+      FROM dbo.OperationQueue q
+      INNER JOIN NextJobs n ON n.QueueId = q.QueueId;
+    `,
+    {
+      maxJobs: { type: sql.Int, value: Math.max(1, Math.min(Number(maxJobs || 1), 5)) },
+      includeFailed: { type: sql.Bit, value: includeFailed ? 1 : 0 }
+    }
+  );
+
+  return result.recordset || [];
+}
+
+async function markOperationQueueDone(queueId, resultPayload) {
+  await query(
+    `
+      UPDATE dbo.OperationQueue
+      SET Status = N'TAMAMLANDI',
+          ResultJson = @resultJson,
+          ErrorMessage = NULL,
+          FinishedAt = SYSUTCDATETIME()
+      WHERE QueueId = @queueId
+    `,
+    {
+      queueId: { type: sql.BigInt, value: queueId },
+      resultJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(resultPayload) }
+    }
+  );
+}
+
+async function markOperationQueueFailed(queueId, error) {
+  await query(
+    `
+      UPDATE dbo.OperationQueue
+      SET Status = N'HATA',
+          ErrorMessage = @errorMessage,
+          FinishedAt = SYSUTCDATETIME()
+      WHERE QueueId = @queueId
+    `,
+    {
+      queueId: { type: sql.BigInt, value: queueId },
+      errorMessage: { type: sql.NVarChar(sql.MAX), value: String(error?.message || error || 'İşlem kuyruğu hatası').slice(0, 4000) }
+    }
+  );
+}
+
+export async function processGlpiReconcileQueue({ maxJobs = 1, logger, includeFailed = false } = {}) {
+  const jobs = await claimGlpiReconcileJobs(maxJobs, { includeFailed });
+  const results = [];
+
+  for (const job of jobs) {
+    try {
+      const startedAt = new Date();
+      const reconcile = await reconcileHardwareWithGlpi();
+      const result = {
+        queueId: job.PublicId,
+        actionType: job.ActionType,
+        reconciled: reconcile.reconciled,
+        matched: reconcile.matched,
+        warnings: reconcile.warnings,
+        startedAt: startedAt.toISOString(),
+        finishedAt: new Date().toISOString()
+      };
+      await markOperationQueueDone(job.QueueId, result);
+      results.push({ queueId: job.PublicId, status: 'TAMAMLANDI', result });
+      logger?.info?.({ queueId: job.PublicId, ...reconcile }, 'GLPI eşleştirme kuyruğu tamamlandı');
+    } catch (error) {
+      await markOperationQueueFailed(job.QueueId, error);
+      results.push({ queueId: job.PublicId, status: 'HATA', error: error.message });
+      logger?.error?.({ err: error, queueId: job.PublicId }, 'GLPI eşleştirme kuyruğu hata verdi');
+    }
+  }
+
+  return {
+    processed: results.length,
+    results
+  };
+}
+
 export async function syncGlpiDevicesFromAgent(secret, data = {}) {
   if (!config.glpiSyncSecret || secret !== config.glpiSyncSecret) {
     throw new Error('Yetkisiz GLPI sync isteği.');
@@ -2040,7 +2170,9 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
   });
 
   const reconcileMode = typeof data.reconcile === 'string' ? data.reconcile.trim().toLowerCase() : data.reconcile;
+  const shouldQueueReconcile = ['queue', 'kuyruk'].includes(reconcileMode);
   const shouldReconcile = ![false, 'false', '0', 'queue', 'kuyruk'].includes(reconcileMode);
+  const queuedReconcile = shouldQueueReconcile ? await enqueueGlpiReconcileJob() : null;
   const reconcile = shouldReconcile ? await reconcileHardwareWithGlpi() : { reconciled: 0, matched: 0, warnings: 0 };
   await appendSystemLog(
     'GLPI SYNC',
@@ -2053,6 +2185,9 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
     count,
     syncedAt: syncStartedAt.toISOString(),
     reconcileSkipped: !shouldReconcile,
+    reconcileQueued: Boolean(queuedReconcile),
+    queueId: queuedReconcile?.PublicId || '',
+    queueReused: Boolean(queuedReconcile?.reused),
     matched: reconcile.matched,
     warnings: reconcile.warnings + warnings
   };

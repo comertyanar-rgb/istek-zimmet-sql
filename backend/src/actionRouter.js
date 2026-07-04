@@ -25,6 +25,7 @@ import {
   getAuthorizedUser,
   importMissingGlpiDevicesForUser,
   manualAssignOrUploadMissingDocumentForUser,
+  processGlpiReconcileQueue,
   recordInventoryScanForUser,
   saveZimmetOrReturnForUser,
   startTransferForUser,
@@ -149,8 +150,17 @@ export async function handleAction(data) {
     if (currentUser.role !== 'HQ IT') {
       return { success: false, error: 'Kuyruğu sadece HQ IT çalıştırabilir.' };
     }
-    const payload = await processPdfQueue({ maxJobs: data.maxJobs || 5, includeFailed: true });
-    return success(payload);
+    const maxJobs = data.maxJobs || 5;
+    const [pdfQueue, glpiQueue] = await Promise.all([
+      processPdfQueue({ maxJobs, includeFailed: true }),
+      processGlpiReconcileQueue({ maxJobs: 1, includeFailed: true })
+    ]);
+    return success({
+      processed: pdfQueue.processed + glpiQueue.processed,
+      results: [...(pdfQueue.results || []), ...(glpiQueue.results || [])],
+      pdf: pdfQueue,
+      glpi: glpiQueue
+    });
   }
 
   if (action === 'fetchData') {

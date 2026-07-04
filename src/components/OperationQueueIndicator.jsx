@@ -22,7 +22,7 @@ const statusLabel = (status) => {
 };
 
 const actionLabel = (action) => {
-  if (action === 'reconcileGLPI') return 'GLPI eşleştirme';
+  if (action === 'reconcileGLPI' || action === 'RECONCILE_GLPI') return 'GLPI eşleştirme';
   if (action === 'GENERATE_ZIMMET_PDF') return 'Zimmet PDF';
   if (action === 'GENERATE_RETURN_PDF') return 'İade PDF';
   if (action === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF';
