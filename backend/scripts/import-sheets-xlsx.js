@@ -7,10 +7,12 @@ import { config } from '../src/config.js';
 const args = process.argv.slice(2);
 const filePath = args.find((arg) => !arg.startsWith('--'));
 const shouldReset = args.includes('--reset');
+const onlyArg = args.find((arg) => arg.startsWith('--only='));
+const onlyMode = onlyArg ? normalizeHeader(onlyArg.slice('--only='.length)) : '';
 const importStartedAt = new Date();
 
 if (!filePath) {
-  console.error('Kullanim: npm run import:xlsx -- "C:\\path\\zimmet-export.xlsx" [--reset]');
+  console.error('Kullanim: npm run import:xlsx -- "C:\\path\\zimmet-export.xlsx" [--reset] [--only=signatureTitles]');
   process.exit(1);
 }
 
@@ -480,8 +482,19 @@ function parseWorkbook() {
 
   const signatureTitles = asRows(workbook, ['Ünvanlar', 'Unvanlar', 'ünvanlar', 'Imza_Unvanlar', 'İmza_Unvanlar']).map((row) => ({
     titleTr: normalizeText(getCell(row, ['Ünvan', 'Unvan', 'Türkçe Ünvan', 'Turkce Unvan', 'Title TR', 'titleTr'])),
-    titleEn: normalizeText(getCell(row, ['İngilizce Ünvan', 'Ingilizce Unvan', 'English', 'Title EN', 'titleEn'])),
-    templateKey: normalizeText(getCell(row, ['Şablon', 'Sablon', 'Template', 'TemplateKey', 'templateKey']))
+    titleEn: normalizeText(getCell(row, [
+      'Title',
+      'İngilizce',
+      'Ingilizce',
+      'İngilizce Ünvan',
+      'Ingilizce Unvan',
+      'İngilizce Unvan',
+      'English',
+      'English Title',
+      'Title EN',
+      'titleEn'
+    ])),
+    templateKey: normalizeText(getCell(row, ['Şablon No', 'Sablon No', 'Şablon', 'Sablon', 'Template No', 'Template', 'TemplateKey', 'templateKey']))
       .replace(/^imza-template-/i, '')
       .replace(/^template-/i, '')
       .replace(/^tpl/i, '')
@@ -587,11 +600,27 @@ async function main() {
 
   await dropTransferIncompatibleFk(pool);
   await ensureAuxiliaryTables(pool);
-  if (shouldReset) await resetTables(pool);
+  if (onlyMode && !['signaturetitles', 'signature titles', 'titles', 'unvanlar', 'unvanlar'].includes(onlyMode)) {
+    throw new Error(`Desteklenmeyen --only modu: ${onlyArg}`);
+  }
+  if (shouldReset && !onlyMode) await resetTables(pool);
 
   const tx = new sql.Transaction(pool);
   await tx.begin();
   try {
+    if (onlyMode) {
+      for (const item of parsed.signatureTitles) await upsertSignatureTitle(tx, item);
+      await tx.commit();
+      console.log('Import tamamlandi.');
+      console.table({
+        signatureTitles: parsed.signatureTitles.length,
+        emptyTitleEn: parsed.signatureTitles.filter((item) => !item.titleEn).length,
+        only: onlyArg,
+        reset: false
+      });
+      return;
+    }
+
     for (const item of parsed.campuses) await upsertCampus(tx, item);
 
     const knownCampusNames = new Set(parsed.campuses.map((item) => normalizeCore(item.name)));
