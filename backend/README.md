@@ -86,3 +86,37 @@ GENERATED_EXPORT_DIR=C:\ZimmetApi\exports
 AD sifre sifirlama kuyrugu SQL'deki `ADPasswordQueue` tablosuna tasindi. Windows AD ajani artik SQL API'deki `fetchADPasswordJobs` ve `completeADPasswordJob` aksiyonlarini kullanir. Ornek ajan: `../ad/windows/Run-ADPasswordAgent.ps1`. Bunun icin backend `.env` icinde `AD_AGENT_SECRET`, ajan makinesinde de ayni secret tanimli olmalidir.
 
 Imza olusturma istegi SQL'deki `SignatureJobs` tablosuna dusurulur ve personelin `Signature...` alanlari guncellenir. Windows Photoshop/GAM imza ajani `fetchSignatureJobs` ile SQL API'den is cekip `completeSignatureJob` ile sonucu geri yazar. Bunun icin backend `.env` icinde `SIGNATURE_AGENT_SECRET` veya gecis surecinde `AD_AGENT_SECRET` tanimli olmalidir.
+
+## Personel Sync Agent
+
+SQL API internete acilmayacaksa Apps Script `http://sunucu:8787` veya `localhost` adresine erisemez. Bu nedenle form / Google Admin scriptleri `Kullanıcılar` sheet'ini guncellemeye devam eder; kurum icindeki Windows agent ise veriyi Apps Script'ten cekip lokal SQL API'ye yazar.
+
+Apps Script tarafina `../docs/personnel-sync-appscript-snippet.gs` icindeki `exportPersonnelForSync` handler'i eklenir ve Web App yeni surum olarak deploy edilir.
+
+Apps Script Properties:
+
+```text
+PERSONNEL_SYNC_SECRET=backend .env ile ayni secret
+```
+
+Backend `.env`:
+
+```env
+PERSONNEL_SYNC_SECRET=ayni-secret
+```
+
+Windows agent ortam degiskenleri:
+
+```powershell
+[Environment]::SetEnvironmentVariable("PERSONNEL_EXPORT_URL", "https://script.google.com/macros/s/.../exec", "User")
+[Environment]::SetEnvironmentVariable("PERSONNEL_SYNC_SECRET", "ayni-secret", "User")
+[Environment]::SetEnvironmentVariable("ZIMMET_API_URL", "http://localhost:8787/api/action", "User")
+```
+
+Test:
+
+```powershell
+cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet
+.\sync-personnel.ps1 -DryRun
+.\sync-personnel.ps1
+```

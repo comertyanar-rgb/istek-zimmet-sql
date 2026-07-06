@@ -1778,6 +1778,74 @@ function handleBridgeEmail_(data) {
   return jsonOut({ success: true });
 }
 
+function buildPersonnelSyncItemsFromSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("Kullanıcılar");
+  if (!sheet) throw new Error("Kullanıcılar sayfası bulunamadı.");
+
+  var values = sheet.getDataRange().getValues();
+  if (!values || values.length < 2) return [];
+
+  var headers = values[0].map(function(h) { return String(h || "").trim(); });
+  var col = function(names) {
+    for (var i = 0; i < names.length; i++) {
+      var idx = headers.indexOf(names[i]);
+      if (idx > -1) return idx;
+    }
+    return -1;
+  };
+
+  var idCol = col(["Google ID", "User Id", "ID"]);
+  var nameCol = col(["Ad Soyad", "Adı Soyadı", "Kullanıcı", "Name"]);
+  var emailCol = col(["Email", "E-Posta"]);
+  var deptCol = col(["Department", "Departman", "Görev", "Gorev", "Ünvan", "Unvan"]);
+  var campusCol = col(["Kampüs", "Kampus", "Okul"]);
+  var statusCol = col(["Durumu", "Status"]);
+  var photoCol = col(["Profil Fotoğrafı", "Profil Fotografı", "Fotoğraf", "Fotograf", "Photo"]);
+  var adCol = col(["AD Kullanıcı", "AD Kullanici", "AD Kullanıcı Adı", "AD Kullanici Adi", "AD Username", "SamAccountName"]);
+  var phoneCol = col(["Telefon", "Cep Telefonu", "Cep", "Phone"]);
+  var signatureCol = col(["İmza Linki", "Imza Linki", "Signature Link", "SignatureUrl"]);
+
+  var items = [];
+  for (var r = 1; r < values.length; r++) {
+    var row = values[r];
+    var email = emailCol > -1 ? String(row[emailCol] || "").trim() : "";
+    var adUsername = adCol > -1 ? String(row[adCol] || "").trim() : "";
+    var personId = idCol > -1 ? String(row[idCol] || "").trim() : "";
+    if (!personId && !email && !adUsername) continue;
+
+    items.push({
+      personId: personId,
+      fullName: nameCol > -1 ? row[nameCol] : "",
+      email: email,
+      department: deptCol > -1 ? row[deptCol] : "",
+      campus: campusCol > -1 ? row[campusCol] : "",
+      status: statusCol > -1 ? row[statusCol] : "Aktif",
+      photoUrl: photoCol > -1 ? row[photoCol] : "",
+      adUsername: adUsername,
+      phone: phoneCol > -1 ? row[phoneCol] : "",
+      signatureUrl: signatureCol > -1 ? row[signatureCol] : ""
+    });
+  }
+  return items;
+}
+
+function handlePersonnelExportForSync_(data) {
+  var props = PropertiesService.getScriptProperties();
+  var expectedSecret = props.getProperty("PERSONNEL_SYNC_SECRET") || props.getProperty("ZIMMET_PERSONNEL_SYNC_SECRET");
+  if (!expectedSecret || data.secret !== expectedSecret) {
+    return jsonOut({ success: false, error: "Yetkisiz personel export isteği." });
+  }
+
+  var items = buildPersonnelSyncItemsFromSheet_();
+  return jsonOut({
+    success: true,
+    count: items.length,
+    syncedAt: Utilities.formatDate(new Date(), "Europe/Istanbul", "dd.MM.yyyy HH:mm:ss"),
+    items: items
+  });
+}
+
 function buildPersonIndexByAd_(ss) {
   var table = readSheetTable(ss, "Kullanıcılar");
   var headers = table.headers;
@@ -2135,6 +2203,7 @@ function doPost(e) {
     syncGLPI: true,
     uploadGeneratedPdf: true,
     sendBridgeEmail: true,
+    exportPersonnelForSync: true,
     enqueueOperation: true,
     fetchOperationQueue: true,
     runOperationQueue: true,
@@ -2162,6 +2231,10 @@ function doPost(e) {
 
     if (data.action === "sendBridgeEmail") {
       return handleBridgeEmail_(data);
+    }
+
+    if (data.action === "exportPersonnelForSync") {
+      return handlePersonnelExportForSync_(data);
     }
 
     if (data.action === "fetchADPasswordJobs") {

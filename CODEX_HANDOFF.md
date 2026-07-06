@@ -253,9 +253,29 @@ node --check backend/src/config.js
 npm run build
 ```
 
-Siradaki net is:
+DNS hatasi nedeniyle mimari karari guncellendi:
+
+- SQL API disariya acilmayacak.
+- Apps Script Google sunucularinda calistigi icin `http://sunucu:8787` / `localhost` adreslerine erisemez.
+- Form ve Google Admin scriptleri `Kullanıcılar` sheet'ini guncellemeye devam edecek.
+- Kurum icindeki `sync-personnel.ps1` agent'i Apps Script Web App'ten `exportPersonnelForSync` ile veriyi CEKECEK ve lokal SQL API'ye yazacak.
+
+Yeni personel sync akisi:
 
 1. Backend `.env` icine `PERSONNEL_SYNC_SECRET=...` ekle.
-2. Apps Script Properties icine ayni secret'i ve `ZIMMET_SQL_API_URL=http://sunucu:8787/api/action` degerini ekle.
-3. `docs/personnel-sync-appscript-snippet.gs` dosyasindaki helper'i mevcut form ve Google Admin scriptlerine ekle.
-4. Once tek test personeli, sonra tum `Kullanıcılar` listesini SQL'e sync et.
+2. Apps Script Properties icine yalnizca ayni `PERSONNEL_SYNC_SECRET` degerini ekle.
+3. `Code.full.gs` yeni surum deploy edilecek veya `docs/personnel-sync-appscript-snippet.gs` ilgili personel sheet Apps Script'ine eklenecek.
+4. Windows ortam degiskenleri:
+
+```powershell
+[Environment]::SetEnvironmentVariable("PERSONNEL_EXPORT_URL", "https://script.google.com/macros/s/.../exec", "User")
+[Environment]::SetEnvironmentVariable("PERSONNEL_SYNC_SECRET", "ayni-secret", "User")
+[Environment]::SetEnvironmentVariable("ZIMMET_API_URL", "http://localhost:8787/api/action", "User")
+```
+
+5. Test:
+
+```powershell
+.\sync-personnel.ps1 -DryRun
+.\sync-personnel.ps1
+```
