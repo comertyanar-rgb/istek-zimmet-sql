@@ -33,6 +33,29 @@ const actionLabel = (action) => {
   return action || 'İşlem';
 };
 
+const jobSubtitle = (job, payload) => {
+  if (job.kind === 'ad-password' || job.kind === 'signature') return job.detail || '';
+
+  if (job.action === 'GENERATE_TRANSFER_PDF') {
+    const sender = payload?.senderCampus || '-';
+    const receiver = payload?.receiverCampus || '-';
+    const count = Array.isArray(payload?.hardware) ? payload.hardware.length : 0;
+    return `${sender} → ${receiver}${count ? ` / ${count} cihaz` : ''}`;
+  }
+
+  if (job.action === 'GENERATE_ZIMMET_PDF' || job.action === 'GENERATE_RETURN_PDF') {
+    const name = payload?.person?.name || '';
+    const count = Array.isArray(payload?.hardware) ? payload.hardware.length : 0;
+    return [name, count ? `${count} cihaz` : ''].filter(Boolean).join(' / ');
+  }
+
+  if (job.action === 'reconcileGLPI' || job.action === 'RECONCILE_GLPI') {
+    return 'GLPI cihaz eşleşmeleri güncelleniyor';
+  }
+
+  return job.detail || '';
+};
+
 const safeJson = (value) => {
   if (!value || typeof value !== 'string') return null;
   try {
@@ -344,6 +367,8 @@ export const OperationQueueIndicator = ({
           ) : (
             visibleJobs.map((job) => {
               const parsedResult = safeJson(job.result || job.resultJson);
+              const parsedPayload = safeJson(job.payloadJson);
+              const subtitle = jobSubtitle(job, parsedPayload);
               const statusClass =
                 job.status === 'TAMAMLANDI'
                   ? 'bg-green-50 text-green-700 border-green-200'
@@ -366,9 +391,11 @@ export const OperationQueueIndicator = ({
                           {actionLabel(job.action)}
                         </p>
                       </div>
-                      <p className="text-[11px] text-gray-500 mt-1 truncate">
-                        {job.kind === 'ad-password' || job.kind === 'signature' ? job.detail : job.queueId}
-                      </p>
+                      {subtitle && (
+                        <p className="text-[11px] text-gray-500 mt-1 truncate">
+                          {subtitle}
+                        </p>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
                       <span className={`px-2 py-1 rounded-full border text-[10px] font-black ${statusClass}`}>

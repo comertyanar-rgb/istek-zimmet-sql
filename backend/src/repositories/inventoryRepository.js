@@ -2749,7 +2749,8 @@ export async function fetchOperationQueueForUser(user, data = {}) {
 
   return {
     jobs: result.recordset.map((row) => ({
-      queueId: row.QueueId,
+      queueId: row.PublicId,
+      internalQueueId: row.QueueId,
       publicId: row.PublicId,
       actionType: row.ActionType,
       action: row.ActionType,

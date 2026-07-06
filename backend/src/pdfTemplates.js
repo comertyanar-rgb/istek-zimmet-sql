@@ -1,3 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_LOGO_PATH = path.resolve(__dirname, '../../public/logo.png');
+
 function escapeHtml(value) {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -33,14 +40,13 @@ function formatSerial(value) {
   return text;
 }
 
-function hardwareRows(items = []) {
-  return items.map((item, index) => `
-    <tr>
-      <td>${index + 1}</td>
-      <td>${escapeHtml(item.type || 'Cihaz')}</td>
-      <td>${escapeHtml([item.brand, item.model].filter(Boolean).join(' ') || '-')}</td>
-      <td>${escapeHtml(formatSerial(item.serial))}</td>
-    </tr>`).join('');
+function logoHtml() {
+  try {
+    const logoBytes = fs.readFileSync(PUBLIC_LOGO_PATH);
+    return `<img src="data:image/png;base64,${logoBytes.toString('base64')}" style="height:50px;max-width:180px;object-fit:contain;" />`;
+  } catch {
+    return '<h2 style="font-size:18px;margin:0;color:#0066b1;">İSTEK OKULLARI</h2>';
+  }
 }
 
 function legacyHardwareRows(items = [], accessories = []) {
@@ -187,70 +193,81 @@ export function buildZimmetDocumentHtml(payload) {
 
 export function buildTransferDocumentHtml(payload) {
   const isOut = payload.transferDirection === 'out';
-  const title = isOut ? 'TRANSFER ÇIKIŞ TUTANAĞI' : 'TRANSFER TESLİM ALMA TUTANAĞI';
   const today = trDate();
+  const currentTime = trDateTime();
   const signatures = payload.signatures || {};
+  const senderCampus = payload.senderCampus || '-';
+  const receiverCampus = payload.receiverCampus || '-';
+  const targetCampus = isOut ? receiverCampus : receiverCampus;
+  const senderName = isOut
+    ? payload.itName || payload.requestedBy || ''
+    : payload.senderItName || 'Bilgi İşlem Sorumlusu';
+  const receiverName = !isOut
+    ? payload.itName || payload.requestedBy || ''
+    : payload.receiverItName || 'Bilgi İşlem Sorumlusu';
 
   return `<!doctype html>
 <html lang="tr">
 <head>
   <meta charset="utf-8">
   <style>
-    @page { size: A4; margin: 14mm; }
-    body { font-family: Arial, Helvetica, sans-serif; color: #111827; font-size: 11px; line-height: 1.45; }
-    .top { display: flex; align-items: center; justify-content: space-between; border-bottom: 2px solid #0066b1; padding-bottom: 12px; margin-bottom: 18px; }
-    .brand { font-size: 18px; font-weight: 800; color: #0066b1; }
-    .doc-meta { text-align: right; color: #4b5563; font-size: 10px; }
-    h1 { text-align: center; font-size: 17px; margin: 22px 0; text-decoration: underline; }
-    .route { border: 1px solid #d1d5db; background: #f9fafb; padding: 12px; margin-bottom: 18px; font-size: 13px; font-weight: 800; text-align: center; }
-    table.devices { width: 100%; border-collapse: collapse; margin: 16px 0 22px; }
-    .devices th { background: #0066b1; color: white; border: 1px solid #005595; padding: 7px; text-align: left; }
-    .devices td { border: 1px solid #d1d5db; padding: 7px; }
-    .text { font-size: 11.5px; margin: 18px 0; text-align: justify; }
-    .signatures { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 42px; }
-    .sig { text-align: center; min-height: 120px; }
-    .sig-title { font-weight: 800; margin-bottom: 5px; }
-    .sig img { max-height: 74px; max-width: 220px; object-fit: contain; margin-top: 8px; }
-    .legal { margin-top: 42px; border-top: 1px solid #d1d5db; padding-top: 8px; color: #6b7280; font-size: 8px; }
+    @page { size: A4; margin: 12mm; }
+    html, body { margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #000; }
+    * { box-sizing: border-box; }
   </style>
 </head>
-<body>
-  <div class="top">
-    <div class="brand">İSTEK OKULLARI</div>
-    <div class="doc-meta">
-      <div>${escapeHtml(payload.campus || '')}</div>
-      <div>${today}</div>
-      <div>${escapeHtml(payload.queueId || '')}</div>
-    </div>
+<body style="font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #000; line-height: 1.4; padding: 20px 25px;">
+  <div style="margin-bottom: 30px;">${logoHtml()}</div>
+
+  <div style="text-align: center; margin-bottom: 50px;">
+    <h3 style="font-size: 14px; font-weight: bold; margin: 0 0 10px 0;">İSTEK OKULLARI GENEL MÜDÜRLÜĞÜ</h3>
+    <h3 style="font-size: 14px; font-weight: bold; margin: 0 0 10px 0;">BİLGİ İŞLEM DEPARTMANI</h3>
+    <h3 style="font-size: 14px; font-weight: bold; margin: 0; text-decoration: underline;">TRANSFER TESLİM TUTANAĞI</h3>
   </div>
 
-  <h1>${title}</h1>
-  <div class="route">${escapeHtml(payload.senderCampus || '-')} &rarr; ${escapeHtml(payload.receiverCampus || '-')}</div>
+  <p style="text-align: justify; margin-bottom: 30px; text-indent: 30px; font-size: 12px; line-height: 1.5;">
+    İş bu tutanak aşağıda belirtilen marka, model ve seri numarası yazılı donanımlar, İSTEK
+    <strong>${escapeHtml(targetCampus).toLocaleUpperCase('tr-TR')}</strong> bilgi işlem departmanına kullanılmak üzere teslim edilmiştir.
+  </p>
 
-  <table class="devices">
-    <thead><tr><th style="width: 42px;">No</th><th>Tip</th><th>Marka / Model</th><th>Seri No</th></tr></thead>
-    <tbody>${hardwareRows(payload.hardware || [])}</tbody>
+  <table style="width: 100%; border-collapse: collapse; margin-bottom: 40px; font-size: 11px;">
+    <tr style="background-color: #f3f4f6;">
+      <th style="border: 1px solid #000; padding: 8px; text-align: center; width: 10%;">S. NO</th>
+      <th style="border: 1px solid #000; padding: 8px; text-align: center;">CİHAZ TİPİ</th>
+      <th style="border: 1px solid #000; padding: 8px; text-align: center;">MARKA / MODEL</th>
+      <th style="border: 1px solid #000; padding: 8px; text-align: center;">SERİ NO</th>
+    </tr>
+    ${legacyHardwareRows(payload.hardware || [], [])}
   </table>
 
-  <div class="text">
-    Yukarıda belirtilen kurum donanımları <strong>${today}</strong> tarihinde kampüsler arası transfer sürecine ${isOut ? 'çıkarılmıştır' : 'teslim alınmıştır'}.
+  <div style="text-align: right; margin-bottom: 50px; font-weight: bold; font-size: 12px;">
+    İşlem Tarihi: ${escapeHtml(today)}
   </div>
 
-  <div class="signatures">
-    <div class="sig">
-      <div class="sig-title">Teslim Eden</div>
-      <div>${escapeHtml(isOut ? payload.itName || payload.requestedBy || '' : payload.senderItName || 'Bilgi İşlem Sorumlusu')}</div>
-      ${isOut && signatures.transfer ? `<img src="${signatures.transfer}">` : ''}
-    </div>
-    <div class="sig">
-      <div class="sig-title">Teslim Alan</div>
-      <div>${escapeHtml(!isOut ? payload.itName || payload.requestedBy || '' : payload.receiverItName || 'Bilgi İşlem Sorumlusu')}</div>
-      ${!isOut && signatures.transfer ? `<img src="${signatures.transfer}">` : ''}
-    </div>
-  </div>
+  <table style="width: 100%; text-align: center; border: none; margin-top: 20px;">
+    <tr>
+      <td style="width: 50%; border: none; vertical-align: top;">
+        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Eden (Gönderen)</div>
+        <div style="font-size: 12px; margin-bottom: 10px;">${escapeHtml(senderName)}</div>
+        ${isOut && signatures.transfer ? `<img src="${signatures.transfer}" style="height: 60px; max-width: 150px; object-fit: contain;" />` : ''}
+        <div style="font-size: 10px; color: #777; margin-top: 8px;">${escapeHtml(senderCampus)}</div>
+      </td>
+      <td style="width: 50%; border: none; vertical-align: top;">
+        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Alan (Alıcı)</div>
+        <div style="font-size: 12px; margin-bottom: 10px;">${escapeHtml(receiverName)}</div>
+        ${!isOut && signatures.transfer ? `<img src="${signatures.transfer}" style="height: 60px; max-width: 150px; object-fit: contain;" />` : ''}
+        <div style="font-size: 10px; color: #777; margin-top: 8px;">${escapeHtml(receiverCampus)}</div>
+      </td>
+    </tr>
+  </table>
 
-  <div class="legal">
-    DİJİTAL İŞLEM LOGU: İşlemi yapan: ${escapeHtml(payload.requestedBy || '')} | IP (beyan): ${escapeHtml(payload.clientIp || '')}
+  <div style="margin-top: 100px; font-size: 8px; color: #777; border-top: 1px solid #ccc; padding-top: 10px;">
+    <strong>DİJİTAL İŞLEM LOGU:</strong>
+    IP: ${escapeHtml(payload.clientIp || 'Bilinmiyor')} |
+    Zaman: ${escapeHtml(currentTime)} |
+    IT Yetkilisi: ${escapeHtml(payload.requestedBy || '')} |
+    Kuyruk: ${escapeHtml(payload.queueId || '')}
   </div>
 </body>
 </html>`;
