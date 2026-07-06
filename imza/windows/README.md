@@ -151,7 +151,20 @@ SIGNATURE_CALLBACK_URL = http://sunucu-adresi:8787/api/action
 
 ## Gorev Zamanlayici
 
-Windows Task Scheduler'da yeni gorev olustur:
+Onerilen sessiz kurulum:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
+```
+
+Bu komut gorevi `wscript.exe` ile kurar; arka planda calisirken PowerShell penceresi acmaz.
+Test ederken pencereyi gormek istersen:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2 -Visible
+```
+
+Elle kurulum gerekirse Windows Task Scheduler'da yeni gorev olustur:
 
 ```text
 Program/script:

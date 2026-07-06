@@ -52,7 +52,20 @@ pwsh -ExecutionPolicy Bypass -File .\ad\windows\Run-ADPasswordAgent.ps1 -Limit 5
 
 ## Gorev Zamanlayici
 
-Program:
+Onerilen sessiz kurulum:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1
+```
+
+Bu komut gorevi `wscript.exe` ile kurar; arka planda calisirken PowerShell penceresi acmaz.
+Test ederken pencereyi gormek istersen:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1 -Visible
+```
+
+Elle kurulum gerekirse program:
 
 ```text
 C:\Program Files\PowerShell\7\pwsh.exe

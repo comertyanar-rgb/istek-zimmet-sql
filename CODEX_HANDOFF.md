@@ -323,3 +323,37 @@ Mevcut gorev pencere aciyorsa tekrar calistirilacak komut:
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
 ```
+
+## Latest Continuation - 2026-07-06 Silent Agent Tasks
+
+Personel disindaki Windows ajanlari icin de sessiz Task Scheduler kurulumlari eklendi:
+
+- `ad/windows/Install-ADPasswordAgentTask.ps1`
+  - Varsayilan gorev adi: `ISTEK Zimmet AD Password Agent`
+  - Varsayilan aralik: 1 dakika
+  - Varsayilan wrapper: `C:\ZimmetAD\Run-ADPasswordAgentHidden.vbs`
+- `imza/windows/Install-ImzaAgentTask.ps1`
+  - Varsayilan gorev adi: `ISTEK Zimmet Imza Agent`
+  - Varsayilan aralik: 2 dakika
+  - Varsayilan wrapper: `C:\GAMWork\scripts\Run-ImzaAgentHidden.vbs`
+- `glpi/windows/Install-GlpiSyncTask.ps1`
+  - Varsayilan gorev adi: `ISTEK Zimmet GLPI Sync`
+  - Varsayilan aralik: 30 dakika
+  - Varsayilan wrapper: `C:\ZimmetGLPI\Run-GlpiSyncHidden.vbs`
+- `glpi/windows/README.md` eklendi.
+- `ad/windows/README.md`, `imza/windows/README.md` ve root `README.md` sessiz kurulum komutlariyla guncellendi.
+
+Calisan kontroller:
+
+```powershell
+$files = @('.\ad\windows\Install-ADPasswordAgentTask.ps1','.\imza\windows\Install-ImzaAgentTask.ps1','.\glpi\windows\Install-GlpiSyncTask.ps1','.\personnel\windows\Install-PersonnelSyncTask.ps1','.\sync-glpi.ps1','.\sync-personnel.ps1'); foreach ($file in $files) { $errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { exit 1 } }
+npm run build
+```
+
+Yeni gorevleri kurmak/guncellemek icin:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1
+powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
+powershell.exe -ExecutionPolicy Bypass -File ".\glpi\windows\Install-GlpiSyncTask.ps1" -IntervalMinutes 30
+```

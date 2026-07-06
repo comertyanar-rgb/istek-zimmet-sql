@@ -82,6 +82,7 @@ GLPI:
 
 ```powershell
 .\sync-glpi.ps1
+powershell.exe -ExecutionPolicy Bypass -File ".\glpi\windows\Install-GlpiSyncTask.ps1" -IntervalMinutes 30
 ```
 
 Personel:
@@ -89,12 +90,14 @@ Personel:
 ```powershell
 .\sync-personnel.ps1 -DryRun
 .\sync-personnel.ps1
+powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
 ```
 
 Imza:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1"
+powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
 ```
 
 AD sifre sifirlama ajani SQL API'deki `fetchADPasswordJobs` ve
@@ -102,9 +105,12 @@ AD sifre sifirlama ajani SQL API'deki `fetchADPasswordJobs` ve
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File ".\ad\windows\Run-ADPasswordAgent.ps1" -WhatIfOnly -Limit 1
+powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1
 ```
 
 Kurulum ayrintisi: `ad/windows/README.md`
+
+GLPI sync kurulum ayrintisi: `glpi/windows/README.md`
 
 Personel sync kurulum ayrintisi: `personnel/windows/README.md`
 
