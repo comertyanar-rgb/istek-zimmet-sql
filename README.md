@@ -117,6 +117,19 @@ Personel sync kurulum ayrintisi: `personnel/windows/README.md`
 
 Backend startup kurulum ayrintisi: `backend/windows/README.md`
 
+Mevcut Windows gorevlerini denetlemek ve eski dogrudan PowerShell/Node calisan
+gorevleri ayirt etmek icin:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1"
+```
+
+Rapor `ESKI_ADAY` olarak isaretlediklerini once devre disi birakmak istersen:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1" -DisableLegacy
+```
+
 ## Not
 
 Canliya gecmeden once localde su akislari uctan uca test edin:

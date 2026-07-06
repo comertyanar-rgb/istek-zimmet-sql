@@ -382,3 +382,36 @@ powershell.exe -ExecutionPolicy Bypass -File ".\windows\Install-BackendStartupTa
 
 Backend zaten terminalde aciksa ikinci kopya `EADDRINUSE` / port dolu hatasi
 uretebilir. Gorevi test etmeden once elle acik backend terminalini kapatmak daha temizdir.
+
+## Latest Continuation - 2026-07-06 Scheduled Task Audit
+
+Eski ve yeni Windows gorevlerini karistirmamak icin denetim script'i eklendi:
+
+- `windows/Audit-ZimmetScheduledTasks.ps1`
+  - Varsayilan mod sadece rapor verir.
+  - `YENI_SESSIZ`: yeni installer ile `wscript.exe` uzerinden sessiz calisan gorev.
+  - `YENI_AMA_GORUNUR`: yeni isimli ama dogrudan PowerShell/Node calisan gorev.
+  - `ESKI_ADAY`: eski dogrudan PowerShell/Node calisan ve kapatilmasi gereken aday.
+  - `KONTROL_ET`: ilgili gorunen ama otomatik kapatilmamasi gereken gorev.
+  - `-DisableLegacy` sadece `ESKI_ADAY` gorevleri devre disi birakir.
+  - Turkce Windows'ta `imza` / `Imza` eslesmesi icin kulturden bagimsiz kontrol kullanildi.
+
+Calisan kontroller:
+
+```powershell
+$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\windows\Audit-ZimmetScheduledTasks.ps1), [ref]$tokens, [ref]$errors)
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1"
+npm run build
+```
+
+Audit sonucunda gorulen mevcut durum:
+
+- `imza`: `ESKI_ADAY` (dogrudan `powershell.exe` ile calisiyor)
+- `Zimmet AD Password Reset Agent`: `KONTROL_ET` (`wscript.exe` kullaniyor ama yeni standart isimde degil)
+- `ISTEK Zimmet Personnel Sync`: `YENI_SESSIZ`
+
+Eski imza gorevini kapatmak icin:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1" -DisableLegacy
+```
