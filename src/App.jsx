@@ -1587,6 +1587,54 @@ setTimeout(() => setSuccessMessage(null), 2500);
       .trim(); // Başındaki ve sonundaki boşlukları atar
   };
 
+  const getCleanGlpiCampusLabel = (value) => {
+    const raw = value === null || value === undefined ? '' : String(value).trim();
+    const rawLower = toTrLower(raw);
+    if (
+      !raw ||
+      raw === '-' ||
+      raw === '0' ||
+      /^\d+$/.test(raw) ||
+      ['bilinmiyor', 'yok', 'null', 'undefined'].includes(rawLower)
+    ) {
+      return '';
+    }
+
+    const withoutCampusWord = raw
+      .replace(/kampüsü/gi, '')
+      .replace(/kampusu/gi, '')
+      .replace(/kampüs/gi, '')
+      .replace(/kampus/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const core = toTrLower(withoutCampusWord);
+    if (!core) return '';
+
+    const officialCampus = Object.keys(CAMPUS_CODES).find((campusName) => {
+      const officialCore = toTrLower(
+        campusName
+          .replace(/kampüsü/gi, '')
+          .replace(/kampusu/gi, '')
+          .replace(/kampüs/gi, '')
+          .replace(/kampus/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      );
+      return officialCore === core;
+    });
+
+    if (officialCampus) {
+      return officialCampus.replace(/\s*Kampüsü\s*$/i, '').trim();
+    }
+
+    return withoutCampusWord
+      .split(' ')
+      .filter(Boolean)
+      .map((word) => word.charAt(0).toLocaleUpperCase('tr-TR') + word.slice(1).toLocaleLowerCase('tr-TR'))
+      .join(' ');
+  };
+
   const isSignatureEligiblePerson = (person) => {
     const status = String(person?.status || 'Aktif').toLocaleLowerCase('tr-TR');
     return !status.includes('pasif') &&
@@ -1653,9 +1701,26 @@ setTimeout(() => setSuccessMessage(null), 2500);
   }, [missingGlpiDevices]);
 
   const missingGlpiCampusOptions = useMemo(() => {
-    const values = Array.from(new Set(missingGlpiDevices.map((item) => item.inferredCampus).filter(Boolean)));
+    const byCore = new Map();
+    missingGlpiDevices.forEach((item) => {
+      const label = getCleanGlpiCampusLabel(item.inferredCampus);
+      if (!label) return;
+      const core = getCoreCampusName(label);
+      if (!core || byCore.has(core)) return;
+      byCore.set(core, label);
+    });
+    const values = Array.from(byCore.values());
     return ['All', ...values.sort((a, b) => a.localeCompare(b, 'tr'))];
   }, [missingGlpiDevices]);
+
+  useEffect(() => {
+    if (
+      missingGlpiFilterCampus !== 'All' &&
+      !missingGlpiCampusOptions.includes(missingGlpiFilterCampus)
+    ) {
+      setMissingGlpiFilterCampus('All');
+    }
+  }, [missingGlpiCampusOptions, missingGlpiFilterCampus]);
 
   const displayMissingGlpiDevices = useMemo(() => {
     const query = toTrLower(missingGlpiSearchQuery).trim();

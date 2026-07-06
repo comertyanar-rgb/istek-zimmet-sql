@@ -34,6 +34,12 @@ export const GlpiMissingTab = ({
   renderDeviceTypeIcon,
   setViewingPersonId,
 }) => {
+  const formatCampusLabel = (value) => {
+    const raw = value === null || value === undefined ? '' : String(value).trim();
+    if (!raw || raw === '-' || raw === '0' || /^\d+$/.test(raw)) return '-';
+    return raw.replace(/Kampüsü|Kampusu|Kampüs|Kampus/gi, '').trim() || '-';
+  };
+
   const allVisibleSelected =
     displayMissingGlpiDevices.length > 0 &&
     displayMissingGlpiDevices.every((item) => selectedMissingGlpiIds.includes(item.glpiId));
@@ -300,7 +306,7 @@ export const GlpiMissingTab = ({
                         {item.matchedPersonName && item.adUser && <p className="text-xs text-gray-500">{item.adUser}</p>}
                       </td>
                       <td className="p-4">
-                        <p className="font-semibold text-gray-800">{item.inferredCampus || '-'}</p>
+                        <p className="font-semibold text-gray-800">{formatCampusLabel(item.inferredCampus)}</p>
                         <p className="text-xs text-gray-500">{item.deviceType || 'Tip bulunamadı'}</p>
                       </td>
                       <td className="p-4 text-sm text-gray-500">{item.lastSync || '-'}</td>
@@ -365,9 +371,9 @@ export const GlpiMissingTab = ({
                           {item.computerName || '-'}
                         </p>
                         {/* KAMPÜS ROZETİ (Personel sekmesindeki gibi sağ üstte) */}
-                        {item.inferredCampus && (
+                        {formatCampusLabel(item.inferredCampus) !== '-' && (
                           <span className="shrink-0 text-[9px] bg-gray-100 text-gray-500 px-2 py-1 rounded-md font-bold uppercase tracking-wider border border-gray-200">
-                            {item.inferredCampus.replace(/Kampüsü|Kamp?su/gi, '').trim()}
+                            {formatCampusLabel(item.inferredCampus)}
                           </span>
                         )}
                       </div>
