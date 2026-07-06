@@ -11,10 +11,28 @@ param(
   [string]$PersonnelExportUrl = $(if ($env:PERSONNEL_EXPORT_URL) { $env:PERSONNEL_EXPORT_URL } else { $env:ZIMMET_PERSONNEL_EXPORT_URL }),
   [string]$ZimmetApiUrl = $(if ($env:ZIMMET_API_URL) { $env:ZIMMET_API_URL } else { "http://localhost:8787/api/action" }),
   [int]$BatchSize = 500,
-  [switch]$DryRun
+  [string]$LogPath = $(if ($env:PERSONNEL_SYNC_LOG) { $env:PERSONNEL_SYNC_LOG } else { "" }),
+  [switch]$DryRun,
+  [switch]$LogSuccess
 )
 
 $ErrorActionPreference = "Stop"
+
+function Write-SyncLog {
+  param([string]$Message)
+  if ([string]::IsNullOrWhiteSpace($LogPath)) { return }
+  $dir = Split-Path -Parent $LogPath
+  if (-not [string]::IsNullOrWhiteSpace($dir)) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  }
+  $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message"
+  Add-Content -Path $LogPath -Value $line -Encoding UTF8
+}
+
+trap {
+  Write-SyncLog "ERROR $($_.Exception.Message)"
+  throw
+}
 
 $SyncSecret = if ($env:PERSONNEL_SYNC_SECRET) {
   $env:PERSONNEL_SYNC_SECRET
@@ -81,6 +99,7 @@ if (-not $exportResult.success) {
 $items = @($exportResult.items)
 
 if ($DryRun) {
+  Write-SyncLog "DRYRUN exportCount=$($items.Count) exportedAt=$($exportResult.syncedAt)"
   [pscustomobject]@{
     success = $true
     mode = "dry-run"
@@ -125,7 +144,7 @@ for ($start = 0; $start -lt $items.Count; $start += $BatchSize) {
   }
 }
 
-[pscustomobject]@{
+$summary = [pscustomobject]@{
   success = $true
   exportCount = $items.Count
   inserted = $inserted
@@ -134,3 +153,9 @@ for ($start = 0; $start -lt $items.Count; $start += $BatchSize) {
   warningCount = $warnings.Count
   warnings = @($warnings.ToArray())
 }
+
+if ($LogSuccess -or $inserted -gt 0 -or $skipped -gt 0 -or $warnings.Count -gt 0) {
+  Write-SyncLog "OK exportCount=$($items.Count) inserted=$inserted updated=$updated skipped=$skipped warnings=$($warnings.Count)"
+}
+
+$summary

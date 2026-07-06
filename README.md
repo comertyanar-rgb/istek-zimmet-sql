@@ -8,6 +8,7 @@ Bu repo su parcalari icerir:
 - Yerel SQL Server API (`backend/`)
 - SQL sema ve gecis scriptleri (`sql/`, `backend/sql/`)
 - GLPI senkron PowerShell ajani (`sync-glpi.ps1`)
+- Personel senkron PowerShell ajani (`sync-personnel.ps1`)
 - Imza Photoshop/GAM ajani (`imza/windows/`)
 - AD sifre sifirlama ajani (`ad/windows/`)
 - Apps Script gecis/kopru kodlari (`Code.full.gs`, `*.gs`)
@@ -83,6 +84,13 @@ GLPI:
 .\sync-glpi.ps1
 ```
 
+Personel:
+
+```powershell
+.\sync-personnel.ps1 -DryRun
+.\sync-personnel.ps1
+```
+
 Imza:
 
 ```powershell
@@ -97,6 +105,8 @@ pwsh -ExecutionPolicy Bypass -File ".\ad\windows\Run-ADPasswordAgent.ps1" -WhatI
 ```
 
 Kurulum ayrintisi: `ad/windows/README.md`
+
+Personel sync kurulum ayrintisi: `personnel/windows/README.md`
 
 ## Not
 

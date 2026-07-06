@@ -279,3 +279,33 @@ Yeni personel sync akisi:
 .\sync-personnel.ps1 -DryRun
 .\sync-personnel.ps1
 ```
+
+## Latest Continuation - 2026-07-06
+
+Personel sync agent otomasyon destegi eklendi:
+
+- `sync-personnel.ps1` zamanlayiciya uygun hale getirildi.
+  - `-LogPath` parametresi eklendi.
+  - `-LogSuccess` opsiyonel basari logu eklendi.
+  - Hata olursa loga `ERROR ...` yazar.
+- `personnel/windows/Install-PersonnelSyncTask.ps1` eklendi.
+  - Varsayilan gorev adi: `ISTEK Zimmet Personnel Sync`
+  - Varsayilan calisma araligi: 5 dakika
+  - Varsayilan log: `C:\ZimmetPersonnel\personnel-sync.log`
+- `personnel/windows/README.md` eklendi.
+  - SQL API disari acilmadan personel sync akisinin nasil calisacagini anlatir.
+- Root `README.md` agent listesine personel sync eklendi.
+
+Kontrol komutlari:
+
+```powershell
+$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\sync-personnel.ps1), [ref]$tokens, [ref]$errors)
+$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\personnel\windows\Install-PersonnelSyncTask.ps1), [ref]$tokens, [ref]$errors)
+```
+
+Siradaki pratik test:
+
+```powershell
+.\sync-personnel.ps1 -DryRun
+powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
+```
