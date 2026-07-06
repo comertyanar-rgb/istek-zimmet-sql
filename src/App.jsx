@@ -1310,6 +1310,32 @@ setTimeout(() => setSuccessMessage(null), 2500);
     }
   }, [currentUser]);
 
+  useEffect(() => {
+    if (!currentUser?.token) return undefined;
+
+    let lastSyncAt = Date.now();
+    const syncQuietly = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastSyncAt < 45000) return;
+      lastSyncAt = now;
+      fetchVeritabani(false);
+    };
+
+    const intervalId = window.setInterval(syncQuietly, 90000);
+    const handleFocus = () => syncQuietly();
+    const handleVisibilityChange = () => syncQuietly();
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [currentUser?.token]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // --- XLSX VE GOOGLE SHEETS EXPORT FONKSIYONLARI ---
   // --- XLSX VE GOOGLE SHEETS EXPORT FONKSIYONLARI ---
   const getFormattedDataForExport = (data, type) => {

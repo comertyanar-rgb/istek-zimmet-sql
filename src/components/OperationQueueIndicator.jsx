@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Trash2,
   X,
 } from 'lucide-react';
 
@@ -41,6 +42,28 @@ const safeJson = (value) => {
   }
 };
 
+const formatDateTime = (value) => {
+  if (!value) return '-';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+      .replace('T', ' ')
+      .replace(/\.\d{3}Z?$/, '')
+      .replace(/Z$/, '');
+  }
+
+  return new Intl.DateTimeFormat('tr-TR', {
+    timeZone: 'Europe/Istanbul',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+};
+
+const isTerminalStatus = (status) => status === 'TAMAMLANDI' || status === 'HATA';
+
 export const OperationQueueIndicator = ({
   currentUser,
   gasUrl,
@@ -53,7 +76,25 @@ export const OperationQueueIndicator = ({
   const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
+  const [dismissedKeys, setDismissedKeys] = useState(() => new Set());
   const previousJobsRef = useRef(new Map());
+
+  const storageKey = currentUser?.email
+    ? `istek_operation_queue_dismissed:${currentUser.email}`
+    : 'istek_operation_queue_dismissed:anonymous';
+
+  const getJobKey = (job) => `${job.kind}:${job.queueId}`;
+
+  const persistDismissedKeys = (nextKeys) => {
+    const limited = Array.from(nextKeys).slice(-200);
+    const nextSet = new Set(limited);
+    setDismissedKeys(nextSet);
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(limited));
+    } catch {
+      // LocalStorage dolu veya kapalıysa sadece bu oturumda gizlenir.
+    }
+  };
 
   const fetchQueue = async ({ silent = true } = {}) => {
     if (!currentUser?.token) return;
@@ -153,13 +194,28 @@ export const OperationQueueIndicator = ({
     return () => window.clearInterval(interval);
   }, [currentUser?.token]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      setDismissedKeys(new Set(Array.isArray(parsed) ? parsed : []));
+    } catch {
+      setDismissedKeys(new Set());
+    }
+  }, [storageKey]);
+
+  const visibleJobs = useMemo(
+    () => jobs.filter((job) => !dismissedKeys.has(getJobKey(job))),
+    [jobs, dismissedKeys]
+  );
+
   const summary = useMemo(() => {
-    const waiting = jobs.filter((job) => job.status === 'BEKLIYOR').length;
-    const processing = jobs.filter((job) => job.status === 'ISLENIYOR').length;
-    const failed = jobs.filter((job) => job.status === 'HATA').length;
+    const waiting = visibleJobs.filter((job) => job.status === 'BEKLIYOR').length;
+    const processing = visibleJobs.filter((job) => job.status === 'ISLENIYOR').length;
+    const failed = visibleJobs.filter((job) => job.status === 'HATA').length;
     const active = waiting + processing;
     return { waiting, processing, failed, active };
-  }, [jobs]);
+  }, [visibleJobs]);
 
   const shouldShowButton = alwaysVisible || summary.active > 0 || summary.failed > 0 || open;
   if (!shouldShowButton) return null;
@@ -193,6 +249,21 @@ export const OperationQueueIndicator = ({
     }
   };
 
+  const dismissJob = (job) => {
+    if (!isTerminalStatus(job.status)) return;
+    const next = new Set(dismissedKeys);
+    next.add(getJobKey(job));
+    persistDismissedKeys(next);
+  };
+
+  const dismissCompletedJobs = () => {
+    const next = new Set(dismissedKeys);
+    visibleJobs.forEach((job) => {
+      if (isTerminalStatus(job.status)) next.add(getJobKey(job));
+    });
+    persistDismissedKeys(next);
+  };
+
   const panelPositionClass = isMobile
     ? 'left-4 right-4 top-20 w-auto max-w-none'
     : 'left-3 bottom-[104px] top-auto right-auto w-[min(420px,calc(100vw-24px))] max-w-sm';
@@ -218,6 +289,17 @@ export const OperationQueueIndicator = ({
             </p>
           </div>
           <div className="flex items-center gap-1.5">
+            {visibleJobs.some((job) => isTerminalStatus(job.status)) && (
+              <button
+                type="button"
+                onClick={dismissCompletedJobs}
+                className="h-8 px-2.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 flex items-center gap-1.5 text-[11px] font-black"
+                title="Tamamlanan ve hatalı bildirimleri gizle"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Temizle</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={() => fetchQueue({ silent: false })}
@@ -255,12 +337,12 @@ export const OperationQueueIndicator = ({
         )}
 
         <div className="max-h-[min(64vh,520px)] overflow-y-auto p-3 space-y-2">
-          {jobs.length === 0 ? (
+          {visibleJobs.length === 0 ? (
             <div className="py-8 text-center text-sm text-gray-500">
               Kuyrukta işlem yok.
             </div>
           ) : (
-            jobs.map((job) => {
+            visibleJobs.map((job) => {
               const parsedResult = safeJson(job.result || job.resultJson);
               const statusClass =
                 job.status === 'TAMAMLANDI'
@@ -288,19 +370,31 @@ export const OperationQueueIndicator = ({
                         {job.kind === 'ad-password' || job.kind === 'signature' ? job.detail : job.queueId}
                       </p>
                     </div>
-                    <span className={`px-2 py-1 rounded-full border text-[10px] font-black shrink-0 ${statusClass}`}>
-                      {statusLabel(job.status)}
-                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={`px-2 py-1 rounded-full border text-[10px] font-black ${statusClass}`}>
+                        {statusLabel(job.status)}
+                      </span>
+                      {isTerminalStatus(job.status) && (
+                        <button
+                          type="button"
+                          onClick={() => dismissJob(job)}
+                          className="w-6 h-6 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center"
+                          title="Bu bildirimi gizle"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
                     <div className="rounded-lg bg-gray-50 px-2 py-1.5">
                       <span className="block text-gray-400 font-bold">Oluşturma</span>
-                      <span className="font-bold text-gray-700">{job.createdAt || '-'}</span>
+                      <span className="font-bold text-gray-700">{formatDateTime(job.createdAt)}</span>
                     </div>
                     <div className="rounded-lg bg-gray-50 px-2 py-1.5">
                       <span className="block text-gray-400 font-bold">Son Güncelleme</span>
-                      <span className="font-bold text-gray-700">{job.updatedAt || '-'}</span>
+                      <span className="font-bold text-gray-700">{formatDateTime(job.updatedAt)}</span>
                     </div>
                   </div>
 
