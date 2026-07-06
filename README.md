@@ -30,6 +30,7 @@ cd backend
 copy .env.example .env
 npm install
 npm run dev
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Install-BackendStartupTask.ps1"
 ```
 
 SQL API testinde frontend `.env` icinde:
@@ -113,6 +114,8 @@ Kurulum ayrintisi: `ad/windows/README.md`
 GLPI sync kurulum ayrintisi: `glpi/windows/README.md`
 
 Personel sync kurulum ayrintisi: `personnel/windows/README.md`
+
+Backend startup kurulum ayrintisi: `backend/windows/README.md`
 
 ## Not
 

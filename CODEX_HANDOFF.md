@@ -357,3 +357,28 @@ powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAge
 powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
 powershell.exe -ExecutionPolicy Bypass -File ".\glpi\windows\Install-GlpiSyncTask.ps1" -IntervalMinutes 30
 ```
+
+## Latest Continuation - 2026-07-06 Backend Startup Task
+
+Backend ve PDF worker ayni Node sureci icinde calistigi icin canli kullanimda
+backend'in elle acik bir PowerShell penceresine bagli kalmamasi gerekiyor.
+
+Eklenen dosyalar:
+
+- `backend/windows/Install-BackendStartupTask.ps1`
+  - Varsayilan gorev adi: `ISTEK Zimmet SQL API`
+  - Varsayilan tetikleyici: kullanici oturum acinca
+  - `-AtStartup` ile bilgisayar acilisinda calisacak sekilde kurulabilir
+  - Varsayilan wrapper: `C:\ZimmetBackend\Run-BackendHidden.vbs`
+  - Varsayilan log: `C:\ZimmetBackend\backend.log`
+- `backend/windows/README.md`
+
+Kurulum komutu:
+
+```powershell
+cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend
+powershell.exe -ExecutionPolicy Bypass -File ".\windows\Install-BackendStartupTask.ps1"
+```
+
+Backend zaten terminalde aciksa ikinci kopya `EADDRINUSE` / port dolu hatasi
+uretebilir. Gorevi test etmeden once elle acik backend terminalini kapatmak daha temizdir.
