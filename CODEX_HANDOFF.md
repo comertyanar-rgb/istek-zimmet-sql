@@ -309,3 +309,17 @@ Siradaki pratik test:
 .\sync-personnel.ps1 -DryRun
 powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
 ```
+## Latest Continuation - 2026-07-06 Silent Personnel Task
+
+Personel sync gorevi ekranda PowerShell penceresi acmasin diye guncellendi:
+
+- `personnel/windows/Install-PersonnelSyncTask.ps1` varsayilan olarak `wscript.exe` kullanir.
+- Installer `C:\ZimmetPersonnel\Run-PersonnelSyncHidden.vbs` wrapper'ini olusturur.
+- Wrapper PowerShell'i `windowStyle=0` ile gizli baslatir.
+- Gorunur calistirma gerekirse installer `-Visible` parametresiyle calistirilabilir.
+
+Mevcut gorev pencere aciyorsa tekrar calistirilacak komut:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
+```

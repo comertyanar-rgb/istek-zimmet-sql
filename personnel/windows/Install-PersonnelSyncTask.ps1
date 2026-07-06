@@ -1,11 +1,14 @@
 # Installs/updates the Windows Scheduled Task for Google Sheet -> SQL personnel sync.
+# Default mode is silent: the task runs wscript.exe, which starts PowerShell hidden.
 
 param(
   [string]$TaskName = "ISTEK Zimmet Personnel Sync",
   [int]$IntervalMinutes = 5,
   [string]$ScriptPath = "",
   [string]$LogPath = "C:\ZimmetPersonnel\personnel-sync.log",
-  [string]$WorkingDirectory = ""
+  [string]$WorkingDirectory = "",
+  [string]$WrapperPath = "C:\ZimmetPersonnel\Run-PersonnelSyncHidden.vbs",
+  [switch]$Visible
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,7 +46,31 @@ $quotedScript = '"' + $ScriptPath + '"'
 $quotedLog = '"' + $LogPath + '"'
 $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $quotedScript -LogPath $quotedLog"
 
-$action = New-ScheduledTaskAction -Execute $pwsh.Source -Argument $arguments -WorkingDirectory $WorkingDirectory
+if ($Visible) {
+  $action = New-ScheduledTaskAction -Execute $pwsh.Source -Argument $arguments -WorkingDirectory $WorkingDirectory
+} else {
+  $wrapperDir = Split-Path -Parent $WrapperPath
+  if (-not [string]::IsNullOrWhiteSpace($wrapperDir)) {
+    New-Item -ItemType Directory -Force -Path $wrapperDir | Out-Null
+  }
+
+  $hiddenCommand = '"' + $pwsh.Source + '" ' + $arguments
+  $escapedHiddenCommand = $hiddenCommand.Replace('"', '""')
+  $escapedWorkingDirectory = $WorkingDirectory.Replace('"', '""')
+  $wrapperContent = @"
+Option Explicit
+Dim shell
+Set shell = CreateObject("WScript.Shell")
+shell.CurrentDirectory = "$escapedWorkingDirectory"
+shell.Run "$escapedHiddenCommand", 0, False
+"@
+
+  Set-Content -Path $WrapperPath -Value $wrapperContent -Encoding ASCII
+
+  $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
+  $action = New-ScheduledTaskAction -Execute $wscript -Argument ('"' + $WrapperPath + '"') -WorkingDirectory $WorkingDirectory
+}
+
 $trigger = New-ScheduledTaskTrigger `
   -Once `
   -At (Get-Date).AddMinutes(1) `
@@ -61,7 +88,7 @@ Register-ScheduledTask `
   -Action $action `
   -Trigger $trigger `
   -Settings $settings `
-  -Description "ISTEK Zimmet Kullanıcılar Sheet -> SQL personel senkronizasyonu" `
+  -Description "ISTEK Zimmet Kullanicilar Sheet -> SQL personel senkronizasyonu" `
   -Force | Out-Null
 
 [pscustomobject]@{
@@ -70,4 +97,7 @@ Register-ScheduledTask `
   intervalMinutes = $IntervalMinutes
   scriptPath = $ScriptPath
   logPath = $LogPath
+  hidden = -not $Visible
+  wrapperPath = if ($Visible) { "" } else { $WrapperPath }
 }
+

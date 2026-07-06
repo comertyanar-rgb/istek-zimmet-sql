@@ -1,18 +1,18 @@
 # Personnel Sync Agent
 
-Bu ajan Google Sheet `Kullanıcılar` sayfasını SQL Server'daki `Personnel`
+Bu ajan Google Sheet `Kullanicilar` sayfasini SQL Server'daki `Personnel`
 tablosuna senkronlar.
 
 ## Mimari
 
 SQL API disariya acilmadigi icin Apps Script `http://sunucu:8787` veya
-`localhost` adresine erisemez. Bu nedenle Apps Script sadece `Kullanıcılar`
+`localhost` adresine erisemez. Bu nedenle Apps Script sadece `Kullanicilar`
 sayfasini JSON olarak disari verir; kurum icindeki Windows ajan bu JSON'u ceker
 ve lokal SQL API'ye yazar.
 
 ```text
 Form / Google Admin Script
-  -> Kullanıcılar Sheet
+  -> Kullanicilar Sheet
   -> Apps Script exportPersonnelForSync
   -> sync-personnel.ps1
   -> http://localhost:8787/api/action
@@ -67,6 +67,19 @@ Tek komutla 5 dakikada bir calisan gorev kur:
 powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
 ```
 
+Varsayilan olarak gorev sessiz calisir. Installer, gorev action'ini `wscript.exe`
+uzerinden gizli VBS wrapper'a baglar; bu sayede PowerShell penceresi ekranda
+acilip kapanmaz.
+
+Mevcut gorev pencere aciyorsa ayni installer komutunu tekrar calistir. `-Force`
+ile gorev action'i guncellenir.
+
+Gorunur calistirmak istersen:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5 -Visible
+```
+
 Varsayilan gorev:
 
 ```text
@@ -77,6 +90,12 @@ Varsayilan log:
 
 ```text
 C:\ZimmetPersonnel\personnel-sync.log
+```
+
+Varsayilan gizli wrapper:
+
+```text
+C:\ZimmetPersonnel\Run-PersonnelSyncHidden.vbs
 ```
 
 Gorev sadece hata, yeni eklenen, atlanan veya uyarili durumlari loglar. Her
