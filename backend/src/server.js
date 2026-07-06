@@ -18,7 +18,25 @@ const logger = pino({
 
 const app = express();
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'", 'https://accounts.google.com', 'https://cdnjs.cloudflare.com'],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://accounts.google.com'],
+        imgSrc: ["'self'", 'data:', 'blob:', 'https://*.googleusercontent.com', 'https://lh3.googleusercontent.com'],
+        connectSrc: ["'self'", 'https://accounts.google.com', 'https://www.googleapis.com', 'https://oauth2.googleapis.com', 'https://api.ipify.org'],
+        frameSrc: ["'self'", 'https://accounts.google.com'],
+        fontSrc: ["'self'", 'data:'],
+        formAction: ["'self'"]
+      }
+    },
+    crossOriginOpenerPolicy: false
+  })
+);
 app.use(
   cors({
     origin(origin, callback) {
@@ -67,6 +85,33 @@ app.post('/api/action', async (req, res) => {
     res.status(500).json({ success: false, error: error.message || 'Sunucu hatasi.' });
   }
 });
+
+if (config.frontend.serveEnabled) {
+  const defaultDistDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist');
+  const frontendDistDir = config.frontend.distDir
+    ? path.resolve(config.frontend.distDir)
+    : defaultDistDir;
+
+  app.use(
+    express.static(frontendDistDir, {
+      index: false,
+      setHeaders(res, filePath) {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('cache-control', 'no-store');
+          return;
+        }
+        res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+      }
+    })
+  );
+
+  app.get('*', (_req, res, next) => {
+    res.setHeader('cache-control', 'no-store');
+    res.sendFile(path.join(frontendDistDir, 'index.html'), (error) => {
+      if (error) next(error);
+    });
+  });
+}
 
 app.use((_req, res) => {
   res.status(404).json({ success: false, error: 'Endpoint bulunamadi.' });

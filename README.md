@@ -130,6 +130,47 @@ Rapor `ESKI_ADAY` olarak isaretlediklerini once devre disi birakmak istersen:
 powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1" -DisableLegacy
 ```
 
+## Dis Erisim / Cloudflare Tunnel
+
+Mobil ve dis ag erisimi icin onerilen pilot yapi tek domain uzerinden calisir:
+
+```text
+https://zimmet.example.com
+  -> Cloudflare Tunnel
+  -> http://localhost:8787
+     -> React dist
+     -> /api/action SQL API
+```
+
+Bu yapi icin frontend build'i repo kokunde uretilir:
+
+```powershell
+npm run build
+```
+
+Backend `.env` canli testte su sekilde ayarlanir:
+
+```env
+NODE_ENV=production
+API_PUBLIC_URL=https://zimmet.example.com
+CORS_ORIGINS=https://zimmet.example.com
+SERVE_FRONTEND=true
+QUEUE_WORKER_ENABLED=true
+```
+
+Frontend `.env` icindeki API adresi ayni domaini gostermelidir:
+
+```env
+VITE_API_URL=https://zimmet.example.com/api/action
+```
+
+Google OAuth tarafinda ayni adres `Authorized JavaScript origins` listesine
+eklenmelidir:
+
+```text
+https://zimmet.example.com
+```
+
 ## Not
 
 Canliya gecmeden once localde su akislari uctan uca test edin:

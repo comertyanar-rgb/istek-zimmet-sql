@@ -76,6 +76,10 @@ export const config = {
     maxJobsPerRun: Number(process.env.QUEUE_MAX_JOBS_PER_RUN || 2),
     generatedPdfDir: process.env.GENERATED_PDF_DIR || ''
   },
+  frontend: {
+    serveEnabled: bool(process.env.SERVE_FRONTEND, false),
+    distDir: process.env.FRONTEND_DIST_DIR || ''
+  },
   exports: {
     dir: process.env.GENERATED_EXPORT_DIR || ''
   },
