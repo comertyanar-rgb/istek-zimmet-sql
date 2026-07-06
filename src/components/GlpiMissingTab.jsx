@@ -40,6 +40,21 @@ export const GlpiMissingTab = ({
     return raw.replace(/Kampüsü|Kampusu|Kampüs|Kampus/gi, '').trim() || '-';
   };
 
+  const formatDateTime = (value) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+
+    return new Intl.DateTimeFormat('tr-TR', {
+      timeZone: 'Europe/Istanbul',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  };
+
   const allVisibleSelected =
     displayMissingGlpiDevices.length > 0 &&
     displayMissingGlpiDevices.every((item) => selectedMissingGlpiIds.includes(item.glpiId));
@@ -309,7 +324,7 @@ export const GlpiMissingTab = ({
                         <p className="font-semibold text-gray-800">{formatCampusLabel(item.inferredCampus)}</p>
                         <p className="text-xs text-gray-500">{item.deviceType || 'Tip bulunamadı'}</p>
                       </td>
-                      <td className="p-4 text-sm text-gray-500">{item.lastSync || '-'}</td>
+                      <td className="p-4 text-sm text-gray-500">{formatDateTime(item.lastSync)}</td>
                     </tr>
                   );
                 })}

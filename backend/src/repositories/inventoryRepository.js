@@ -182,6 +182,12 @@ function normalizeAdLogin(value) {
   return login;
 }
 
+function deriveAdUsernameFromEmail(value) {
+  const email = normalizeEmail(value);
+  if (!email.endsWith('@istek.k12.tr')) return '';
+  return normalizeAdLogin(email);
+}
+
 const FALLBACK_CAMPUS_CODES = {
   AO: 'Atanur Oğuz Kampüsü',
   AB: 'Acıbadem Kampüsü',
@@ -369,7 +375,8 @@ export async function getAuthorizedUser(email) {
 function normalizePersonnelSyncItem(rawItem) {
   const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
   const email = normalizeEmail(pickFirst(item, ['email', 'primaryEmail', 'ePosta', 'eposta', 'mail']));
-  const adUsername = normalizeAdLogin(pickFirst(item, ['adUsername', 'adUser', 'windowsUsername', 'kullaniciAdi', 'adKullanici']));
+  const providedAdUsername = normalizeAdLogin(pickFirst(item, ['adUsername', 'adUser', 'windowsUsername', 'kullaniciAdi', 'adKullanici']));
+  const adUsername = deriveAdUsernameFromEmail(email) || providedAdUsername;
   const personId =
     cleanText(pickFirst(item, ['personId', 'googleId', 'googleUserId', 'id', 'userId']), 160) ||
     email ||
@@ -453,6 +460,7 @@ export async function syncPersonnelFromAgent(secret, data = {}) {
 
       if (emailOwner.recordset[0]) {
         warnings.push(`${person.email}: e-posta başka bir personel kaydında olduğu için güncellenmedi.`);
+        if (person.adUsername === deriveAdUsernameFromEmail(person.email)) person.adUsername = '';
         person.email = '';
       }
     }
