@@ -8,7 +8,10 @@ param(
   [string]$LogPath = "C:\ZimmetPersonnel\personnel-sync.log",
   [string]$WorkingDirectory = "",
   [string]$WrapperPath = "C:\ZimmetPersonnel\Run-PersonnelSyncHidden.vbs",
-  [switch]$Visible
+  [switch]$AtStartup,
+  [switch]$Visible,
+  [switch]$RunAsSystem,
+  [switch]$RunNow
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,25 +74,44 @@ shell.Run "$escapedHiddenCommand", 0, False
   $action = New-ScheduledTaskAction -Execute $wscript -Argument ('"' + $WrapperPath + '"') -WorkingDirectory $WorkingDirectory
 }
 
-$trigger = New-ScheduledTaskTrigger `
+$triggers = @()
+$triggers += New-ScheduledTaskTrigger `
   -Once `
   -At (Get-Date).AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
   -RepetitionDuration ([TimeSpan]::FromDays(3650))
+if ($AtStartup) {
+  $triggers += New-ScheduledTaskTrigger -AtStartup
+}
 
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
-  -MultipleInstances IgnoreNew
+  -MultipleInstances IgnoreNew `
+  -StartWhenAvailable
 
-Register-ScheduledTask `
-  -TaskName $TaskName `
-  -Action $action `
-  -Trigger $trigger `
-  -Settings $settings `
-  -Description "ISTEK Zimmet Kullanicilar Sheet -> SQL personel senkronizasyonu" `
-  -Force | Out-Null
+$registerParams = @{
+  TaskName = $TaskName
+  Action = $action
+  Trigger = $triggers
+  Settings = $settings
+  Description = "ISTEK Zimmet Kullanicilar Sheet -> SQL personel senkronizasyonu"
+  Force = $true
+}
+
+if ($RunAsSystem) {
+  $registerParams.Principal = New-ScheduledTaskPrincipal `
+    -UserId "SYSTEM" `
+    -LogonType ServiceAccount `
+    -RunLevel Highest
+}
+
+Register-ScheduledTask @registerParams | Out-Null
+
+if ($RunNow) {
+  Start-ScheduledTask -TaskName $TaskName
+}
 
 [pscustomobject]@{
   success = $true
@@ -99,5 +121,8 @@ Register-ScheduledTask `
   logPath = $LogPath
   hidden = -not $Visible
   wrapperPath = if ($Visible) { "" } else { $WrapperPath }
+  atStartup = [bool]$AtStartup
+  runAs = if ($RunAsSystem) { "SYSTEM" } else { "CurrentUser" }
+  started = [bool]$RunNow
 }
 

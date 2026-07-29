@@ -64,12 +64,19 @@ Loglu calistirma:
 Tek komutla 5 dakikada bir calisan gorev kur:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
+powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" `
+  -IntervalMinutes 5 `
+  -AtStartup `
+  -RunAsSystem `
+  -RunNow
 ```
 
 Varsayilan olarak gorev sessiz calisir. Installer, gorev action'ini `wscript.exe`
 uzerinden gizli VBS wrapper'a baglar; bu sayede PowerShell penceresi ekranda
 acilip kapanmaz.
+
+Sunucu kurulumunda ortam degiskenlerini `Machine` kapsaminda tanimlayin ve
+`-RunAsSystem` kullanin. Boylece gorev kullanici oturumu acilmadan da calisir.
 
 Mevcut gorev pencere aciyorsa ayni installer komutunu tekrar calistir. `-Force`
 ile gorev action'i guncellenir.
