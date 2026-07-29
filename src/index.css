@@ -261,8 +261,11 @@ body {
 }
 
 .app-tab-panel {
-  animation: app-panel-enter var(--app-motion-normal) var(--app-motion-ease) both;
-  will-change: transform, opacity;
+  /*
+   * Keep the entrance animation, but release its transform after it finishes.
+   * A persistent compositing layer softens text on Windows display scaling.
+   */
+  animation: app-panel-enter var(--app-motion-normal) var(--app-motion-ease) backwards;
 }
 
 /* Masaüstünde arama, filtreler ve sekme aksiyonlarını tek satırda tutar. */

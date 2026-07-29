@@ -91,7 +91,7 @@ function ModalFrame({ title, description, onClose, children }) {
       <div className="app-modal-panel max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-xl bg-white shadow-2xl">
         <div className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-5 py-4">
           <div>
-            <h2 className="text-lg font-black text-slate-900">{title}</h2>
+            <h2 className="text-lg font-bold text-slate-900">{title}</h2>
             {description && <p className="mt-1 text-xs text-slate-500">{description}</p>}
           </div>
           <button
@@ -288,7 +288,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
 
   if (loading) {
     return (
-      <div className="app-tab-panel flex min-h-[420px] items-center justify-center">
+      <div className="app-tab-panel system-management-tab flex min-h-[420px] items-center justify-center">
         <div className="flex flex-col items-center gap-3 text-slate-500">
           <Loader2 className="h-8 w-8 animate-spin text-[#0066b1]" />
           <p className="text-sm font-bold">Yönetim verileri hazırlanıyor...</p>
@@ -298,7 +298,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
   }
 
   return (
-    <div className="app-tab-panel">
+    <div className="app-tab-panel system-management-tab">
       <div className="mb-4 flex items-center gap-2">
         <div className="flex min-w-0 flex-1 rounded-lg bg-slate-100 p-1 sm:max-w-2xl">
           {[
@@ -318,7 +318,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               onClick={() => setActiveSection(key)}
               title={label}
               aria-label={label}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-2.5 text-[11px] font-black transition-colors sm:px-2 sm:text-sm ${
+              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-2.5 text-[11px] font-bold transition-colors sm:px-2 sm:text-sm ${
                 activeSection === key
                   ? 'bg-white text-[#0066b1] shadow-sm'
                   : 'text-slate-500 hover:text-slate-800'
@@ -340,7 +340,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         <section>
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="text-base font-black text-slate-900">Uygulama erişimi</h2>
+              <h2 className="text-base font-bold text-slate-900">Uygulama erişimi</h2>
               <p className="hidden text-xs text-slate-500 sm:block">
                 Pasifleştirilen kullanıcının mevcut oturumları da kapatılır.
               </p>
@@ -355,7 +355,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
           </div>
 
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <div className="hidden grid-cols-[minmax(220px,1.6fr)_120px_minmax(160px,1fr)_90px_48px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-500 md:grid">
+            <div className="hidden grid-cols-[minmax(220px,1.6fr)_120px_minmax(160px,1fr)_90px_48px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-500 md:grid">
               <span>Kullanıcı</span>
               <span>Rol</span>
               <span>Kampüs</span>
@@ -368,7 +368,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                 className="grid grid-cols-[minmax(0,1fr)_36px] items-center gap-x-3 gap-y-2 border-b border-slate-100 px-3 py-3 last:border-b-0 md:grid-cols-[minmax(220px,1.6fr)_120px_minmax(160px,1fr)_90px_48px] md:gap-3 md:px-4"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-black text-slate-900">
+                  <p className="truncate text-sm font-bold text-slate-900">
                     {user.name || user.email}
                   </p>
                   <p className="truncate text-xs text-slate-500">{user.email}</p>
@@ -414,7 +414,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         <section>
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <h2 className="text-base font-black text-slate-900">Personel düzeltmeleri</h2>
+              <h2 className="text-base font-bold text-slate-900">Personel düzeltmeleri</h2>
               <p className="text-xs text-slate-500">
                 Kaynak senkron verisi korunur; düzeltme kaldırıldığında yeniden görünür.
               </p>
@@ -447,7 +447,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
           </div>
 
           <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            <div className="hidden grid-cols-[minmax(220px,1.5fr)_minmax(170px,1fr)_minmax(180px,1fr)_110px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-500 md:grid">
+            <div className="hidden grid-cols-[minmax(220px,1.5fr)_minmax(170px,1fr)_minmax(180px,1fr)_110px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-500 md:grid">
               <span>Personel</span>
               <span>Etkin kampüs</span>
               <span>Kaynak / düzeltme</span>
@@ -459,7 +459,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                 className="grid gap-3 border-b border-slate-100 px-4 py-3 last:border-b-0 md:grid-cols-[minmax(220px,1.5fr)_minmax(170px,1fr)_minmax(180px,1fr)_110px] md:items-center"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-black text-slate-900">{person.name}</p>
+                  <p className="truncate text-sm font-bold text-slate-900">{person.name}</p>
                   <p className="truncate text-xs text-slate-500">{person.email || person.id}</p>
                   <p className="mt-0.5 truncate text-[11px] text-slate-400">{person.department}</p>
                 </div>
@@ -470,7 +470,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                 <div className="min-w-0">
                   {person.hasOverride ? (
                     <>
-                      <span className="inline-flex rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">
+                      <span className="inline-flex rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-700">
                         Yönetici düzeltmesi
                       </span>
                       <p className="mt-1 truncate text-[11px] text-slate-500" title={person.overrideReason}>
@@ -542,7 +542,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
       {activeSection === 'audit' && (
         <section>
           <div className="mb-4">
-            <h2 className="text-base font-black text-slate-900">Son yönetim işlemleri</h2>
+            <h2 className="text-base font-bold text-slate-900">Son yönetim işlemleri</h2>
             <p className="text-xs text-slate-500">
               Kayıtlar sistemin SHA-256 zincirli, yalnız eklenebilir denetim günlüğündedir.
             </p>
@@ -555,7 +555,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               >
                 <div className="text-xs font-bold text-slate-500">{formatDateTime(log.createdAt)}</div>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-black text-[#0066b1]">{log.action}</p>
+                  <p className="truncate text-xs font-bold text-[#0066b1]">{log.action}</p>
                   <p className="truncate text-[11px] text-slate-500">{log.executedBy}</p>
                 </div>
                 <div className="min-w-0">
@@ -583,7 +583,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         >
           <div className="space-y-4 p-5">
             <label className="block">
-              <span className="mb-1.5 block text-xs font-black text-slate-600">E-posta</span>
+              <span className="mb-1.5 block text-xs font-bold text-slate-600">E-posta</span>
               <input
                 type="email"
                 value={userForm.email}
@@ -595,7 +595,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
             </label>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
-                <span className="mb-1.5 block text-xs font-black text-slate-600">Rol</span>
+                <span className="mb-1.5 block text-xs font-bold text-slate-600">Rol</span>
                 <select
                   value={userForm.role}
                   onChange={(event) => setUserForm((form) => ({ ...form, role: event.target.value }))}
@@ -606,7 +606,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                 </select>
               </label>
               <label className="block">
-                <span className="mb-1.5 block text-xs font-black text-slate-600">Kampüs</span>
+                <span className="mb-1.5 block text-xs font-bold text-slate-600">Kampüs</span>
                 <select
                   value={userForm.campusId}
                   onChange={(event) =>
@@ -625,7 +625,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
             </div>
             <label className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
               <span>
-                <span className="block text-sm font-black text-slate-800">Uygulama erişimi</span>
+                <span className="block text-sm font-bold text-slate-800">Uygulama erişimi</span>
                 <span className="block text-xs text-slate-500">
                   Pasife alındığında açık oturumları sonlandırılır.
                 </span>
@@ -681,7 +681,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
-                <span className="mb-1.5 block text-xs font-black text-slate-600">
+                <span className="mb-1.5 block text-xs font-bold text-slate-600">
                   Kampüs düzeltmesi
                 </span>
                 <select
@@ -700,7 +700,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                 </select>
               </label>
               <label className="block">
-                <span className="mb-1.5 block text-xs font-black text-slate-600">
+                <span className="mb-1.5 block text-xs font-bold text-slate-600">
                   Durum düzeltmesi
                 </span>
                 <select
@@ -717,7 +717,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               </label>
             </div>
             <label className="block">
-              <span className="mb-1.5 block text-xs font-black text-slate-600">
+              <span className="mb-1.5 block text-xs font-bold text-slate-600">
                 Düzeltme nedeni
               </span>
               <textarea
