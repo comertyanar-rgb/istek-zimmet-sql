@@ -3334,9 +3334,24 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
       );
     }
 
-    await execute(`DELETE FROM dbo.GlpiDevices WHERE LastSync < @lastSync`, {
-      lastSync: { type: sql.DateTime2, value: syncStartedAt }
-    });
+    await execute(
+      `
+        DELETE target
+        FROM dbo.GlpiDevices AS target
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM OPENJSON(@activeGlpiIdsJson)
+          WITH (GlpiId INT '$') AS active
+          WHERE active.GlpiId = target.GlpiId
+        )
+      `,
+      {
+        activeGlpiIdsJson: {
+          type: sql.NVarChar(sql.MAX),
+          value: JSON.stringify(normalizedItems.map((item) => item.glpiId))
+        }
+      }
+    );
   });
 
   const reconcileMode = typeof data.reconcile === 'string' ? data.reconcile.trim().toLowerCase() : data.reconcile;
