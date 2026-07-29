@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { config, assertConfig } from './config.js';
 import { closePool, getPool } from './db.js';
 import { handleAction } from './actionRouter.js';
+import { startGlpiQueueWorker } from './glpiQueueWorker.js';
 import { startPdfQueueWorker } from './pdfQueueWorker.js';
 import { startQueueRetentionWorker } from './queueRetentionWorker.js';
 import { closePdfRenderer } from './pdfRenderer.js';
@@ -541,6 +542,7 @@ app.use((error, req, res, _next) => {
   res.status(500).json({ success: false, error: 'Sunucuda beklenmeyen bir hata oluştu.' });
 });
 
+let glpiQueueWorker = null;
 let pdfQueueWorker = null;
 let queueRetentionWorker = null;
 const server = app.listen(config.port, config.host, () => {
@@ -555,6 +557,7 @@ const server = app.listen(config.port, config.host, () => {
     },
     'İSTEK Zimmet SQL API başladı'
   );
+  glpiQueueWorker = startGlpiQueueWorker(logger);
   pdfQueueWorker = startPdfQueueWorker(logger);
   queueRetentionWorker = startQueueRetentionWorker(logger);
 });
@@ -583,6 +586,7 @@ async function shutdown(signal) {
   forceExitTimer.unref?.();
 
   try {
+    await glpiQueueWorker?.stop?.();
     await pdfQueueWorker?.stop?.();
     await queueRetentionWorker?.stop?.();
     await serverClosed;
