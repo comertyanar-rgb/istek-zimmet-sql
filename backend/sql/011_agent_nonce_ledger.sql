@@ -66,7 +66,7 @@ BEGIN
       AND ExpiresAt <= @now;
 
     -- Tabloyu sürekli küçük tutmak için her istekte sınırlı temizlik yap.
-    DELETE TOP (500) FROM dbo.AgentRequestNonces WITH (ROWLOCK, READPAST)
+    DELETE TOP (500) FROM dbo.AgentRequestNonces WITH (ROWLOCK)
     WHERE ExpiresAt <= @now;
 
     INSERT INTO dbo.AgentRequestNonces (NonceHash, ActionType, ExpiresAt)

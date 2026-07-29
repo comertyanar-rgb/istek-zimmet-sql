@@ -59,7 +59,14 @@ export async function closePool() {
 export async function query(text, bind = {}) {
   const pool = await getPool();
   try {
-    return await executeQuery(pool.request(), text, bind);
+    // Tedious bağlantıları havuza dönerken önceki işlemin izolasyon seviyesini
+    // koruyabilir. Normal sorguları SERIALIZABLE gibi bir seviyeden devralmaması
+    // için her havuz isteğini açıkça READ COMMITTED seviyesinde başlat.
+    return await executeQuery(
+      pool.request(),
+      `SET TRANSACTION ISOLATION LEVEL READ COMMITTED;\n${text}`,
+      bind
+    );
   } catch (error) {
     invalidatePoolForConnectionError(pool, error);
     throw error;
