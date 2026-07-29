@@ -1,12 +1,16 @@
+import { useEffect, useMemo, useState } from 'react';
 import {
   ChevronDown,
   Filter,
-  Loader2,
   RefreshCw,
   Search,
   Users, // <-- Yeni eklendi
   X,
 } from 'lucide-react';
+import { ListSkeleton } from './LoadingSkeletons.jsx';
+import { Pagination } from './Pagination.jsx';
+
+const GLPI_PAGE_SIZE = 25;
 
 export const GlpiMissingTab = ({
   missingGlpiSearchQuery,
@@ -33,7 +37,10 @@ export const GlpiMissingTab = ({
   handleGlpiTouchEnd,
   renderDeviceTypeIcon,
   setViewingPersonId,
+  totalMissingGlpiCount,
 }) => {
+  const [currentPage, setCurrentPage] = useState(1);
+
   const formatCampusLabel = (value) => {
     const raw = value === null || value === undefined ? '' : String(value).trim();
     if (!raw || raw === '-' || raw === '0' || /^\d+$/.test(raw)) return '-';
@@ -55,25 +62,54 @@ export const GlpiMissingTab = ({
     }).format(date);
   };
 
-  const allVisibleSelected =
-    displayMissingGlpiDevices.length > 0 &&
-    displayMissingGlpiDevices.every((item) => selectedMissingGlpiIds.includes(item.glpiId));
+  const emptyMessage =
+    totalMissingGlpiCount > 0
+      ? 'Arama ve filtrelere uygun GLPI cihazı bulunamadı.'
+      : "GLPI'da Donanımlara eklenmeyi bekleyen yeni cihaz bulunmuyor.";
 
-  const selectAllVisible = (checked) => {
-    if (checked) {
-      setSelectedMissingGlpiIds(
-        Array.from(
-          new Set([
-            ...selectedMissingGlpiIds,
-            ...displayMissingGlpiDevices.map((item) => item.glpiId),
-          ])
-        )
-      );
-    } else {
-      const visibleIds = new Set(displayMissingGlpiDevices.map((item) => item.glpiId));
-      setSelectedMissingGlpiIds((prev) => prev.filter((id) => !visibleIds.has(id)));
-    }
+  const totalPages = Math.max(
+    1,
+    Math.ceil(displayMissingGlpiDevices.length / GLPI_PAGE_SIZE)
+  );
+  const pageDevices = useMemo(() => {
+    const start = (currentPage - 1) * GLPI_PAGE_SIZE;
+    return displayMissingGlpiDevices.slice(start, start + GLPI_PAGE_SIZE);
+  }, [currentPage, displayMissingGlpiDevices]);
+
+  const pageIds = pageDevices.map((item) => item.glpiId);
+  const filteredIds = displayMissingGlpiDevices.map((item) => item.glpiId);
+  const selectedIdSet = new Set(selectedMissingGlpiIds);
+  const selectedOnPageCount = pageIds.filter((id) => selectedIdSet.has(id)).length;
+  const selectedFilteredCount = filteredIds.filter((id) => selectedIdSet.has(id)).length;
+  const allPageSelected = pageIds.length > 0 && selectedOnPageCount === pageIds.length;
+  const somePageSelected = selectedOnPageCount > 0 && !allPageSelected;
+  const allFilteredSelected =
+    filteredIds.length > 0 && selectedFilteredCount === filteredIds.length;
+  const someFilteredSelected = selectedFilteredCount > 0 && !allFilteredSelected;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [missingGlpiSearchQuery, missingGlpiFilterType, missingGlpiFilterCampus]);
+
+  useEffect(() => {
+    setCurrentPage((page) => Math.min(Math.max(page, 1), totalPages));
+  }, [totalPages]);
+
+  const updateSelection = (ids, checked) => {
+    const targetIds = new Set(ids);
+    setSelectedMissingGlpiIds((previous) => {
+      const next = new Set(previous);
+      if (checked) {
+        targetIds.forEach((id) => next.add(id));
+      } else {
+        targetIds.forEach((id) => next.delete(id));
+      }
+      return Array.from(next);
+    });
   };
+
+  const selectCurrentPage = (checked) => updateSelection(pageIds, checked);
+  const selectAllFiltered = (checked) => updateSelection(filteredIds, checked);
 
   const clearFilters = () => {
     setMissingGlpiFilterType('All');
@@ -82,13 +118,13 @@ export const GlpiMissingTab = ({
   };
 
   return (
-    <div className="space-y-0 animate-in fade-in relative">
+    <div className="app-tab-panel space-y-0 relative">
       <div
         style={{ position: 'sticky', top: 0, zIndex: 80 }}
-        className="bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
+        className="responsive-tab-toolbar bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
       >
-        <div className="flex items-center gap-2 w-full">
-          <div className="flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
+        <div className="responsive-tab-toolbar__primary flex items-center gap-2 w-full">
+          <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
             <input
               type="text"
               placeholder="GLPI cihaz adı, seri no, AD kullanıcı ara..."
@@ -123,7 +159,7 @@ export const GlpiMissingTab = ({
           <button
             onClick={() => fetchMissingGlpiDevices(true)}
             disabled={isLoadingMissingGlpi}
-            className="h-10 px-3 md:px-4 rounded-xl border border-gray-200 bg-white text-[#0066b1] hover:bg-blue-50 font-bold flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50 transition-colors"
+            className="responsive-tab-toolbar__action responsive-tab-toolbar__actions-start h-10 px-3 md:px-4 rounded-xl border border-gray-200 bg-white text-[#0066b1] hover:bg-blue-50 font-bold flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50 transition-colors"
             title="GLPI Listesini Yenile"
           >
             <RefreshCw className={`w-4 h-4 ${isLoadingMissingGlpi ? 'animate-spin' : ''}`} />
@@ -132,7 +168,7 @@ export const GlpiMissingTab = ({
         </div>
 
         <div
-          className={`relative mt-3 mb-0 z-[90] ${
+          className={`responsive-tab-toolbar__filters relative mt-3 mb-0 z-[90] ${
             showMissingGlpiFilters
               ? 'block animate-in slide-in-from-top-1 fade-in duration-200'
               : 'hidden md:block'
@@ -241,24 +277,47 @@ export const GlpiMissingTab = ({
         </div>
       </div>
 
-      {isGlpiSelectionMode && displayMissingGlpiDevices.length > 0 && (
-        <label className="flex items-center gap-3 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 cursor-pointer mt-2 animate-in fade-in transition-colors hover:bg-blue-100/50">
-          <input
-            type="checkbox"
-            className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
-            checked={allVisibleSelected}
-            onChange={(e) => selectAllVisible(e.target.checked)}
-          />
-          <span className="text-sm font-bold text-[#0066b1]">
-            Filtrelenen tüm GLPI cihazlarını seç ({displayMissingGlpiDevices.length})
+      {displayMissingGlpiDevices.length > 0 && (
+        <div
+          className={`${
+            isGlpiSelectionMode ? 'flex' : 'hidden md:flex'
+          } flex-col gap-2 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 mt-2 animate-in fade-in md:flex-row md:items-center md:justify-between`}
+        >
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-5">
+            <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+              <input
+                ref={(node) => {
+                  if (node) node.indeterminate = somePageSelected;
+                }}
+                type="checkbox"
+                className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                checked={allPageSelected}
+                onChange={(e) => selectCurrentPage(e.target.checked)}
+              />
+              Bu sayfadakileri seç ({pageDevices.length})
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+              <input
+                ref={(node) => {
+                  if (node) node.indeterminate = someFilteredSelected;
+                }}
+                type="checkbox"
+                className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                checked={allFilteredSelected}
+                onChange={(e) => selectAllFiltered(e.target.checked)}
+              />
+              Filtrelenenlerin tümünü seç ({displayMissingGlpiDevices.length})
+            </label>
+          </div>
+          <span className="text-xs font-bold text-slate-500">
+            {selectedMissingGlpiIds.length} cihaz seçili
           </span>
-        </label>
+        </div>
       )}
 
       {isLoadingMissingGlpi ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-10 mt-2 flex flex-col items-center justify-center text-gray-500">
-          <Loader2 className="w-8 h-8 animate-spin text-[#0066b1] mb-3" />
-          <p className="font-bold">GLPI eksikleri alınıyor...</p>
+        <div className="mt-2">
+          <ListSkeleton rows={7} compact />
         </div>
       ) : (
         <>
@@ -268,10 +327,14 @@ export const GlpiMissingTab = ({
                 <tr>
                   <th className="p-4 w-12 text-center">
                     <input
+                      ref={(node) => {
+                        if (node) node.indeterminate = somePageSelected;
+                      }}
                       type="checkbox"
                       className="w-4 h-4 cursor-pointer text-blue-600 rounded focus:ring-blue-500"
-                      checked={allVisibleSelected}
-                      onChange={(e) => selectAllVisible(e.target.checked)}
+                      checked={allPageSelected}
+                      onChange={(e) => selectCurrentPage(e.target.checked)}
+                      title="Bu sayfadaki cihazları seç"
                     />
                   </th>
                   <th className="p-4 font-semibold text-gray-600">Cihaz</th>
@@ -282,7 +345,7 @@ export const GlpiMissingTab = ({
                 </tr>
               </thead>
               <tbody>
-                {displayMissingGlpiDevices.map((item) => {
+                {pageDevices.map((item) => {
                   const selected = selectedMissingGlpiIds.includes(item.glpiId);
                   return (
                     <tr
@@ -331,7 +394,7 @@ export const GlpiMissingTab = ({
                 {displayMissingGlpiDevices.length === 0 && (
                   <tr>
                     <td colSpan="6" className="p-8 text-center text-gray-500">
-                      Kriterlere uygun eksik GLPI cihazı bulunamadı.
+                      {emptyMessage}
                     </td>
                   </tr>
                 )}
@@ -341,7 +404,7 @@ export const GlpiMissingTab = ({
 
           {/* MOBİL CARDS */}
           <div className="block md:hidden space-y-2 mt-2 pb-32">
-            {displayMissingGlpiDevices.map((item) => {
+            {pageDevices.map((item) => {
               const selected = selectedMissingGlpiIds.includes(item.glpiId);
               return (
                 <div
@@ -442,10 +505,25 @@ export const GlpiMissingTab = ({
             
             {displayMissingGlpiDevices.length === 0 && (
               <div className="text-center p-6 text-gray-500 border border-dashed rounded-xl bg-white">
-                GLPI listesinde cihaz bulunamadı.
+                {emptyMessage}
               </div>
             )}
           </div>
+
+          {displayMissingGlpiDevices.length > 0 && (
+            <div className="mt-3 border-t border-gray-200 pt-2 pb-28 md:pb-2">
+              <p className="text-center text-[11px] font-semibold text-slate-500">
+                {(currentPage - 1) * GLPI_PAGE_SIZE + 1}–
+                {Math.min(currentPage * GLPI_PAGE_SIZE, displayMissingGlpiDevices.length)} /{' '}
+                {displayMissingGlpiDevices.length} cihaz
+              </p>
+              <Pagination
+                currentPage={currentPage}
+                totalPages={totalPages}
+                onPageChange={setCurrentPage}
+              />
+            </div>
+          )}
         </>
       )}
     </div>

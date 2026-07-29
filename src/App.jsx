@@ -1,6 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { lazy, Suspense, useState, useRef, useEffect, useMemo } from 'react';
 import { GoogleOAuthProvider, useGoogleLogin } from '@react-oauth/google';
-import jsQR from 'jsqr';
 import {
   RefreshCw,
   Monitor,
@@ -38,25 +37,236 @@ import {
   Tag,
   QrCode,
   Camera,
+  ShieldCheck,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
-import * as XLSX from 'xlsx';
 import { GAS_URL, GOOGLE_CLIENT_ID } from './config/appConfig.js';
+import {
+  API_SESSION_EXPIRED_EVENT,
+  isRetryableApiError,
+  postApiAction,
+} from './services/apiClient.js';
 import { BRANDS_MODELS, CAMPUS_CODES, TYPE_BRANDS } from './constants/inventory.js';
 import { toTrLower } from './utils/text.js';
+import { openSafeExternalUrl, toSafeDriveEmbedUrl, toSafeExternalUrl } from './utils/safeUrls.js';
 import { ClipboardCopy } from './components/ClipboardCopy.jsx';
-import { AdPasswordResetModal } from './components/AdPasswordResetModal.jsx';
-import { GlpiMissingTab } from './components/GlpiMissingTab.jsx';
-import { HardwareProfileModal } from './components/HardwareProfileModal.jsx';
-import { OperationQueueIndicator } from './components/OperationQueueIndicator.jsx';
-import { OtpVerification } from './components/OtpVerification.jsx';
-import { QrScanTab } from './components/QrScanTab.jsx';
-import { ReturnZimmetModal } from './components/ReturnZimmetModal.jsx';
 import { Pagination } from './components/Pagination.jsx';
-import { QrLabelModal } from './components/QrLabelModal.jsx';
-import { SignaturePad } from './components/SignaturePad.jsx';
-import { SignatureCreateModal } from './components/SignatureCreateModal.jsx';
-import { ZimmetDocumentModal } from './components/ZimmetDocumentModal.jsx';
+import { AssignmentFloatingAction } from './components/AssignmentFloatingAction.jsx';
+import { ListSkeleton, WorkspaceSkeleton } from './components/LoadingSkeletons.jsx';
+import { ThemeToggle } from './components/ThemeToggle.jsx';
+import { confirmAppAction, showAppAlert } from './services/uiMessageService.js';
+import { useAppTheme } from './hooks/useAppTheme.js';
+
+const lazyNamed = (loader, exportName) =>
+  lazy(() => loader().then((module) => ({ default: module[exportName] })));
+
+const DATA_CACHE_PREFIX = 'istek_it_cache_v3:';
+const DATA_CACHE_TTL_MS = 10 * 60 * 1000;
+const FULL_DATA_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const COOKIE_SESSION_SENTINEL = '__HTTP_ONLY_COOKIE_SESSION__';
+let pendingDataCacheWrite = null;
+
+function formatTransferDateTime(value) {
+  if (!value) return 'Tarih bilgisi yok';
+
+  const raw = String(value).trim();
+  if (/^\d{1,2}\.\d{1,2}\.\d{4}/.test(raw)) return raw;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return raw || 'Tarih bilgisi yok';
+
+  return new Intl.DateTimeFormat('tr-TR', {
+    timeZone: 'Europe/Istanbul',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function getDataCacheKey(user) {
+  if (!user?.email || !user?.role || !user?.campus) return '';
+  return `${DATA_CACHE_PREFIX}${encodeURIComponent(
+    `${String(user.email).toLowerCase()}|${user.role}|${user.campus}`
+  )}`;
+}
+
+function clearStoredDataCaches() {
+  cancelScheduledDataCacheWrite();
+  localStorage.removeItem('istek_it_cache');
+  for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+    const key = sessionStorage.key(index);
+    if (key?.startsWith('istek_it_cache_v')) sessionStorage.removeItem(key);
+  }
+}
+
+function writeDataCache(user, data) {
+  const key = getDataCacheKey(user);
+  if (!key) return;
+  try {
+    sessionStorage.setItem(
+      key,
+      JSON.stringify({
+        owner: {
+          email: String(user.email).toLowerCase(),
+          role: user.role,
+          campus: user.campus,
+        },
+        cachedAt: Date.now(),
+        syncServerTime: data.sync?.serverTime || data.syncServerTime || new Date().toISOString(),
+        personnel: data.personnel || [],
+        hardware: data.hardware || [],
+      })
+    );
+  } catch {
+    try {
+      sessionStorage.removeItem(key);
+    } catch {
+      // Cache kullanılamıyorsa ana veri akışını etkileme.
+    }
+  }
+}
+
+function cancelScheduledDataCacheWrite() {
+  if (!pendingDataCacheWrite || typeof window === 'undefined') return;
+  if (pendingDataCacheWrite.type === 'idle' && typeof window.cancelIdleCallback === 'function') {
+    window.cancelIdleCallback(pendingDataCacheWrite.handle);
+  } else {
+    window.clearTimeout(pendingDataCacheWrite.handle);
+  }
+  pendingDataCacheWrite = null;
+}
+
+function scheduleDataCacheWrite(user, data) {
+  if (typeof window === 'undefined') return;
+  cancelScheduledDataCacheWrite();
+
+  const run = () => {
+    pendingDataCacheWrite = null;
+    writeDataCache(user, data);
+  };
+
+  if (typeof window.requestIdleCallback === 'function') {
+    pendingDataCacheWrite = {
+      type: 'idle',
+      handle: window.requestIdleCallback(run, { timeout: 2000 }),
+    };
+    return;
+  }
+
+  pendingDataCacheWrite = {
+    type: 'timeout',
+    handle: window.setTimeout(run, 50),
+  };
+}
+
+function mergeRecordsById(currentRecords, changedRecords) {
+  if (!Array.isArray(changedRecords) || changedRecords.length === 0) return currentRecords;
+
+  const merged = new Map((currentRecords || []).map((record) => [record.id, record]));
+  changedRecords.forEach((record) => {
+    if (!record?.id) return;
+    merged.set(record.id, { ...(merged.get(record.id) || {}), ...record });
+  });
+  return Array.from(merged.values());
+}
+
+function hardwareVisualFingerprint(item) {
+  return [
+    item?.status,
+    item?.assignedTo,
+    item?.deviceName,
+    item?.groupName,
+    item?.notes,
+    item?.campus,
+    item?.driveLink,
+  ].map((value) => String(value ?? '')).join('|');
+}
+
+function personnelVisualFingerprint(item) {
+  return [
+    item?.name,
+    item?.status,
+    item?.department,
+    item?.campus,
+    item?.signatureStatus,
+    item?.signatureLink,
+  ].map((value) => String(value ?? '')).join('|');
+}
+
+function readDataCache(user) {
+  const key = getDataCacheKey(user);
+  if (!key) return null;
+
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(key) || 'null');
+    const ownerMatches =
+      parsed?.owner?.email === String(user.email).toLowerCase() &&
+      parsed?.owner?.role === user.role &&
+      parsed?.owner?.campus === user.campus;
+    const isFresh = Number(parsed?.cachedAt || 0) > Date.now() - DATA_CACHE_TTL_MS;
+    if (!ownerMatches || !isFresh) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch {
+    sessionStorage.removeItem(key);
+    return null;
+  }
+}
+
+const AdPasswordResetModal = lazyNamed(
+  () => import('./components/AdPasswordResetModal.jsx'),
+  'AdPasswordResetModal'
+);
+const GlpiMissingTab = lazyNamed(() => import('./components/GlpiMissingTab.jsx'), 'GlpiMissingTab');
+const HardwareProfileModal = lazyNamed(
+  () => import('./components/HardwareProfileModal.jsx'),
+  'HardwareProfileModal'
+);
+const OperationQueueIndicator = lazyNamed(
+  () => import('./components/OperationQueueIndicator.jsx'),
+  'OperationQueueIndicator'
+);
+const QrScanTab = lazyNamed(() => import('./components/QrScanTab.jsx'), 'QrScanTab');
+const ReturnZimmetModal = lazyNamed(() => import('./components/ReturnZimmetModal.jsx'), 'ReturnZimmetModal');
+const QrLabelModal = lazyNamed(() => import('./components/QrLabelModal.jsx'), 'QrLabelModal');
+const HandwrittenStatementPad = lazyNamed(
+  () => import('./components/HandwrittenStatementPad.jsx'),
+  'HandwrittenStatementPad'
+);
+const SignatureCreateModal = lazyNamed(
+  () => import('./components/SignatureCreateModal.jsx'),
+  'SignatureCreateModal'
+);
+const ZimmetDocumentModal = lazyNamed(
+  () => import('./components/ZimmetDocumentModal.jsx'),
+  'ZimmetDocumentModal'
+);
+const SystemManagementTab = lazyNamed(
+  () => import('./components/SystemManagementTab.jsx'),
+  'SystemManagementTab'
+);
+const BulkHardwareImportModal = lazyNamed(
+  () => import('./components/BulkHardwareImportModal.jsx'),
+  'BulkHardwareImportModal'
+);
+
+const LazyPanelFallback = ({ label = 'Yükleniyor...' }) => (
+  <div className="app-tab-panel" aria-label={label}>
+    <ListSkeleton rows={5} compact />
+  </div>
+);
+
+const LazyInlineFallback = ({ label = 'Hazırlanıyor...' }) => (
+  <div className="flex items-center justify-center gap-2 text-xs font-bold text-slate-500">
+    <Loader2 className="h-4 w-4 animate-spin text-[#0066b1]" />
+    {label}
+  </div>
+);
 
 // --- MAIN APP ---
 function GoogleSignInControls({ onAccessTokenSuccess, onError }) {
@@ -160,7 +370,9 @@ function getAdPasswordJobView(status) {
 }
 
 export default function App() {
-  // YENİ: PWA (Mobil Uygulama) Otomatik Güncelleme Sistemi
+  const { theme, toggleTheme } = useAppTheme();
+
+  // PWA güncellemeleri kullanıcı onayıyla uygulanır; açık işlem sırasında sayfa yenilenmez.
   const {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
@@ -177,6 +389,7 @@ export default function App() {
   const [showEasterEgg, setShowEasterEgg] = useState(false);
 
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authNotice, setAuthNotice] = useState('');
 
   const [currentUser, setCurrentUser] = useState(() => {
     try {
@@ -186,12 +399,14 @@ export default function App() {
         // BEYAZ EKRAN ÇÖZÜMÜ: Eğer isim verisi yoksa veya bozuksa çökmeyi önlemek için anında sil ve baştan giriş iste!
         if (!parsed || !parsed.expiresAt || Date.now() > parsed.expiresAt || !parsed.name || typeof parsed.name !== 'string') {
           localStorage.removeItem('istek_it_user');
+          clearStoredDataCaches();
           return null; 
         }
         return parsed;
       }
     } catch(e) {
       localStorage.removeItem('istek_it_user');
+      clearStoredDataCaches();
     }
     return null;
   });
@@ -204,15 +419,14 @@ export default function App() {
     if (currentUser && currentUser.expiresAt) {
       const timeLeft = currentUser.expiresAt - Date.now();
       if (timeLeft <= 0) {
-        localStorage.removeItem('istek_it_user');
-        setCurrentUser(null);
-        setIsLoggingIn(false);
+        resetClientSession();
       } else {
         const timer = setTimeout(() => {
-          alert("Oturum süreniz (6 saat) doldu. Güvenlik amacıyla sistemden otomatik çıkış yapıldı.");
-          localStorage.removeItem('istek_it_user');
-          setCurrentUser(null);
-          setIsLoggingIn(false);
+          resetClientSession();
+          showAppAlert(
+            'Oturum süreniz (6 saat) doldu. Güvenlik amacıyla sistemden otomatik çıkış yapıldı.',
+            { type: 'warning', title: 'Oturum sona erdi', dedupeKey: 'session-expired' }
+          );
         }, timeLeft);
         return () => clearTimeout(timer);
       }
@@ -220,22 +434,18 @@ export default function App() {
   }, [currentUser]);
 
   const [activeTab, setActiveTab] = useState('hardware');
-  // YENİ: Yasal Geçerlilik İçin IP State'i
-  const [clientIp, setClientIp] = useState('Al?n?yor...');
+  // Gerçek IP, güvenlik amacıyla backend tarafından bağlantı üzerinden kaydedilir.
+  const clientIp = 'Sunucu tarafından kaydedilecek';
   const [successMessage, setSuccessMessage] = useState(null); // İşlem başarılı olduğunda yeşil tik ile çıkacak mesaj
   const [generatedSheetUrl, setGeneratedSheetUrl] = useState(null); // YENİ: Sheets Linki İçin Modal State
-
-  useEffect(() => {
-    // Sayfa açıldığında IP adresini çek (Hukuki Log İçin)
-    fetch('https://api.ipify.org?format=json')
-      .then((res) => res.json())
-      .then((data) => setClientIp(data.ip))
-      .catch(() => setClientIp('Bulunamadı'));
-  }, []);
 
   const headerRef = useRef(null);
   const floatingBtnsRef = useRef(null);
   const newZimmetBtnRef = useRef(null);
+  const assignmentActionBtnRef = useRef(null);
+  const lastDataSyncRef = useRef('');
+  const lastFullSyncAtRef = useRef(0);
+  const dataFetchInFlightRef = useRef(null);
   const qrVideoRef = useRef(null);
   const qrStreamRef = useRef(null);
   const qrDetectorRef = useRef(null);
@@ -309,6 +519,15 @@ export default function App() {
               ? 'scale(0.90)'
               : 'scale(1)';
           }
+
+          if (assignmentActionBtnRef.current) {
+            assignmentActionBtnRef.current.style.opacity = isScrollingDown
+              ? '0.42'
+              : '1';
+            assignmentActionBtnRef.current.style.transform = isScrollingDown
+              ? 'scale(0.90) translateY(8px)'
+              : 'scale(1) translateY(0)';
+          }
           lastScrollY.current = currentY;
         }
         scrollTimer.current = null;
@@ -318,18 +537,19 @@ export default function App() {
 
 // Yeni Menü State'leri
 const [showHardwareFilters, setShowHardwareFilters] = useState(false);
+const [showAddHardwareMenu, setShowAddHardwareMenu] = useState(false);
 const [showHardwareMenu, setShowHardwareMenu] = useState(false);
 const [showPersonnelMenu, setShowPersonnelMenu] = useState(false);
 const [showAssignFilters, setShowAssignFilters] = useState(false);
 const [hardwareFilterStatus, setHardwareFilterStatus] = useState('All');
 const [activeFilterDropdown, setActiveFilterDropdown] = useState(null);
 
-// YENI ZIMMET EKRANI FILTRELERI
+// YENİ ZİMMET EKRANI FİLTRELERİ
 const [assignFilterStatus, setAssignFilterStatus] = useState('All');
 const [assignFilterCampus, setAssignFilterCampus] = useState('All');
 const [activeAssignFilterDropdown, setActiveAssignFilterDropdown] = useState(null);
 
-// YENI: Pagination States
+// YENİ: Pagination States
 const [hardwarePage, setHardwarePage] = useState(1);
 const [personnelPage, setPersonnelPage] = useState(1);
 const ITEMS_PER_PAGE = 20; // Her sayfada kaç kayıt gösterileceği
@@ -338,7 +558,7 @@ const ITEMS_PER_PAGE = 20; // Her sayfada kaç kayıt gösterileceği
 const [isTransferMode, setIsTransferMode] = useState(false);
 const [selectedTargetCampus, setSelectedTargetCampus] = useState('');
 
-// === YENI: TRANSFER ISLEMI STATE'LERI ===
+// === YENİ: TRANSFER İŞLEMİ STATE'LERİ ===
 const [transferModalObj, setTransferModalObj] = useState(null); 
 const [transferSignature, setTransferSignature] = useState(null);
 
@@ -346,7 +566,7 @@ const [transferSignature, setTransferSignature] = useState(null);
 const [isEditingDeviceName, setIsEditingDeviceName] = useState(false);
 const [editComputerNumber, setEditComputerNumber] = useState('');
 const [isUpdatingName, setIsUpdatingName] = useState(false);
-// --- YENI: TEKIL CIHAZ GRUP ATAMA STATES ---
+// --- YENİ: TEKİL CİHAZ GRUP ATAMA STATES ---
 const [isEditingSingleGroup, setIsEditingSingleGroup] = useState(false);
 const [editSingleGroupText, setEditSingleGroupText] = useState('');
 const [isUpdatingSingleGroup, setIsUpdatingSingleGroup] = useState(false);
@@ -380,29 +600,24 @@ const handleSaveSingleGroup = (hardwareId) => {
   setIsEditingSingleGroup(false);
 
   // 3. Arka planda sessizce sunucuya gönder
-  fetch(GAS_URL, {
-    method: 'POST',
-    body: JSON.stringify({
-      authToken: currentUser.token, 
-      action: 'bulkUpdateGroup',
-      hardwareIds: [hardwareId], 
-      groupName: finalGroupName,
-    }),
+  postApiAction({
+    authToken: currentUser.token,
+    action: 'bulkUpdateGroup',
+    hardwareIds: [hardwareId],
+    groupName: finalGroupName,
   })
-  .then(response => response.json())
-  .then(result => {
-    if (!result.success) throw new Error(result.error);
+  .then(() => {
     // Başarılıysa arka planda verileri yenile
     fetchVeritabani(false);
   })
   .catch(error => {
     console.error('Grup Kayıt Hatas?:', error);
     setHardware(previousHardwareState); // Hata olursa ekranı eski haline döndür
-    alert('Internet veya sunucu hatasi nedeniyle cihaz gruba atanamadi.');
+    showAppAlert('Internet veya sunucu hatasi nedeniyle cihaz gruba atanamadi.');
   });
 };
 
-// --- YENI: CIHAZ NOTU (DURUM) STATES VE FONKSIYONU ---
+// --- YENİ: CİHAZ NOTU (DURUM) STATES VE FONKSİYONU ---
 const [isEditingNote, setIsEditingNote] = useState(false);
 const [editNoteText, setEditNoteText] = useState('');
 const [isUpdatingNote, setIsUpdatingNote] = useState(false);
@@ -410,22 +625,19 @@ const [isUpdatingNote, setIsUpdatingNote] = useState(false);
 const handleSaveNote = async (hardwareId) => {
   setIsUpdatingNote(true);
   try {
-    fetch(GAS_URL, {
-      method: 'POST',
-      body: JSON.stringify({
-       authToken: currentUser.token,
-        action: 'updateHardware',
-        hardwareId: hardwareId,
-        updates: { notes: editNoteText },
-      }),
-    }).catch((err) => console.error('Not kayıt hatası:', err));
+    await postApiAction({
+      authToken: currentUser.token,
+      action: 'updateHardware',
+      hardwareId: hardwareId,
+      updates: { notes: editNoteText },
+    });
 
     setHardware((prev) =>
       prev.map((h) => (h.id === hardwareId ? { ...h, notes: editNoteText } : h))
     );
     setIsEditingNote(false);
   } catch (error) {
-    alert('Hata: Not kaydedilemedi. ' + error.message);
+    showAppAlert('Hata: Not kaydedilemedi. ' + error.message);
   } finally {
     setIsUpdatingNote(false);
   }
@@ -439,7 +651,7 @@ const [selectedBulkHardware, setSelectedBulkHardware] = useState([]);
 const [bulkCampusTransferMode, setBulkCampusTransferMode] = useState(false);
 const [bulkTargetCampus, setBulkTargetCampus] = useState('');
 
-// --- YENI: GRUPLAMA (GROUPING) STATES VE FONKSIYONU ---
+// --- YENİ: GRUPLAMA (GROUPING) STATES VE FONKSİYONU ---
 const [showGroupModal, setShowGroupModal] = useState(false);
 const [groupNameInput, setGroupNameInput] = useState('');
 
@@ -483,28 +695,23 @@ const handleAssignGroup = () => {
   setTimeout(() => setSuccessMessage(null), 2000);
 
   // 4. Arka planda sessizce sunucuya ilet
-  fetch(GAS_URL, {
-    method: 'POST',
-    body: JSON.stringify({
-     authToken: currentUser.token,
-      action: 'bulkUpdateGroup',
-      hardwareIds: selectedIdsToProcess,
-      groupName: finalGroupName,
-    }),
+  postApiAction({
+    authToken: currentUser.token,
+    action: 'bulkUpdateGroup',
+    hardwareIds: selectedIdsToProcess,
+    groupName: finalGroupName,
   })
-  .then(response => response.json())
-  .then(result => {
-    if (!result.success) throw new Error(result.error);
+  .then(() => {
     fetchVeritabani(false); // Başarılıysa arka planda önbelleği güncelle
   })
   .catch(error => {
     console.error('Toplu Grup Kayıt Hatas?:', error);
     setHardware(previousHardwareState); // Sunucu çökerse ekranı geri al
-    alert('Hata: Internet sorunu nedeniyle cihazlar gruba atanamadi.');
+    showAppAlert('Hata: Internet sorunu nedeniyle cihazlar gruba atanamadi.');
   });
 };
 
-// --- YENI: TRANSFER MERKEZI STATES ---
+// --- YENİ: TRANSFER MERKEZİ STATES ---
 const [transferViewTab, setTransferViewTab] = useState('pending'); // 'pending' | 'completed'
 const [transferSearchQuery, setTransferSearchQuery] = useState('');
 const [showTransferFilters, setShowTransferFilters] = useState(false);
@@ -532,6 +739,103 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
 
   const [personnel, setPersonnel] = useState([]);
   const [hardware, setHardware] = useState([]);
+  const [recentlyUpdatedHardwareIds, setRecentlyUpdatedHardwareIds] = useState(() => new Set());
+  const [recentlyUpdatedPersonnelIds, setRecentlyUpdatedPersonnelIds] = useState(() => new Set());
+  const previousHardwareVisualRef = useRef(new Map());
+  const previousPersonnelVisualRef = useRef(new Map());
+  const hardwareHighlightTimerRef = useRef(null);
+  const personnelHighlightTimerRef = useRef(null);
+
+  useEffect(() => {
+    const next = new Map(hardware.map((item) => [item.id, hardwareVisualFingerprint(item)]));
+    const previous = previousHardwareVisualRef.current;
+    if (previous.size > 0) {
+      const changed = hardware
+        .filter((item) => previous.has(item.id) && previous.get(item.id) !== next.get(item.id))
+        .map((item) => item.id);
+      if (changed.length > 0) {
+        setRecentlyUpdatedHardwareIds(new Set(changed));
+        window.clearTimeout(hardwareHighlightTimerRef.current);
+        hardwareHighlightTimerRef.current = window.setTimeout(
+          () => setRecentlyUpdatedHardwareIds(new Set()),
+          1400
+        );
+      }
+    }
+    previousHardwareVisualRef.current = next;
+  }, [hardware]);
+
+  useEffect(() => {
+    const next = new Map(personnel.map((item) => [item.id, personnelVisualFingerprint(item)]));
+    const previous = previousPersonnelVisualRef.current;
+    if (previous.size > 0) {
+      const changed = personnel
+        .filter((item) => previous.has(item.id) && previous.get(item.id) !== next.get(item.id))
+        .map((item) => item.id);
+      if (changed.length > 0) {
+        setRecentlyUpdatedPersonnelIds(new Set(changed));
+        window.clearTimeout(personnelHighlightTimerRef.current);
+        personnelHighlightTimerRef.current = window.setTimeout(
+          () => setRecentlyUpdatedPersonnelIds(new Set()),
+          1400
+        );
+      }
+    }
+    previousPersonnelVisualRef.current = next;
+  }, [personnel]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(hardwareHighlightTimerRef.current);
+      window.clearTimeout(personnelHighlightTimerRef.current);
+    },
+    []
+  );
+  const personnelById = useMemo(
+    () => new Map(personnel.map((person) => [person.id, person])),
+    [personnel]
+  );
+  const hardwareById = useMemo(
+    () => new Map(hardware.map((item) => [item.id, item])),
+    [hardware]
+  );
+  const hardwareByAssignee = useMemo(() => {
+    const grouped = new Map();
+    hardware.forEach((item) => {
+      if (!item.assignedTo) return;
+      const current = grouped.get(item.assignedTo);
+      if (current) current.push(item);
+      else grouped.set(item.assignedTo, [item]);
+    });
+    return grouped;
+  }, [hardware]);
+
+  function resetClientSession(notice = '') {
+    localStorage.removeItem('istek_it_user');
+    clearStoredDataCaches();
+    setPersonnel([]);
+    setHardware([]);
+    setMissingGlpiDevices([]);
+    setCurrentUser(null);
+    setIsLoading(false);
+    setIsLoggingIn(false);
+    setAuthNotice(notice);
+  }
+
+  async function handleLogout() {
+    const authToken = currentUser?.token;
+    resetClientSession();
+    if (!authToken) return;
+
+    try {
+      await postApiAction(
+        { action: 'logout', authToken },
+        { timeoutMs: 10000, notifySessionExpired: false }
+      );
+    } catch (error) {
+      console.warn('Backend oturumu sonlandırılamadı:', error);
+    }
+  }
   const [signatureTitles, setSignatureTitles] = useState([]);
   const [signatureCampuses, setSignatureCampuses] = useState([]);
   const [canChooseSignatureCampus, setCanChooseSignatureCampus] = useState(false);
@@ -584,20 +888,20 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
   const [isSigning, setIsSigning] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [zimmetExplanation, setZimmetExplanation] = useState(''); // YENİ: Zimmet Açıklama Notu
-  // YENI: Hukuki Onay Checkbox State'leri
+  // YENİ: Hukuki Onay Checkbox State'leri
   const [isKvkkAccepted, setIsKvkkAccepted] = useState(false);
   const [isReturnAccepted, setIsReturnAccepted] = useState(false);
 
-  // YENI: ZIMMETLI CIHAZ ONAY MODALI
+  // YENİ: ZİMMETLİ CİHAZ ONAY MODALI
   const [showZimmetliOnayModal, setShowZimmetliOnayModal] = useState(false);
   const [zimmetliCihazlarListesi, setZimmetliCihazlarListesi] = useState([]);
 
-  // YENI: Tarayici Confirm Kutusu Yerine Kullanilacak Sik Onay Modali State'i
+  // YENİ: Tarayıcı Confirm Kutusu Yerine Kullanılacak Şık Onay Modalı State'i
   const [confirmDialog, setConfirmDialog] = useState(null); // { message: 'Emin misiniz?', onConfirm: () => {}, type: 'danger'|'info' }
   const [itSignature, setItSignature] = useState(null);
   const [personSignature, setPersonSignature] = useState(null);
-  const [personOtpData, setPersonOtpData] = useState(null); // ZIMMET OTP VERISI
-  const [returnPersonOtpData, setReturnPersonOtpData] = useState(null); // ?ADE OTP VERISI
+  const [personOtpData, setPersonOtpData] = useState(null); // ZİMMET OTP VERİSİ
+  const [returnPersonOtpData, setReturnPersonOtpData] = useState(null); // İADE OTP VERİSİ
   const [assignStep, setAssignStep] = useState(1); // YENİ: 1 = Personel Seçimi, 2 = Donanım Seçimi
 
   // Return States
@@ -607,13 +911,14 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
   const [returnCondition, setReturnCondition] = useState('eksiksiz');
   const [returnExplanation, setReturnExplanation] = useState('');
   
-  // YENI: İade Edilirken Aksesuar Durumlari
+  // YENİ: İade Edilirken Aksesuar Durumları
   const [returnIncludeCharger, setReturnIncludeCharger] = useState(false);
   const [returnIncludeBag, setReturnIncludeBag] = useState(false);
   const [returnIncludeMouse, setReturnIncludeMouse] = useState(false);
 
-  // --- YENI Donanım EKLEME STATES ---
+  // --- YENİ Donanım EKLEME STATES ---
   const [showAddHardwareModal, setShowAddHardwareModal] = useState(false);
+  const [showBulkHardwareImportModal, setShowBulkHardwareImportModal] = useState(false);
   const [newHardwareForm, setNewHardwareForm] = useState({
     type: 'Laptop',
     brand: 'Lenovo',
@@ -660,7 +965,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
       !newHardwareForm.model ||
       !newHardwareForm.serial
     ) {
-      return alert(
+      return showAppAlert(
         'Lütfen marka, model ve seri no alanlarını eksiksiz doldurun.'
       );
     }
@@ -672,7 +977,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
         newHardwareForm.serial.trim().toLowerCase()
     );
     if (isDuplicateSerial) {
-      return alert(
+      return showAppAlert(
         `HATA: "${newHardwareForm.serial}" seri numaralı bir cihaz sistemde zaten kayıtlı!`
       );
     }
@@ -681,7 +986,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
     // BİLGİSAYAR İSMİ ARTIK ZORUNLU DEĞİL. Sadece içi doluysa 4 hane kontrolü yapar.
     if (showComputerName && newHardwareForm.computerNumber.trim() !== '') {
       if (!/^\d{4}$/.test(newHardwareForm.computerNumber)) {
-        return alert(
+        return showAppAlert(
           'Lütfen bilgisayar ismi için tam 4 haneli bir sayı girin (Örn: 0045) veya boş bırakın.'
         );
       }
@@ -707,14 +1012,11 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
         history: [],
       };
 
-      fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-         authToken: currentUser.token,
-          action: 'addHardware',
-          hardware: newHardwareItem,
-        }),
-      }).catch((err) => console.error('Script hatası:', err));
+      await postApiAction({
+        authToken: currentUser.token,
+        action: 'addHardware',
+        hardware: newHardwareItem,
+      });
 
       setHardware((prev) => [newHardwareItem, ...prev]);
 
@@ -729,7 +1031,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         computerNumber: '',
       });
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsAddingHardware(false);
     }
@@ -739,7 +1041,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       editComputerNumber.trim() !== '' &&
       !/^\d{4}$/.test(editComputerNumber)
     ) {
-      return alert(
+      return showAppAlert(
         'Lütfen bilgisayar ismi için tam 4 haneli bir sayı girin (Örn: 0045) veya boş bırakın.'
       );
     }
@@ -750,17 +1052,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setIsUpdatingName(true);
 
     try {
-      fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-         authToken: currentUser.token,
-          action: 'updateHardware',
-          hardwareId: hardwareId,
-          updates: {
-            deviceName: finalDeviceName, // Backend artik tek bir string bekliyor
-          },
-        }),
-      }).catch((err) => console.error('Kayıt hatası:', err));
+      await postApiAction({
+        authToken: currentUser.token,
+        action: 'updateHardware',
+        hardwareId: hardwareId,
+        updates: {
+          deviceName: finalDeviceName,
+        },
+      });
 
       setHardware((prev) =>
         prev.map((h) =>
@@ -769,7 +1068,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       );
       setIsEditingDeviceName(false);
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsUpdatingName(false);
     }
@@ -777,8 +1076,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const handleMissingDocumentUpload = async () => {
     if (!manualUploadFile || !viewedHardwarePerson) return;
 
-    const isImage = manualUploadFile.type.startsWith('image/');
-    const extension = isImage ? '.jpg' : '.pdf';
+    const extension =
+      manualUploadFile.type === 'image/png'
+        ? '.png'
+        : manualUploadFile.type.startsWith('image/')
+          ? '.jpg'
+          : '.pdf';
     const filename =
       `${viewedHardware.serial}, ${viewedHardwarePerson.name}, Manuel_Tutanak${extension}`.replace(
         /[\/\\?%*:|"<>]/g,
@@ -794,21 +1097,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
         reader.onerror = (error) => reject(error);
       });
 
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-         authToken: currentUser.token,
+      const result = await postApiAction(
+        {
+          authToken: currentUser.token,
           action: 'uploadMissingDocument',
           pdfName: filename,
           pdfData: base64String,
           campus: currentUser.campus,
           personName: viewedHardwarePerson.name,
           hardwareId: viewedHardware.id,
-        }),
-      });
-
-      const result = await response.json();
-      if (!result.success) throw new Error(result.error);
+        },
+        { timeoutMs: 180000 }
+      );
 
       setHardware((prev) =>
         prev.map((h) => {
@@ -835,7 +1135,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 setTimeout(() => setSuccessMessage(null), 2500);
       setManualUploadFile(null);
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsUploadingManual(false);
     }
@@ -845,7 +1145,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const [hardwareFilterType, setHardwareFilterType] = useState('All');
   const [hardwareSearchQuery, setHardwareSearchQuery] = useState('');
   const [personnelSearchQuery, setPersonnelSearchQuery] = useState('');
-  // YENI EKLENEN DURUM FILTRESI (DEFAULT: Aktif)
+  // YENİ EKLENEN DURUM FİLTRESİ (DEFAULT: Aktif)
   const [personnelFilterStatus, setPersonnelFilterStatus] = useState('Aktif');
   const [personnelSignatureFilter, setPersonnelSignatureFilter] = useState('All');
   const [assignFilterType, setAssignFilterType] = useState('All');
@@ -864,7 +1164,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   const [viewingHardwareId, setViewingHardwareId] = useState(null);
   const [showHardwareHistory, setShowHardwareHistory] = useState(false);
-  const [isLoadingHistory, setIsLoadingHistory] = useState(false); // YENI EKLENDI
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false); // YENİ EKLENDİ
 
   // YENİ: GEÇMİŞİ SUNUCUDAN ÇEKME FONKSİYONU
   const handleOpenHistory = async (hwId) => {
@@ -874,21 +1174,19 @@ setTimeout(() => setSuccessMessage(null), 2500);
     }
     
     setShowHardwareHistory(true);
-    const hw = hardware.find(h => h.id === hwId);
+    const hw = hardwareById.get(hwId);
     
     // Eğer daha önce çektiysek veya zaten geçmişi yoksa sunucuyu yorma
     if (hw.historyLoaded || !hw.hasHistory) return;
 
     setIsLoadingHistory(true);
     try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'fetchHardwareHistory', authToken: currentUser.token, hardwareId: hwId })
+      const result = await postApiAction({
+        action: 'fetchHardwareHistory',
+        authToken: currentUser.token,
+        hardwareId: hwId,
       });
-      const result = await res.json();
-      if (result.success) {
-        setHardware(prev => prev.map(h => h.id === hwId ? { ...h, history: result.history, historyLoaded: true } : h));
-      }
+      setHardware(prev => prev.map(h => h.id === hwId ? { ...h, history: result.history, historyLoaded: true } : h));
     } catch(e) {
       console.error("Geçmiş çekilemedi");
     } finally {
@@ -903,22 +1201,26 @@ setTimeout(() => setSuccessMessage(null), 2500);
   // Personel Sekmesi Mobil Filtre Görünürlüğü
   const [showPersonnelFilters, setShowPersonnelFilters] = useState(false);
   const viewedHardware = viewingHardwareId
-    ? hardware.find((h) => h.id === viewingHardwareId)
+    ? hardwareById.get(viewingHardwareId)
     : null;
   // TRANSFER durumundaki sahte atamaları personel profili olarak açmasını engeller
-  const viewedHardwarePerson =
+  const viewedHardwarePersonCandidate =
     viewedHardware?.assignedTo && viewedHardware?.status !== 'Transfer'
-      ? personnel.find(
-          (p) =>
-            p.id === viewedHardware.assignedTo &&
-            !String(p.name).toUpperCase().includes('GÖNDEREN:')
-        )
+      ? personnelById.get(viewedHardware.assignedTo)
+      : null;
+  const viewedHardwarePerson =
+    viewedHardwarePersonCandidate &&
+    !String(viewedHardwarePersonCandidate.name).toUpperCase().includes('GÖNDEREN:')
+      ? viewedHardwarePersonCandidate
       : null;
 
   const [viewingPersonId, setViewingPersonId] = useState(null);
   const viewedPerson = viewingPersonId
-    ? personnel.find((p) => p.id === viewingPersonId)
+    ? personnelById.get(viewingPersonId)
     : null;
+  const viewedPersonHardware = viewedPerson
+    ? hardwareByAssignee.get(viewedPerson.id) || []
+    : [];
   const [showAdPasswordResetModal, setShowAdPasswordResetModal] = useState(false);
   const [adPasswordJobs, setAdPasswordJobs] = useState([]);
   const getPersonAdLogin = (person) => {
@@ -943,35 +1245,20 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
 
   useEffect(() => {
-    if (!currentUser?.token || !viewedPersonAdLogin) return undefined;
+    if (!currentUser?.token) {
+      setAdPasswordJobs([]);
+      return undefined;
+    }
 
-    let cancelled = false;
-    const loadAdPasswordQueue = async () => {
-      try {
-        const response = await fetch(GAS_URL, {
-          method: 'POST',
-          body: JSON.stringify({
-            action: 'fetchADPasswordQueue',
-            authToken: currentUser.token,
-            limit: 50,
-          }),
-        });
-        const result = await response.json();
-        if (!cancelled && result.success) {
-          setAdPasswordJobs(result.jobs || []);
-        }
-      } catch (error) {
-        console.warn('Şifre kuyruğu okunamadı', error);
-      }
+    const handleQueueUpdate = (event) => {
+      const jobs = Array.isArray(event?.detail?.jobs) ? event.detail.jobs : [];
+      setAdPasswordJobs(jobs.filter((job) => job.kind === 'ad-password'));
     };
 
-    loadAdPasswordQueue();
-    const intervalId = window.setInterval(loadAdPasswordQueue, 10000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [currentUser?.token, viewedPersonAdLogin]);
+    window.addEventListener('istek:operation-queue-updated', handleQueueUpdate);
+    return () =>
+      window.removeEventListener('istek:operation-queue-updated', handleQueueUpdate);
+  }, [currentUser?.token]);
 
   // --- SEÇİM (CHECKBOX) VE BASILI TUTMA FONKSİYONLARI ---
   const handleToggleBulk = (id) => {
@@ -1048,37 +1335,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (glpiPressTimerRef.current) clearTimeout(glpiPressTimerRef.current);
   };
 
-  // URL Formatter (Düzenlendi)
-  const formatDriveUrlForEmbed = (url) => {
-    if (!url) return '';
-
-    // URL'den Google Drive ID'sini çıkart
-    let fileId = '';
-    const match = url.match(/\/d\/(.*?)\//);
-    if (match && match[1]) {
-      fileId = match[1];
-    }
-
-    if (fileId) {
-      // Sadece gerçek masaüstü cihazlar modal kullanacağı için standart preview linki veriyoruz
-      return `https://drive.google.com/file/d/${fileId}/preview`;
-    }
-
-    if (url.includes('/preview')) return url;
-    if (url.includes('drive.google.com'))
-      return url.replace(/\/view.*/, '/preview');
-    return url;
-  };
-
   const handlePdfClick = (url, title) => {
     if (!url) {
       setPreviewPdf(null);
       return;
     }
 
-    if (url.startsWith('blob:')) {
+    const safeUrl = toSafeExternalUrl(url, { allowBlob: true });
+    if (!safeUrl) {
+      showAppAlert('Belge bağlantısı güvenli olmadığı için açılamadı.');
+      return;
+    }
+
+    if (safeUrl.startsWith('blob:')) {
       const a = document.createElement('a');
-      a.href = url;
+      a.href = safeUrl;
       a.download = title.endsWith('.pdf') ? title : `${title}.pdf`;
       document.body.appendChild(a);
       a.click();
@@ -1095,10 +1366,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
       // EĞER CİHAZ MOBİLSE VEYA APPLE CİHAZIYSA DOĞRUDAN YENİ SEKMEYE GİT!
       if (isMobileWidth || isAppleDevice) {
-        window.open(url, '_blank');
+        openSafeExternalUrl(safeUrl);
       } else {
         // Masaüstü Windows cihazlarda (Chrome/Edge vb.) modal (iframe) içinde aç
-        setPreviewPdf({ url, title });
+        const embedUrl = toSafeDriveEmbedUrl(safeUrl);
+        if (embedUrl) {
+          setPreviewPdf({ url: safeUrl, embedUrl, title });
+        } else {
+          openSafeExternalUrl(safeUrl);
+        }
       }
     }
   };
@@ -1107,30 +1383,56 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // GÜVENLİ HALE GETİRİLMİŞ VERİ ÇEKME FONKSİYONU
-  const fetchVeritabani = async (showLoader = false) => {
+  const fetchVeritabani = async (showLoader = false, { preferDelta = false } = {}) => {
     // Güvenlik duvarı: Oturum yoksa veya token yoksa veritabanına istek atma!
-    if (!currentUser || !currentUser.token) return; 
+    if (!currentUser || !currentUser.token) return;
 
     if (showLoader) setIsRefreshing(true);
-    try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST', // Artik GET degil POST yapiyoruz
-        body: JSON.stringify({
-          action: 'fetchData',
-          authToken: currentUser.token // Güvenlik Anahtarını Gönderiyoruz
-        })
-      });
-      const data = await res.json();
-      
-      if (!data.success) throw new Error(data.error); // Token patlamissa hata ver
+    if (dataFetchInFlightRef.current) {
+      try {
+        return await dataFetchInFlightRef.current;
+      } finally {
+        if (showLoader) setIsRefreshing(false);
+      }
+    }
 
-      setPersonnel(data.personnel || []);
-      setHardware(data.hardware || []);
-      localStorage.setItem('istek_it_cache', JSON.stringify(data));
+    const canUseDelta =
+      preferDelta &&
+      Boolean(lastDataSyncRef.current) &&
+      Date.now() - lastFullSyncAtRef.current < FULL_DATA_SYNC_INTERVAL_MS;
+
+    const request = (async () => {
+      const data = await postApiAction({
+        action: 'fetchData',
+        authToken: currentUser.token,
+        ...(canUseDelta ? { since: lastDataSyncRef.current } : {}),
+      });
+
+      const responseMode = data.sync?.mode === 'delta' ? 'delta' : 'full';
+      const syncServerTime = data.sync?.serverTime || new Date().toISOString();
+
+      if (responseMode === 'delta') {
+        setPersonnel((previous) => mergeRecordsById(previous, data.personnel));
+        setHardware((previous) => mergeRecordsById(previous, data.hardware));
+      } else {
+        setPersonnel(data.personnel || []);
+        setHardware(data.hardware || []);
+        lastFullSyncAtRef.current = Date.now();
+        scheduleDataCacheWrite(currentUser, { ...data, syncServerTime });
+      }
+
+      lastDataSyncRef.current = syncServerTime;
+      return data;
+    })();
+
+    dataFetchInFlightRef.current = request;
+    try {
+      return await request;
     } catch (err) {
       console.error('Veri çekme hatası:', err);
-      if (showLoader) alert('Veriler yenilenirken hata olustu: ' + err.message);
+      if (showLoader) showAppAlert('Veriler yenilenirken hata oluştu: ' + err.message);
     } finally {
+      if (dataFetchInFlightRef.current === request) dataFetchInFlightRef.current = null;
       if (showLoader) setIsRefreshing(false);
     }
   };
@@ -1139,20 +1441,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (!currentUser || !currentUser.token) return;
     if (showLoader) setIsLoadingMissingGlpi(true);
     try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'fetchMissingGLPIDevices',
-          authToken: currentUser.token,
-        }),
+      const data = await postApiAction({
+        action: 'fetchMissingGLPIDevices',
+        authToken: currentUser.token,
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
       setMissingGlpiDevices(data.devices || []);
       setSelectedMissingGlpiIds([]);
     } catch (err) {
       console.error('GLPI eksik cihazlar çekilemedi:', err);
-      alert('GLPI eksikleri alinamadi: ' + err.message);
+      showAppAlert('GLPI eksikleri alınamadı: ' + err.message);
     } finally {
       if (showLoader) setIsLoadingMissingGlpi(false);
     }
@@ -1160,59 +1457,61 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   const handleImportMissingGlpiDevices = async () => {
     if (selectedMissingGlpiIds.length === 0) {
-      alert('Lütfen Laptoplar listesine eklenecek GLPI cihazlarını seçin.');
+      showAppAlert('Lütfen Donanımlar listesine eklenecek GLPI cihazlarını seçin.');
       return;
     }
 
-    const ok = window.confirm(
-      `${selectedMissingGlpiIds.length} GLPI cihazı Laptoplar sayfasına DEPODA olarak eklenecek. Onaylıyor musunuz?`
-    );
+    const ok = await confirmAppAction({
+      title: 'GLPI cihazlarını ekle',
+      message: `${selectedMissingGlpiIds.length} GLPI cihazı Donanımlara Depoda olarak eklenecek. Onaylıyor musunuz?`,
+      confirmLabel: 'Donanımlara ekle',
+      cancelLabel: 'Vazgeç',
+    });
     if (!ok) return;
 
     setIsImportingMissingGlpi(true);
     try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'importMissingGLPIDevices',
-          authToken: currentUser.token,
-          glpiIds: selectedMissingGlpiIds,
-          clientIp,
-        }),
+      const data = await postApiAction({
+        action: 'importMissingGLPIDevices',
+        authToken: currentUser.token,
+        glpiIds: selectedMissingGlpiIds,
+        clientIp,
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
-      setSuccessMessage(`${data.imported || selectedMissingGlpiIds.length} GLPI cihazı Laptoplar listesine eklendi.`);
+      setSuccessMessage(`${data.imported || selectedMissingGlpiIds.length} GLPI cihazı Donanımlar listesine eklendi.`);
       setTimeout(() => setSuccessMessage(null), 2500);
       await fetchVeritabani(false);
       await fetchMissingGlpiDevices(false);
     } catch (err) {
       console.error('GLPI import hatası:', err);
-      alert('GLPI cihazları eklenemedi: ' + err.message);
+      showAppAlert('GLPI cihazları eklenemedi: ' + err.message);
     } finally {
       setIsImportingMissingGlpi(false);
     }
+  };
+
+  const updatePersonnelBulkSelection = (checked, items) => {
+    const itemIds = items.map((person) => person.id);
+    const itemIdSet = new Set(itemIds);
+    setSelectedBulkPersonnel((previous) => {
+      if (checked) return Array.from(new Set([...previous, ...itemIds]));
+      return previous.filter((id) => !itemIdSet.has(id));
+    });
   };
 
   const fetchSignatureMeta = async (showLoader = false) => {
     if (!currentUser?.token) return;
     if (showLoader) setIsLoadingSignatureTitles(true);
     try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'fetchSignatureMeta',
-          authToken: currentUser.token,
-        }),
+      const data = await postApiAction({
+        action: 'fetchSignatureMeta',
+        authToken: currentUser.token,
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
       setSignatureTitles(data.titles || []);
       setSignatureCampuses(data.campuses || []);
       setCanChooseSignatureCampus(Boolean(data.canChooseCampus));
     } catch (err) {
       console.error('İmza ünvanları alınamadı:', err);
-      if (showLoader) alert('İmza ünvanları alınamadı: ' + err.message);
+      if (showLoader) showAppAlert('İmza ünvanları alınamadı: ' + err.message);
     } finally {
       if (showLoader) setIsLoadingSignatureTitles(false);
     }
@@ -1222,19 +1521,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (!currentUser?.token || !personId || !titleTr) return;
     setIsCreatingSignature(true);
     try {
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'createPersonnelSignature',
-          authToken: currentUser.token,
-          personId,
-          titleTr,
-          signatureCampus,
-          clientIp,
-        }),
+      const data = await postApiAction({
+        action: 'createPersonnelSignature',
+        authToken: currentUser.token,
+        personId,
+        titleTr,
+        signatureCampus,
+        clientIp,
       });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error);
 
       setPersonnel((prev) =>
         prev.map((person) =>
@@ -1259,7 +1553,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setTimeout(() => setSuccessMessage(null), 3500);
     } catch (err) {
       console.error('İmza oluşturma hatası:', err);
-      alert('İmza oluşturulamadı: ' + err.message);
+      showAppAlert('İmza oluşturulamadı: ' + err.message);
     } finally {
       setIsCreatingSignature(false);
     }
@@ -1267,7 +1561,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   useEffect(() => {
     if (activeTab === 'glpiMissing' && currentUser?.token) {
-      fetchMissingGlpiDevices(false);
+      fetchMissingGlpiDevices(true);
     }
   }, [activeTab, currentUser?.token]);
 
@@ -1275,16 +1569,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (currentUser?.token) fetchSignatureMeta(false);
   }, [currentUser?.token]);
 
-  // ÇÖZÜM 1: HTML2PDF SADECE 1 KEZ YÜKLENİR (BELLEK ŞİŞMESİ VE BEYAZ EKRAN ÇÖZÜMÜ)
-  useEffect(() => {
-    if (!document.getElementById('html2pdf-script')) {
-      const script = document.createElement('script');
-      script.id = 'html2pdf-script';
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-      script.async = true;
-      document.body.appendChild(script);
-    }
-  }, []);
 
   // --- GÜVENLİ İLK AÇILIŞ VE AKILLI ÖNBELLEK (CACHE) SİSTEMİ ---
   useEffect(() => {
@@ -1294,21 +1578,42 @@ setTimeout(() => setSuccessMessage(null), 2500);
       return;
     }
 
-    const cachedData = localStorage.getItem('istek_it_cache');
+    const cachedData = readDataCache(currentUser);
+    lastDataSyncRef.current = '';
+    lastFullSyncAtRef.current = 0;
 
     if (cachedData) {
-      const parsed = JSON.parse(cachedData);
-      setPersonnel(parsed.personnel || []);
-      setHardware(parsed.hardware || []);
+      setPersonnel(cachedData.personnel || []);
+      setHardware(cachedData.hardware || []);
+      lastDataSyncRef.current =
+        cachedData.syncServerTime || new Date(Number(cachedData.cachedAt) - 5000).toISOString();
+      lastFullSyncAtRef.current = Number(cachedData.cachedAt || Date.now());
       setIsLoading(false);
       
-      fetchVeritabani(false); // Arka planda yenile
+      fetchVeritabani(false, { preferDelta: true }); // Arka planda yalnız değişenleri yenile
     } else {
       // Hafıza boşsa Google'dan zorla bekleterek çek
       setIsLoading(true); 
       fetchVeritabani(true).then(() => setIsLoading(false));
     }
   }, [currentUser]);
+
+  useEffect(() => {
+    const handleSessionExpired = (event) => {
+      const message =
+        event?.detail?.message || 'Oturum süreniz doldu. Lütfen yeniden giriş yapın.';
+      resetClientSession();
+      showAppAlert(message, {
+        type: 'warning',
+        title: 'Oturum sona erdi',
+        dedupeKey: 'session-expired',
+        confirmLabel: 'Giriş ekranına dön',
+      });
+    };
+
+    window.addEventListener(API_SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => window.removeEventListener(API_SESSION_EXPIRED_EVENT, handleSessionExpired);
+  }, []);
 
   useEffect(() => {
     if (!currentUser?.token) return undefined;
@@ -1319,7 +1624,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
       const now = Date.now();
       if (now - lastSyncAt < 45000) return;
       lastSyncAt = now;
-      fetchVeritabani(false);
+      const shouldUseDelta =
+        Date.now() - lastFullSyncAtRef.current < FULL_DATA_SYNC_INTERVAL_MS;
+      fetchVeritabani(false, { preferDelta: shouldUseDelta });
     };
 
     const intervalId = window.setInterval(syncQuietly, 90000);
@@ -1336,8 +1643,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
     };
   }, [currentUser?.token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // --- XLSX VE GOOGLE SHEETS EXPORT FONKSIYONLARI ---
-  // --- XLSX VE GOOGLE SHEETS EXPORT FONKSIYONLARI ---
+  // --- CSV VE GOOGLE SHEETS EXPORT FONKSİYONLARI ---
+  // --- CSV VE GOOGLE SHEETS EXPORT FONKSİYONLARI ---
   const getFormattedDataForExport = (data, type) => {
     if (type === 'hardware') {
       return data.map((item) => ({
@@ -1350,21 +1657,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
             : item.status === 'Hurda'
             ? 'Hurda'
             : 'Zimmetli',
-        Personel: personnel.find((p) => p.id === item.assignedTo)?.name || '-',
+        Personel: personnelById.get(item.assignedTo)?.name || '-',
         Kampüs: item.campus || '-',
       }));
     } else {
-      // YENI: Personel detayli disa aktarimi
+      // YENİ: Personel detaylı dışa aktarımı
       return data.map((person) => {
         // Bu personele zimmetli olan tüm donanımları bul
-        const assignedHardware = hardware.filter((h) => h.assignedTo === person.id);
+        const assignedHardware = hardwareByAssignee.get(person.id) || [];
 
         // Donanımların detaylarını virgülle ayırarak tek satırda topla
         const cihazDetaylari = assignedHardware.length > 0 
           ? assignedHardware.map(h => `${h.brand} ${h.model}`).join('  |  ') 
           : '-';
 
-        const seriNumaralari = assignedHardware.length > 0 
+        const serialNumbers = assignedHardware.length > 0
           ? assignedHardware.map(h => h.serial).join('  |  ') 
           : '-';
 
@@ -1373,33 +1680,44 @@ setTimeout(() => setSuccessMessage(null), 2500);
           : '-';
 
         return {
-          'Personel Adi': person.name || '-',
+          'Personel Adı': person.name || '-',
           'Departman / Görev': person.department || '-',
           'E-Posta': person.email || '-',
           'Kampüs': person.campus || '-',
           'Toplam Cihaz': assignedHardware.length,
           'Zimmetli Cihazlar': cihazDetaylari,
-          'Seri Numaralari': seriNumaralari,
+          'Seri Numaraları': serialNumbers,
           'Zimmet Tutanak Linkleri': zimmetBelgeleri,
         };
       });
     }
   };
 
-  const handleExportXLSX = (data, filename, type) => {
-    if (data.length === 0) return alert('Dışa aktarılacak veri bulunamadı..');
+  const escapeCsvCell = (value) => {
+    const text = String(value ?? '');
+    const safeText = /^[=+\-@]/.test(text) ? String.fromCharCode(39) + text : text;
+    return String.fromCharCode(34) + safeText.replace(/"/g, '""') + String.fromCharCode(34);
+  };
+
+  const handleExportCsv = (data, filename, type) => {
+    if (data.length === 0) return showAppAlert('Dışa aktarılacak veri bulunamadı.');
     const formattedData = getFormattedDataForExport(data, type);
-    const worksheet = XLSX.utils.json_to_sheet(formattedData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Liste');
-    XLSX.writeFile(
-      workbook,
-      `${filename}_${new Date().toLocaleDateString('tr-TR')}.xlsx`
-    );
+    const headers = Object.keys(formattedData[0] || {});
+    const rows = formattedData.map((item) => headers.map((header) => escapeCsvCell(item[header])).join(';'));
+    const csv = '\uFEFF' + headers.map(escapeCsvCell).join(';') + '\n' + rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename + '_' + new Date().toLocaleDateString('tr-TR') + '.csv';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   const handleCreateGoogleSheet = async (data, type) => {
-    if (data.length === 0) return alert('Aktarılacak veri bulunamadı..');
+    if (data.length === 0) return showAppAlert('Aktarılacak veri bulunamadı..');
 
     // YENİ: window.confirm yerine şık Modal açıyoruz
     setConfirmDialog({
@@ -1411,27 +1729,27 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
         try {
           const formattedData = getFormattedDataForExport(data, type);
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
+          const result = await postApiAction(
+            {
               authToken: currentUser.token,
               action: 'createSheet',
               sheetName: `Dışa Aktarım - ${
                 type === 'hardware' ? 'Donanım' : 'Personel'
               } (${new Date().toLocaleDateString('tr-TR')})`,
               data: formattedData,
-            }),
-          });
+            },
+            { timeoutMs: 120000 }
+          );
 
-          const result = await response.json();
-          if (result.success && result.url) {
+          const safeExportUrl = toSafeExternalUrl(result.url);
+          if (safeExportUrl) {
             // Başarılıysa linki ekrana Modal olarak bas (Pop-up engeline takılmamak için)
-            setGeneratedSheetUrl(result.url);
+            setGeneratedSheetUrl(safeExportUrl);
           } else {
-            alert('Hata: Dışa aktarım dosyası oluşturulamadı. ' + (result.error || ''));
+            showAppAlert('Hata: Dışa aktarım dosyası oluşturulamadı. ' + (result.error || ''));
           }
         } catch (err) {
-          alert('İşlem başarısız: ' + err.message);
+          showAppAlert('İşlem başarısız: ' + err.message);
         } finally {
           setIsGenerating(false);
         }
@@ -1443,12 +1761,20 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const handleBulkAction = async (actionType, targetCampus = null) => {
     if (selectedBulkHardware.length === 0) return;
 
+    const assignedSelectionCount = selectedBulkHardware.reduce(
+      (count, id) => count + (hardwareById.get(id)?.assignedTo ? 1 : 0),
+      0
+    );
+    const assignmentWarning = assignedSelectionCount > 0
+      ? ` ${assignedSelectionCount} cihaz halen personele zimmetli; devam ederseniz mevcut zimmet bağlantısı kaldırılacak.`
+      : '';
+
     let confirmMsg = '';
     let msgType = 'info';
     if (actionType === 'Depo') {
-      confirmMsg = `${selectedBulkHardware.length} adet cihaz depoya çekilecek. Onaylıyor musunuz?`;
+      confirmMsg = `${selectedBulkHardware.length} adet cihaz depoya çekilecek.${assignmentWarning} Onaylıyor musunuz?`;
     } else if (actionType === 'Hurda') {
-      confirmMsg = `${selectedBulkHardware.length} adet cihaz HURDAYA ayrılacak. Emin misiniz?`;
+      confirmMsg = `${selectedBulkHardware.length} adet cihaz HURDAYA ayrılacak.${assignmentWarning} Emin misiniz?`;
       msgType = 'danger';
     } else if (actionType === 'Transfer') {
       confirmMsg = `${selectedBulkHardware.length} adet cihaz ${targetCampus} kampüsüne transfer edilecek. Onaylıyor musunuz?`;
@@ -1488,18 +1814,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
         // 2. ADIM: ARKA PLANDA SESSİZCE GOOGLE SHEETS'İ GÜNCELLE
         if (actionType === 'Depo' || actionType === 'Hurda') {
-          fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
-              authToken: currentUser.token,
-              action: 'bulkStatusUpdate',
-              hardwareIds: selectedIdsToProcess,
-              newStatus: actionType === 'Depo' ? 'Available' : 'Hurda',
-            }),
+          postApiAction({
+            authToken: currentUser.token,
+            action: 'bulkStatusUpdate',
+            hardwareIds: selectedIdsToProcess,
+            newStatus: actionType === 'Depo' ? 'Available' : 'Hurda',
+            confirmUnassignAssigned: assignedSelectionCount > 0,
           })
-          .then(response => response.json())
-          .then(result => {
-             if (!result.success) throw new Error(result.error);
+          .then(() => {
              // Başarılıysa arka planda sessizce önbelleği yenile
              fetchVeritabani(false);
           })
@@ -1507,7 +1829,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
              console.error('Arka Plan Hatasi:', error);
              // YENİ: EĞER SUNUCU ÇÖKERSE, EKRANI ESKİ HALİNE GERİ ÇEVİR VE UYAR!
              setHardware(previousHardwareState);
-             alert(`UYARI: İnternet veya sunucu hatası nedeniyle "${actionType}" işlemi kaydedilemedi. Cihazlar eski durumuna döndürüldü.`);
+             showAppAlert(`UYARI: İnternet veya sunucu hatası nedeniyle "${actionType}" işlemi kaydedilemedi. Cihazlar eski durumuna döndürüldü.`);
           });
         }
       },
@@ -1518,15 +1840,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setIsLoggingIn(true);
 
     try {
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
+      const result = await postApiAction(
+        {
           action: 'verifyLogin',
           ...payload,
-        }),
-      });
-      
-      const result = await response.json();
+        },
+        { timeoutMs: 30000, notifySessionExpired: false }
+      );
 
       if (result.success) {
         const userData = {
@@ -1534,24 +1854,28 @@ setTimeout(() => setSuccessMessage(null), 2500);
           name: result.name || profile.name || result.email.split('@')[0],
           email: result.email,
           role: result.role,
+          isSuperAdmin: Boolean(result.isSuperAdmin),
           campus: result.campus,
           picture: profile.picture || result.picture,
-          token: result.sessionToken,
-          expiresAt: Date.now() + (6 * 60 * 60 * 1000)
+          token:
+            result.sessionToken ||
+            (result.sessionMode === 'cookie' ? COOKIE_SESSION_SENTINEL : ''),
+          sessionMode: result.sessionMode || 'token',
+          expiresAt:
+            Date.now() + Number(result.expiresInSeconds || 6 * 60 * 60) * 1000
         };
         
+        clearStoredDataCaches();
         localStorage.setItem('istek_it_user', JSON.stringify(userData));
+        setAuthNotice('');
         
         // ÇÖZÜM: State'leri anında ve sırayla güncelle, setTimeout kullanımını kaldır.
         setCurrentUser(userData);
         setIsLoading(true); // Veritabanı çekilme işlemine başla
         setActiveTab('hardware');
-      } else {
-        alert('Giriş Başarısız: ' + result.error);
-        setIsLoggingIn(false);
       }
     } catch (error) {
-      alert('Sunucuyla iletişim kurulamadı. İnternet bağlantınızı kontrol edin.');
+      showAppAlert('Giriş Başarısız: ' + error.message);
       setIsLoggingIn(false);
     }
   };
@@ -1559,7 +1883,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const handleGoogleAccessTokenSuccess = async (tokenResponse) => {
     if (!tokenResponse?.access_token) {
       setIsLoggingIn(false);
-      alert('Google erişim bilgisi alınamadı. Lütfen tekrar deneyin.');
+      showAppAlert('Google erişim bilgisi alınamadı. Lütfen tekrar deneyin.');
       return;
     }
     finishGoogleLogin({ googleAccessToken: tokenResponse.access_token });
@@ -1569,7 +1893,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setIsLoggingIn(false);
     const errorType = error?.type || error?.error || '';
     if (errorType === 'popup_closed' || errorType === 'popup_closed_by_user') return;
-    alert('Google ile giriş yapılamadı. Tarayıcınızda pop-up engelleyici varsa kapatınız.');
+    showAppAlert('Google ile giriş yapılamadı. Tarayıcınızda pop-up engelleyici varsa kapatınız.');
   };
 
   const isHQ = currentUser?.campus === 'Genel Müdürlük';
@@ -1637,16 +1961,19 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   const isSignatureEligiblePerson = (person) => {
     const status = String(person?.status || 'Aktif').toLocaleLowerCase('tr-TR');
+    const missingUserStatus = 'kullanıcı bulunamadı';
+    const asciiSafeStatus = status.replace(/ı/g, 'i');
+    const asciiSafeMissingUserStatus = missingUserStatus.replace(/ı/g, 'i');
     return !status.includes('pasif') &&
-      !status.includes('kullanıcı bulunamadı') &&
-      !status.includes('kullanici bulunamadi');
+      !status.includes(missingUserStatus) &&
+      !asciiSafeStatus.includes(asciiSafeMissingUserStatus);
   };
 
   const myCoreCampus = getCoreCampusName(currentUser?.campus);
 
   // ==========================================
   // ⚡ OPTİMİZE EDİLMİŞ FİLTRE VE SIRALAMA (USEMEMO) ⚡
-  // Klavye yazimindaki donmalari ve anlamsiz render'lari engeller
+  // Klavye yazımındaki donmaları ve anlamsız render'ları engeller
   // ==========================================
 
   // 1. KAMPÜS BAZLI ANA LİSTELER
@@ -1662,18 +1989,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
       : personnel.filter((p) => getCoreCampusName(p.campus) === myCoreCampus && !String(p.name).toUpperCase().includes('GÖNDEREN:'));
   }, [personnel, isHQ, campusFilter, myCoreCampus]);
 
-  const missingSignatureCount = useMemo(
-    () => campusPersonnel.filter((p) => isSignatureEligiblePerson(p) && !p.signatureLink).length,
-    [campusPersonnel]
-  );
-
   // 2. ARAMA VE DURUM FILTRELERI
   const displayHardware = useMemo(() => {
+    const normalizeTypeFilter = (value) =>
+      toTrLower(String(value || '').replace(/\s*\(pc\)/gi, '').replace(/\s+pc$/i, '').trim());
+    const safeFilter = normalizeTypeFilter(hardwareFilterType);
+    const searchTerms = toTrLower(hardwareSearchQuery).split(/\s+/).filter(Boolean);
+
     return campusHardware.filter((h) => {
-      const normalizeTypeFilter = (value) =>
-        toTrLower(String(value || '').replace(/\s*\(pc\)/gi, '').replace(/\s+pc$/i, '').trim());
       const safeType = normalizeTypeFilter(h.type);
-      const safeFilter = normalizeTypeFilter(hardwareFilterType);
       const matchType = hardwareFilterType === 'All' || safeType === safeFilter;
 
       let matchStatus = true;
@@ -1684,16 +2008,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
         if (hardwareFilterStatus === 'Transfer') matchStatus = h.status === 'Transfer';
       }
 
-      if (!hardwareSearchQuery) return matchType && matchStatus;
+      if (searchTerms.length === 0) return matchType && matchStatus;
 
-      const searchTerms = toTrLower(hardwareSearchQuery).split(/\s+/).filter(Boolean);
-      const personName = personnel.find((p) => p.id === h.assignedTo)?.name || h.assignedTo || '';
+      const personName = personnelById.get(h.assignedTo)?.name || h.assignedTo || '';
       const combinedString = toTrLower(`${h.brand} ${h.model} ${h.serial} ${h.deviceName || ''} ${personName} ${h.groupName || ''} ${h.glpiComputerName || ''} ${h.glpiAdUser || ''} ${h.glpiPersonName || ''}`);
       const matchSearch = searchTerms.every((term) => combinedString.includes(term));
 
       return matchType && matchStatus && matchSearch;
     });
-  }, [campusHardware, hardwareFilterType, hardwareFilterStatus, hardwareSearchQuery, personnel]);
+  }, [campusHardware, hardwareFilterType, hardwareFilterStatus, hardwareSearchQuery, personnelById]);
 
   const missingGlpiTypeOptions = useMemo(() => {
     const values = Array.from(new Set(missingGlpiDevices.map((item) => item.deviceType).filter(Boolean)));
@@ -1722,6 +2045,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
     }
   }, [missingGlpiCampusOptions, missingGlpiFilterCampus]);
 
+  useEffect(() => {
+    if (
+      missingGlpiFilterType !== 'All' &&
+      !missingGlpiTypeOptions.includes(missingGlpiFilterType)
+    ) {
+      setMissingGlpiFilterType('All');
+    }
+  }, [missingGlpiTypeOptions, missingGlpiFilterType]);
+
   const displayMissingGlpiDevices = useMemo(() => {
     const query = toTrLower(missingGlpiSearchQuery).trim();
     const terms = query.split(/\s+/).filter(Boolean);
@@ -1743,16 +2075,16 @@ setTimeout(() => setSuccessMessage(null), 2500);
   }, [missingGlpiDevices, missingGlpiSearchQuery, missingGlpiFilterType, missingGlpiFilterCampus, isHQ]);
 
   const qrFoundHardware = useMemo(
-    () => hardware.find((item) => item.id === qrFoundHardwareId) || null,
-    [hardware, qrFoundHardwareId]
+    () => hardwareById.get(qrFoundHardwareId) || null,
+    [hardwareById, qrFoundHardwareId]
   );
 
   const qrScannedHardware = useMemo(
     () =>
       qrScannedHardwareIds
-        .map((id) => hardware.find((item) => item.id === id))
+        .map((id) => hardwareById.get(id))
         .filter(Boolean),
-    [hardware, qrScannedHardwareIds]
+    [hardwareById, qrScannedHardwareIds]
   );
 
   const getHardwareQrPayload = (item) => `SN=${item?.serial || item?.id || item?.deviceName || ''}`;
@@ -1760,7 +2092,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const handleOpenQrLabelPrint = (items) => {
     const printItems = (items || []).filter((item) => item && (item.serial || item.id || item.deviceName));
     if (printItems.length === 0) {
-      alert('QR etiketi oluşturulacak cihaz bulunamadı.');
+      showAppAlert('QR etiketi oluşturulacak cihaz bulunamadı.');
       return;
     }
 
@@ -1768,6 +2100,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
 
   const displayPersonnel = useMemo(() => {
+    const searchTerms = toTrLower(personnelSearchQuery).split(/\s+/).filter(Boolean);
     return campusPersonnel.filter((p) => {
       let matchStatus = true;
       if (personnelFilterStatus !== 'All') matchStatus = (p.status || 'Aktif') === personnelFilterStatus;
@@ -1777,9 +2110,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
         (personnelSignatureFilter === 'Ready' && Boolean(p.signatureLink));
 
       if (!matchStatus || !matchSignature) return false;
-      if (!personnelSearchQuery) return true;
+      if (searchTerms.length === 0) return true;
 
-      const searchTerms = toTrLower(personnelSearchQuery).split(/\s+/).filter(Boolean);
       const combinedString = toTrLower(`${p.name} ${p.email || ''} ${p.department || ''} ${p.title || ''}`);
       const matchSearch = searchTerms.every((term) => combinedString.includes(term));
 
@@ -1800,14 +2132,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
       if (hardwareSort.key === 'serial') { aValue = a.serial || ''; bValue = b.serial || ''; }
       if (hardwareSort.key === 'status') { aValue = a.status || ''; bValue = b.status || ''; }
       if (hardwareSort.key === 'person') {
-        aValue = personnel.find((p) => p.id === a.assignedTo)?.name || '';
-        bValue = personnel.find((p) => p.id === b.assignedTo)?.name || '';
+        aValue = personnelById.get(a.assignedTo)?.name || '';
+        bValue = personnelById.get(b.assignedTo)?.name || '';
       }
       if (String(aValue).toLowerCase() < String(bValue).toLowerCase()) return hardwareSort.direction === 'asc' ? -1 : 1;
       if (String(aValue).toLowerCase() > String(bValue).toLowerCase()) return hardwareSort.direction === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [displayHardware, hardwareSort, personnel]);
+  }, [displayHardware, hardwareSort, personnelById]);
 
   const sortedPersonnel = useMemo(() => {
     if (!personnelSort.key) return displayPersonnel;
@@ -1821,7 +2153,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
     });
   }, [displayPersonnel, personnelSort]);
 
-  // YENI: PAGINATION HESAPLAMALARI
+  // YENİ: PAGINATION HESAPLAMALARI
   const hardwareTotalPages = Math.ceil(sortedHardware.length / ITEMS_PER_PAGE);
   const hardwareStartIndex = (hardwarePage - 1) * ITEMS_PER_PAGE;
   const paginatedHardware = sortedHardware.slice(
@@ -1837,6 +2169,44 @@ setTimeout(() => setSuccessMessage(null), 2500);
     personnelStartIndex,
     personnelStartIndex + ITEMS_PER_PAGE
   );
+
+  const selectedHardwareIdSet = useMemo(
+    () => new Set(selectedBulkHardware),
+    [selectedBulkHardware]
+  );
+  const selectedHardwareOnPage = paginatedHardware.filter((item) =>
+    selectedHardwareIdSet.has(item.id)
+  ).length;
+  const allHardwareOnPageSelected =
+    paginatedHardware.length > 0 && selectedHardwareOnPage === paginatedHardware.length;
+  const someHardwareOnPageSelected =
+    selectedHardwareOnPage > 0 && !allHardwareOnPageSelected;
+  const selectedFilteredHardware = sortedHardware.filter((item) =>
+    selectedHardwareIdSet.has(item.id)
+  ).length;
+  const allFilteredHardwareSelected =
+    sortedHardware.length > 0 && selectedFilteredHardware === sortedHardware.length;
+  const someFilteredHardwareSelected =
+    selectedFilteredHardware > 0 && !allFilteredHardwareSelected;
+
+  const selectedPersonnelIdSet = useMemo(
+    () => new Set(selectedBulkPersonnel),
+    [selectedBulkPersonnel]
+  );
+  const selectedPersonnelOnPage = paginatedPersonnel.filter((person) =>
+    selectedPersonnelIdSet.has(person.id)
+  ).length;
+  const allPersonnelOnPageSelected =
+    paginatedPersonnel.length > 0 && selectedPersonnelOnPage === paginatedPersonnel.length;
+  const somePersonnelOnPageSelected =
+    selectedPersonnelOnPage > 0 && !allPersonnelOnPageSelected;
+  const selectedFilteredPersonnel = sortedPersonnel.filter((person) =>
+    selectedPersonnelIdSet.has(person.id)
+  ).length;
+  const allFilteredPersonnelSelected =
+    sortedPersonnel.length > 0 && selectedFilteredPersonnel === sortedPersonnel.length;
+  const someFilteredPersonnelSelected =
+    selectedFilteredPersonnel > 0 && !allFilteredPersonnelSelected;
 
   const getSortIcon = (currentSort, key) => {
     if (currentSort.key !== key)
@@ -1999,15 +2369,29 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
     let cancelled = false;
     let frameId = null;
+    let qrDecoder = null;
     
     // Görüntüyü analiz etmek için gizli bir canvas oluşturuyoruz
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
 
+    import('jsqr')
+      .then((module) => {
+        if (!cancelled) {
+          qrDecoder = module.default || module;
+        }
+      })
+      .catch((error) => {
+        console.error('QR okuyucu yüklenemedi:', error);
+        if (!cancelled) {
+          setQrScannerError('QR okuyucu yüklenemedi. Sayfayı yenileyip tekrar deneyin.');
+        }
+      });
+
     const scan = () => {
       if (cancelled) return;
 
-      if (qrVideoRef.current && qrVideoRef.current.readyState === qrVideoRef.current.HAVE_ENOUGH_DATA) {
+      if (qrVideoRef.current && qrDecoder && qrVideoRef.current.readyState === qrVideoRef.current.HAVE_ENOUGH_DATA) {
         const video = qrVideoRef.current;
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
@@ -2017,7 +2401,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
 
         // jsQR kütüphanesi ile Apple cihazlarında bile güvenle QR arıyoruz
-        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        const code = qrDecoder(imageData.data, imageData.width, imageData.height, {
           inversionAttempts: "dontInvert",
         });
 
@@ -2050,29 +2434,28 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setSuccessMessage(`${targetIds.length} cihaz için sayım kaydı yazılıyor...`);
 
     try {
-      const processed = [];
-      for (const hardwareId of targetIds) {
-        const item = hardware.find((h) => h.id === hardwareId);
-        if (!item) continue;
-        const response = await fetch(GAS_URL, {
-          method: 'POST',
-          body: JSON.stringify({
-            authToken: currentUser.token,
-            action: 'recordInventoryScan',
-            hardwareId: item.id,
-            qrPayload: getHardwareQrPayload(item),
-            clientIp,
-          }),
-        });
-        const result = await response.json();
-        if (!result.success) throw new Error(result.error);
-        processed.push({
+      const targetItems = targetIds.map((hardwareId) => hardwareById.get(hardwareId)).filter(Boolean);
+      const result = await postApiAction({
+        authToken: currentUser.token,
+        action: 'recordInventoryScan',
+        scans: targetItems.map((item) => ({
+          hardwareId: item.id,
+          qrPayload: getHardwareQrPayload(item),
+        })),
+        clientIp,
+      });
+      const insertedIds = new Set(
+        Array.isArray(result.hardwareIds) ? result.hardwareIds.map(String) : targetItems.map((item) => String(item.id))
+      );
+      const processed = targetItems
+        .filter((item) => insertedIds.has(String(item.id)))
+        .map((item) => ({
           item,
           scannedAt: result.scannedAt || new Date().toLocaleString('tr-TR'),
-        });
-      }
+        }));
+      const duplicateCount = Number(result.duplicateCount || 0);
 
-      setQrScanLog((prev) => [
+      setQrScanLog((prev) => ([
         ...processed.map(({ item, scannedAt }) => ({
           id: `${Date.now()}-${item.id}`,
           hardwareId: item.id,
@@ -2081,13 +2464,20 @@ setTimeout(() => setSuccessMessage(null), 2500);
           deviceName: item.deviceName || item.glpiComputerName || '-',
           at: scannedAt,
         })),
-        ...prev.slice(0, 19),
-      ]);
-      setSuccessMessage(`${processed.length} cihaz sayımda görüldü olarak işlendi.`);
-      setTimeout(() => setSuccessMessage(null), 2000);
+        ...prev,
+      ].slice(0, 20)));
+      const duplicateMessage = duplicateCount > 0
+        ? ` ${duplicateCount} cihaz son 30 saniyede zaten sayıldığı için tekrar yazılmadı.`
+        : '';
+      setSuccessMessage(
+        processed.length > 0
+          ? `${processed.length} cihaz sayımda görüldü olarak işlendi.${duplicateMessage}`
+          : `Seçilen cihazlar son 30 saniyede zaten sayılmıştı; yeni kayıt oluşturulmadı.`
+      );
+      setTimeout(() => setSuccessMessage(null), 3500);
       setSelectedQrHardwareIds([]);
     } catch (error) {
-      alert(`Sayım kaydı yazılamadı: ${error.message}`);
+      showAppAlert(`Sayım kaydı yazılamadı: ${error.message}`);
     } finally {
       qrActionBusyRef.current = false;
       setIsQrActionBusy(false);
@@ -2101,8 +2491,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (targetIds.length === 0) return;
 
     const actionLabel = nextStatus === 'Available' ? 'Depoya çek' : 'Hurdaya ayır';
+    const assignedCount = targetIds.reduce(
+      (count, id) => count + (hardwareById.get(id)?.assignedTo ? 1 : 0),
+      0
+    );
+    const assignmentWarning = assignedCount > 0
+      ? ` ${assignedCount} cihaz halen personele zimmetli; mevcut zimmet bağlantısı kaldırılacak.`
+      : '';
     setConfirmDialog({
-      message: `${targetIds.length} cihaz için "${actionLabel}" işlemi yapılacak. Emin misiniz?`,
+      message: `${targetIds.length} cihaz için "${actionLabel}" işlemi yapılacak.${assignmentWarning} Emin misiniz?`,
       type: nextStatus === 'Hurda' ? 'danger' : 'info',
       onConfirm: async () => {
         if (qrActionBusyRef.current) return;
@@ -2122,22 +2519,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
         );
 
         try {
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
-              authToken: currentUser.token,
-              action: 'bulkStatusUpdate',
-              hardwareIds: targetIds,
-              newStatus: nextStatus,
-              clientIp,
-            }),
+          await postApiAction({
+            authToken: currentUser.token,
+            action: 'bulkStatusUpdate',
+            hardwareIds: targetIds,
+            newStatus: nextStatus,
+            confirmUnassignAssigned: assignedCount > 0,
+            clientIp,
           });
-          const result = await response.json();
-          if (!result.success) throw new Error(result.error);
 
           setQrScanLog((prev) => [
             ...targetIds.map((hardwareId) => {
-              const item = hardware.find((h) => h.id === hardwareId);
+              const item = hardwareById.get(hardwareId);
               return {
               id: `${Date.now()}-${hardwareId}`,
               hardwareId,
@@ -2153,7 +2546,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
           fetchVeritabani(false);
         } catch (error) {
           setHardware(previousHardwareState);
-          alert(`QR işlem hatası: ${error.message}`);
+          showAppAlert(`QR işlem hatası: ${error.message}`);
         } finally {
           qrActionBusyRef.current = false;
           setIsQrActionBusy(false);
@@ -2169,10 +2562,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (targetIds.length === 0) return;
 
     const blockedItems = targetIds
-      .map((id) => hardware.find((h) => h.id === id))
+      .map((id) => hardwareById.get(id))
       .filter((item) => item && (item.status === 'Hurda' || item.status === 'Transfer'));
     if (blockedItems.length > 0) {
-      alert('Hurda veya transfer durumundaki cihazlar zimmete aktarılamaz.');
+      showAppAlert('Hurda veya transfer durumundaki cihazlar zimmete aktarılamaz.');
       return;
     }
 
@@ -2184,15 +2577,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setTimeout(() => setSuccessMessage(null), 2500);
   };
 
-  // YENI: Transferdeki cihazlar zimmetlenemez! Sadece "Depoda" ve "Zimmetli" olanlar listelenir.
-  const availableHardwareForAssign = campusHardware
-    .filter((h) => h.status !== 'Hurda' && h.status !== 'Transfer')
-    .filter((h) => {
-      const normalizeTypeFilter = (value) =>
-        toTrLower(String(value || '').replace(/\s*\(pc\)/gi, '').replace(/\s+pc$/i, '').trim());
+  // YENİ: Transferdeki cihazlar zimmetlenemez! Sadece "Depoda" ve "Zimmetli" olanlar listelenir.
+  const availableHardwareForAssign = useMemo(() => {
+    const normalizeTypeFilter = (value) =>
+      toTrLower(String(value || '').replace(/\s*\(pc\)/gi, '').replace(/\s+pc$/i, '').trim());
+    const normalizedTypeFilter = normalizeTypeFilter(assignFilterType);
+    const searchTerms = toTrLower(assignSearchQuery).split(/\s+/).filter(Boolean);
+
+    return campusHardware.filter((h) => {
+      if (h.status === 'Hurda' || h.status === 'Transfer') return false;
       const matchType =
         assignFilterType === 'All' ||
-        (h.type && normalizeTypeFilter(h.type) === normalizeTypeFilter(assignFilterType));
+        (h.type && normalizeTypeFilter(h.type) === normalizedTypeFilter);
 
       let matchStatus = true;
       if (assignFilterStatus === 'Zimmetli')
@@ -2203,11 +2599,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       const matchCampus =
         assignFilterCampus === 'All' || h.campus === assignFilterCampus;
 
-      const searchTerms = toTrLower(assignSearchQuery)
-        .split(/\s+/)
-        .filter(Boolean);
-        const personName =
-        personnel.find((p) => p.id === h.assignedTo)?.name || h.assignedTo || '';
+      const personName = personnelById.get(h.assignedTo)?.name || h.assignedTo || '';
       const groupN = h.groupName || '';
       const combinedString = toTrLower(
         `${h.brand} ${h.model} ${h.serial} ${personName} ${groupN}`
@@ -2219,13 +2611,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
       return matchType && matchStatus && matchCampus && matchSearch;
     });
+  }, [
+    campusHardware,
+    assignFilterType,
+    assignFilterStatus,
+    assignFilterCampus,
+    assignSearchQuery,
+    personnelById,
+  ]);
 
   const handleCreateAssignment = () => {
     if (!selectedPerson || selectedHardware.length === 0)
-      return alert('Lütfen personel ve cihaz seçin.');
+      return showAppAlert('Lütfen personel ve cihaz seçin.');
 
     // YENİ MANTIK: Seçilen cihazlar arasında hali hazırda "Zimmetli" olan var mı?
-    // Not: Mouse checkbox'i OEM disinda bir mouse ise onu da dahil ediyoruz
+    // Not: Mouse checkbox'ı OEM dışında bir mouse ise onu da dahil ediyoruz
     let finalSelectedHardware = [...selectedHardware];
     if (
       includeMouse &&
@@ -2240,18 +2640,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
     );
 
     if (alreadyAssignedItems.length > 0) {
-      // Eğer zimmetli cihaz varsa, imzaya geçmeden önce Onay Modalını aç
+      // Eğer zimmetli cihaz varsa, beyan adımından önce onay penceresini aç.
       setZimmetliCihazlarListesi(alreadyAssignedItems);
       setShowZimmetliOnayModal(true);
     } else {
-      // Sorun yoksa direkt imzaya geç
+      // Sorun yoksa doğrudan beyan ve doğrulama adımına geç.
       setIsSigning(true);
     }
   };
 
   const handleFinalizeZimmet = async () => {
     if (!itSignature || !personOtpData || !personSignature)
-      return alert('Lütfen IT imzası, doğrulama kodu ve personel imzasının tamamlandığından emin olun.');
+      return showAppAlert('Lütfen IT teslim beyanı, doğrulama kodu ve personel teslim alma beyanını tamamlayın.');
 
     let finalSelectedHardware = [...selectedHardware];
     if (includeMouse && selectedMouseId !== 'OEM' && !finalSelectedHardware.includes(selectedMouseId)) {
@@ -2292,9 +2692,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
       
       while (retries > 0) {
         try {
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
+          result = await postApiAction(
+            {
               authToken: currentUser.token,
               action: 'saveZimmetServerSide',
               pdfName: filename,
@@ -2307,30 +2706,19 @@ setTimeout(() => setSuccessMessage(null), 2500);
               itEmail: currentUser.email,
               itName: currentUser.name,
               personEmail: person.email || '',
-              itSignature: itSignature.image,
-              personSignature: personSignature.image,
+              itStatement: itSignature.image,
+              personStatement: personSignature.image,
               personOtpHash: personOtpData.hash,
               zimmetExplanation: zimmetExplanation,
               clientIp: clientIp,
               userAgent: navigator.userAgent
-            }),
-          });
-          
-          result = await response.json();
-          
-          if (!result.success) {
-            // Eğer hata "Sistem meşgul" ise ve deneme hakkımız varsa bekle ve tekrarla
-            if ((result.error.includes("Sistem meşgul") || result.error.includes("yoğun")) && retries > 1) {
-              retries--;
-              await new Promise(r => setTimeout(r, 2500)); // 2.5 saniye bekle
-              continue;
-            }
-            throw new Error(result.error || "Drive'a kaydedilemedi.");
-          }
+            },
+            { timeoutMs: 120000 }
+          );
           break; // Başarılı olursa döngüden çık
           
         } catch (fetchError) {
-          if (retries > 1) {
+          if (retries > 1 && isRetryableApiError(fetchError)) {
             retries--;
             await new Promise(r => setTimeout(r, 2500));
             continue;
@@ -2366,7 +2754,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setPersonSignature(null); setIncludeCharger(false); setIncludeBag(false); setIncludeMouse(false);
       setSelectedMouseId('OEM'); setActiveTab('personnel'); setPersonOtpData(null); setAssignStep(1);
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsGenerating(false);
     }
@@ -2375,7 +2763,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   // --- İADE PDF ÜRETİMİ VE YÜKLEMESİ (SUNUCU TARAFLI) ---
   const handleFinalizeReturn = async () => {
     if (!returnItSignature || !returnPersonSignature || !returnPersonOtpData || !isReturnAccepted)
-      return alert('Lütfen imzaları, SMS kodunu ve Hukuki Onay kutucuğunu tamamlayın.');
+      return showAppAlert('Lütfen IT teslim alma beyanı, personel iade beyanı, doğrulama kodu ve Hukuki Onay kutucuğunu tamamlayın.');
 
     setIsGenerating(true);
 
@@ -2384,7 +2772,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       type: hw.type || '-', brand: hw.brand || '-', model: hw.model || '-', serial: hw.serial || '-'
     }));
 
-    // YENI EKLENEN: Aksesuarlari iade listesine (ve sunucu PDF'ine) dahil et
+    // YENİ EKLENEN: Aksesuarları iade listesine (ve sunucu PDF'ine) dahil et
     if (returnIncludeCharger) hardwareListForServer.push({ type: 'Aksesuar', brand: 'Orijinal Şarj Adaptörü', model: 've Kablosu', serial: '-' });
     if (returnIncludeBag) hardwareListForServer.push({ type: 'Aksesuar', brand: 'Notebook Taşıma', model: 'Çantası', serial: '-' });
     if (returnIncludeMouse) hardwareListForServer.push({ type: 'Aksesuar', brand: 'Standart', model: 'Mouse', serial: 'OEM' });
@@ -2409,9 +2797,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
       
       while (retries > 0) {
         try {
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
+          result = await postApiAction(
+            {
               authToken: currentUser.token,
               action: 'returnZimmetServerSide',
               pdfName: filename,
@@ -2424,30 +2811,20 @@ setTimeout(() => setSuccessMessage(null), 2500);
               itEmail: currentUser.email,
               itName: currentUser.name,
               personEmail: person.email || '',
-              itSignature: returnItSignature.image,
-              personSignature: returnPersonSignature.image,
+              itStatement: returnItSignature.image,
+              personStatement: returnPersonSignature.image,
               personOtpHash: returnPersonOtpData.hash,
               returnCondition: returnCondition,
               returnExplanation: returnExplanation,
               clientIp: clientIp,
               userAgent: navigator.userAgent
-            }),
-          });
-          
-          result = await response.json();
-          
-          if (!result.success) {
-            if ((result.error.includes("Sistem meşgul") || result.error.includes("yoğun")) && retries > 1) {
-              retries--;
-              await new Promise(r => setTimeout(r, 2500));
-              continue;
-            }
-            throw new Error(result.error || "Drive'a kaydedilemedi.");
-          }
+            },
+            { timeoutMs: 120000 }
+          );
           break;
           
         } catch (fetchError) {
-          if (retries > 1) {
+          if (retries > 1 && isRetryableApiError(fetchError)) {
             retries--;
             await new Promise(r => setTimeout(r, 2500));
             continue;
@@ -2471,7 +2848,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setTimeout(() => setSuccessMessage(null), 4500);
       setReturningData(null); setReturnItSignature(null); setReturnPersonSignature(null); setReturnCondition('eksiksiz'); setReturnExplanation(''); setIsReturnAccepted(false); setReturnPersonOtpData(null);
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsGenerating(false);
     }
@@ -2480,20 +2857,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
   // --- KAMPÜS TRANSFER PDF VE KAYIT İŞLEMLERİ (SUNUCU TARAFLI) ---
   // --- KAMPÜS TRANSFER PDF VE KAYIT İŞLEMLERİ (SUNUCU TARAFLI) ---
   const handleFinalizeTransfer = async () => {
-    if (!transferSignature) return alert('Lütfen imzanızı atın.');
+    if (!transferSignature) return showAppAlert('Lütfen el yazısı teslim beyanınızı tamamlayın.');
 
     setIsGenerating(true);
 
     try {
       const { type, items, targetCampus, senderCampus } = transferModalObj;
       const isOut = type === 'out';
-
-      // HATA DÜZELTİLDİ: AUTHORIZED_IT_USERS bağımlılığı kaldırıldı.
-      let targetItEmail = '';
-      const relevantCampus = isOut ? targetCampus : senderCampus;
-      if (relevantCampus && relevantCampus.trim().toLowerCase() === 'genel müdürlük') {
-        targetItEmail = 'huseyin.cift@istek.k12.tr';
-      }
 
       const hardwareListForServer = items.map(hw => ({
         type: hw.type || '-', brand: hw.brand || '-', model: hw.model || '-', serial: hw.serial || '-'
@@ -2508,9 +2878,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
       
       while (retries > 0) {
         try {
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
+          result = await postApiAction(
+            {
               authToken: currentUser.token,
               action: isOut ? 'startTransferServerSide' : 'completeTransferServerSide',
               pdfName: filename,
@@ -2521,26 +2890,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
               receiverCampus: currentUser.campus,
               currentUserEmail: currentUser.email,
               itName: currentUser.name,
-              targetItEmail: targetItEmail,
-              transferSignature: transferSignature.image,
+              transferStatement: transferSignature.image,
               clientIp: clientIp,
-            }),
-          });
-          
-          result = await response.json();
-          
-          if (!result.success) {
-            if ((result.error.includes("Sistem meşgul") || result.error.includes("yoğun")) && retries > 1) {
-              retries--;
-              await new Promise(r => setTimeout(r, 2500));
-              continue;
-            }
-            throw new Error(result.error);
-          }
+            },
+            { timeoutMs: 120000 }
+          );
           break;
           
         } catch (fetchError) {
-          if (retries > 1) {
+          if (retries > 1 && isRetryableApiError(fetchError)) {
             retries--;
             await new Promise(r => setTimeout(r, 2500));
             continue;
@@ -2558,7 +2916,31 @@ setTimeout(() => setSuccessMessage(null), 2500);
           if (items.some((i) => i.id === h.id)) {
             const safeHistory = Array.isArray(h.history) ? h.history : [];
             if (isOut) {
-              return { ...h, status: 'Transfer', campus: targetCampus, assignedTo: `GÖNDEREN:${currentUser.campus}`, driveLink: realDriveUrl || null, historyLoaded: true, history: [{ personName: currentUser.name, date: timeString, driveLink: realDriveUrl, type: isQueued ? `Kampüs Çıkış (${currentUser.campus}) (PDF hazırlanıyor)` : `Kampüs Çıkış (${currentUser.campus})` }, ...safeHistory] };
+              const eventType = isQueued
+                ? `Kampüs Çıkış (${currentUser.campus}) (PDF hazırlanıyor)`
+                : `Kampüs Çıkış (${currentUser.campus})`;
+              const eventDate = new Date().toISOString();
+              return {
+                ...h,
+                status: 'Transfer',
+                campus: targetCampus,
+                assignedTo: `GÖNDEREN:${currentUser.campus}`,
+                driveLink: realDriveUrl || null,
+                updatedAt: eventDate,
+                lastEventDate: eventDate,
+                lastEventPersonName: currentUser.name,
+                lastEventType: eventType,
+                historyLoaded: true,
+                history: [
+                  {
+                    personName: currentUser.name,
+                    date: timeString,
+                    driveLink: realDriveUrl,
+                    type: eventType,
+                  },
+                  ...safeHistory,
+                ],
+              };
             } else {
               return { ...h, status: 'Available', assignedTo: null, campus: currentUser.campus, driveLink: realDriveUrl || null, historyLoaded: true, history: [{ personName: currentUser.name, date: timeString, driveLink: realDriveUrl, type: isQueued ? `Kampüs Giriş (${currentUser.campus}) (PDF hazırlanıyor)` : `Kampüs Giriş (${currentUser.campus})` }, ...safeHistory] };
             }
@@ -2572,12 +2954,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setTransferModalObj(null); setTransferSignature(null); setSelectedBulkHardware([]); setViewingHardwareId(null);
       
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsGenerating(false); // Hata olsa da olmasa da yükleniyor ekranı kapanacak!
     }
   };
-  // YENI: TRANSFER IPTAL ETME (REDDETME) FONKSIYONU
+  // YENİ: TRANSFER İPTAL ETME (REDDETME) FONKSİYONU
   const handleCancelTransfer = (items, senderCampus) => {
     setConfirmDialog({
       message: "Bu transfer işlemini iptal etmek/reddetmek istediğinize emin misiniz? Cihazlar gönderen kampüsün deposuna geri dönecektir.",
@@ -2586,19 +2968,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
         setConfirmDialog(null);
         setIsGenerating(true);
         try {
-          const response = await fetch(GAS_URL, {
-            method: 'POST',
-            body: JSON.stringify({
-              authToken: currentUser.token,
-              action: 'cancelTransfer',
-              hardwareIds: items.map((i) => i.id),
-              senderCampus: senderCampus,
-              currentUserName: currentUser.name,
-              currentUserEmail: currentUser.email,
-            }),
+          await postApiAction({
+            authToken: currentUser.token,
+            action: 'cancelTransfer',
+            hardwareIds: items.map((i) => i.id),
+            senderCampus: senderCampus,
+            currentUserName: currentUser.name,
+            currentUserEmail: currentUser.email,
           });
-          const result = await response.json();
-          if (!result.success) throw new Error(result.error);
 
           // Ekranda Anında Güncelleme (Cihazı eski kampüsüne ve Depoda durumuna çek)
           setHardware((prev) =>
@@ -2629,7 +3006,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             setIsGenerating(false);
           }, 2000);
         } catch (error) {
-          alert('Hata: ' + error.message);
+          showAppAlert('Hata: ' + error.message);
           setIsGenerating(false);
         }
       },
@@ -2637,11 +3014,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
   const handleManualUploadSubmit = async () => {
     if (!manualUploadFile || !manualUploadPerson)
-      return alert('Lütfen bir personel ve dosya seçin.');
+      return showAppAlert('Lütfen bir personel ve dosya seçin.');
 
-    const person = personnel.find((p) => p.id === manualUploadPerson);
-    const isImage = manualUploadFile.type.startsWith('image/');
-    const extension = isImage ? '.jpg' : '.pdf';
+    const person = personnelById.get(manualUploadPerson);
+    const extension =
+      manualUploadFile.type === 'image/png'
+        ? '.png'
+        : manualUploadFile.type.startsWith('image/')
+          ? '.jpg'
+          : '.pdf';
     const filename =
       `${viewedHardware.serial}, ${person.name}, Manuel_Tutanak${extension}`.replace(
         /[\/\\?%*:|"<>]/g,
@@ -2659,10 +3040,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
         reader.onerror = (error) => reject(error);
       });
 
-      const response = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-         authToken: currentUser.token,
+      const result = await postApiAction(
+        {
+          authToken: currentUser.token,
           action: 'manualAssign',
           pdfName: filename,
           pdfData: base64String,
@@ -2670,11 +3050,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
           personId: person.id,
           personName: person.name,
           hardwareId: viewedHardware.id,
-        }),
-      });
-
-      const result = await response.json();
-      if (!result.success) throw new Error(result.error);
+        },
+        { timeoutMs: 180000 }
+      );
 
       // Local state'i güncelle
       setHardware((prev) =>
@@ -2707,46 +3085,49 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setManualUploadPerson('');
       setViewingHardwareId(null);
     } catch (error) {
-      alert('Hata: ' + error.message);
+      showAppAlert('Hata: ' + error.message);
     } finally {
       setIsUploadingManual(false);
     }
   };
   const renderPrintableDocument = () => (
-    <ZimmetDocumentModal
-      deps={{
-        campusPersonnel,
-        selectedPerson,
-        selectedHardware,
-        includeCharger,
-        includeBag,
-        includeMouse,
-        selectedMouseId,
-        campusHardware,
-        isGenerating,
-        currentUser,
-        zimmetExplanation,
-        setZimmetExplanation,
-        itSignature,
-        setItSignature,
-        personOtpData,
-        setPersonOtpData,
-        personSignature,
-        setPersonSignature,
-        clientIp,
-        handlePersonPhoneSaved,
-        isKvkkAccepted,
-        setIsKvkkAccepted,
-        handlePdfClick,
-        setIsSigning,
-        handleFinalizeZimmet,
-      }}
-    />
+    <Suspense fallback={<LazyPanelFallback label="Tutanak ekranı hazırlanıyor..." />}>
+      <ZimmetDocumentModal
+        deps={{
+          campusPersonnel,
+          selectedPerson,
+          selectedHardware,
+          includeCharger,
+          includeBag,
+          includeMouse,
+          selectedMouseId,
+          campusHardware,
+          isGenerating,
+          currentUser,
+          zimmetExplanation,
+          setZimmetExplanation,
+          itSignature,
+          setItSignature,
+          personOtpData,
+          setPersonOtpData,
+          personSignature,
+          setPersonSignature,
+          clientIp,
+          handlePersonPhoneSaved,
+          isKvkkAccepted,
+          setIsKvkkAccepted,
+          handlePdfClick,
+          setIsSigning,
+          handleFinalizeZimmet,
+        }}
+      />
+    </Suspense>
   );
 
   const handleTabChange = (tabName) => {
     // İşlem yapiliyorsa sekme degistirmeyi engelle
     if (isGenerating) return;
+    if (tabName === 'systemAdmin' && !currentUser?.isSuperAdmin) return;
 
     // --- AÇIK OLAN HER TÜRLÜ İŞLEMİ VE MODALI İPTAL ET ---
     setIsSigning(false);
@@ -2755,8 +3136,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setViewingHardwareId(null); // Cihaz profilini kapat
     setViewingPersonId(null); // Personel profilini kapat
     setShowAddHardwareModal(false); // Donanım ekleme modalini kapat
+    setShowBulkHardwareImportModal(false); // Toplu donanım ekleme modalini kapat
     
-    // Zimmet ve İade imzalarını sıfırla
+    // Zimmet, iade ve transfer el yazısı beyanlarını sıfırla.
     setItSignature(null);
     setPersonSignature(null);
     setPersonOtpData(null);
@@ -2807,42 +3189,55 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
 
   // YENİ: TÜM UYGULAMA İÇİN GENEL GELEN TRANSFER BİLDİRİM SAYACI
-  const incomingTransfers = hardware.filter((h) => {
-    if (!h.status || !h.campus || !h.assignedTo) return false;
-    const isTransferState = String(h.status || '').trim().toLowerCase() === 'transfer';
-    const isMyCampus = getCoreCampusName(h.campus) === myCoreCampus;
-    const isFromSender = String(h.assignedTo).toUpperCase().includes('GÖNDEREN');
-    const senderCore = getCoreCampusName(String(h.assignedTo).replace(/GÖNDEREN:/i, ''));
-    const isNotFromMe = senderCore !== myCoreCampus;
-    return isTransferState && isMyCampus && isFromSender && isNotFromMe;
-  });
+  const incomingTransfers = useMemo(
+    () =>
+      hardware.filter((h) => {
+        if (!h.status || !h.campus || !h.assignedTo) return false;
+        const isTransferState =
+          String(h.status || '').trim().toLowerCase() === 'transfer';
+        const isMyCampus = getCoreCampusName(h.campus) === myCoreCampus;
+        const isFromSender = String(h.assignedTo).toUpperCase().includes('GÖNDEREN');
+        const senderCore = getCoreCampusName(
+          String(h.assignedTo).replace(/GÖNDEREN:/i, '')
+        );
+        const isNotFromMe = senderCore !== myCoreCampus;
+        return isTransferState && isMyCampus && isFromSender && isNotFromMe;
+      }),
+    [hardware, myCoreCampus]
+  );
 
   // --- BEYAZ EKRAN ÇÖZÜMÜ: EKRANLAR HOOK'LARDAN SONRAYA TAŞINDI ---
   if (isLoading) {
-    return (
-      <div className="min-h-screen w-screen overflow-x-hidden flex flex-col items-center justify-center bg-slate-50">
-        <Loader2 className="w-12 h-12 animate-spin text-blue-600 mb-4" />
-        <p className="text-gray-600 font-medium">Sistem Yükleniyor...</p>
-        <p className="text-gray-400 text-sm mt-2">Veritabani ile senkronize ediliyor.</p>
-      </div>
-    );
+    return <WorkspaceSkeleton />;
   }
 
   if (!currentUser) {
     return (
-      <div className="min-h-screen w-screen bg-slate-50 flex items-center justify-center p-4">
+      <div className="app-login-shell min-h-screen w-screen bg-slate-50 flex items-center justify-center p-4">
+        <ThemeToggle
+          theme={theme}
+          onToggle={toggleTheme}
+          className="app-login-theme-toggle fixed right-4 top-4 z-20"
+        />
         <div className="max-w-md w-full bg-white rounded-3xl shadow-2xl overflow-hidden p-8 sm:p-10 border border-gray-100">
           <div className="flex flex-col items-center mb-8">
             <div className="w-full flex justify-center mb-4">
-              <img src="https://istek.site/logo/Kurum_Genel_Logo-01.png" alt="İSTEK Okulları Logo" className="h-20 sm:h-24 w-auto object-contain drop-shadow-sm" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }} />
-              <div style={{ display: 'none' }} className="flex-col items-center">
-                <Building2 className="w-16 h-16 text-[#0066b1] mb-2 opacity-90" />
-                <h1 className="text-3xl font-black text-[#0066b1]">İSTEK Okulları</h1>
+              <div className="login-logo-surface inline-flex min-h-24 items-center justify-center rounded-2xl px-4 py-2.5">
+                <img src="/istek-logo.png" alt="İSTEK Okulları Logo" className="login-logo-image h-20 sm:h-24 w-auto object-contain" onError={(e) => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }} />
+                <div style={{ display: 'none' }} className="flex-col items-center">
+                  <Building2 className="w-16 h-16 text-[#0066b1] mb-2 opacity-90" />
+                  <h1 className="text-3xl font-black text-[#0066b1]">İSTEK Okulları</h1>
+                </div>
               </div>
             </div>
             <h2 className="text-xl sm:text-xl font-bold text-[#0066b1] text-center tracking-tight">Bilgi İşlem Demirbaş Yönetim Sistemi</h2>
           </div>
           <div className="flex flex-col items-center space-y-6 min-h-[120px] justify-center">
+            {authNotice && (
+              <div className="w-full rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-center text-xs font-bold text-amber-800">
+                {authNotice}
+              </div>
+            )}
             {isLoggingIn ? (
               <div className="flex flex-col items-center justify-center p-2 animate-in fade-in zoom-in duration-300">
                 <Loader2 className="w-10 h-10 animate-spin text-[#0066b1] mb-4" />
@@ -2874,8 +3269,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   return (
     <div 
-      // YENI: overscroll-none ve touch-none ile arka planin esnemesini (rubber-band) tamamen kapattik
-      className="fixed inset-0 flex flex-col md:flex-row w-full bg-slate-50 font-sans text-gray-800 selection:bg-[#8bcdc5]/30 overflow-hidden overscroll-none"
+      // YENİ: overscroll-none ve touch-none ile arka planın esnemesini (rubber-band) tamamen kapattık
+      className="app-shell fixed inset-0 flex flex-col md:flex-row w-full bg-slate-50 font-sans text-gray-800 selection:bg-[#8bcdc5]/30 overflow-hidden overscroll-none"
     >
       {/* SİTE İÇİ PDF ÖNİZLEYİCİ MODAL (MOBİL VE DESKTOP UYUMLU) */}
       {previewPdf && (
@@ -2928,7 +3323,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
               <a
                 href={previewPdf.url}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 className="px-5 py-2 sm:px-6 sm:py-2 bg-[#0066b1] text-white text-sm sm:text-base font-bold rounded-lg shadow hover:bg-[#005595] transition-colors"
               >
                 Tarayıcıda Yeni Sekmede Aç
@@ -2938,7 +3333,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             {/* Gerçek İframe */}
             {previewPdf.url && (
               <iframe
-                src={formatDriveUrlForEmbed(previewPdf.url)}
+                src={previewPdf.embedUrl}
                 style={{
                   width: '100%',
                   height: '100%',
@@ -2955,7 +3350,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </div>
       )}
 
-<aside className="w-full md:w-64 bg-[#0066b1] text-white flex flex-col print:hidden shrink-0 shadow-md z-30 transition-all">
+<aside className="app-sidebar w-full md:w-64 bg-[#0066b1] text-white flex flex-col print:hidden shrink-0 shadow-md z-30 transition-all">
         {/* MOBİL VE IPAD'DE GİZLENEN LOGO BÖLÜMÜ */}
         <div className="overflow-hidden">
           <style>{`
@@ -2998,7 +3393,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
           >
             {/* LOGO (GİZLİ TIKLAMA SAYACI İÇERİR) */}
             <div
-              className="bg-white px-2 py-1 md:px-4 md:py-2.5 rounded-xl shadow-md transition-transform hover:scale-105 cursor-pointer flex justify-center items-center md:w-full select-none"
+              className="theme-logo-surface bg-white px-2 py-1 md:px-4 md:py-2.5 rounded-xl shadow-md transition-transform hover:scale-105 cursor-pointer flex justify-center items-center md:w-full select-none"
               onClick={() => {
                 const newCount = logoClickCount + 1;
                 setLogoClickCount(newCount);
@@ -3032,15 +3427,19 @@ setTimeout(() => setSuccessMessage(null), 2500);
 )}
               </div>
 
-              <OperationQueueIndicator
-                currentUser={currentUser}
-                gasUrl={GAS_URL}
-                onRefreshData={fetchVeritabani}
-                variant="mobile"
-                alwaysVisible
-              />
+              <Suspense fallback={<LazyInlineFallback label="" />}>
+                <OperationQueueIndicator
+                  currentUser={currentUser}
+                  gasUrl={GAS_URL}
+                  onRefreshData={fetchVeritabani}
+                  variant="mobile"
+                  alwaysVisible
+                />
+              </Suspense>
+
+              <ThemeToggle theme={theme} onToggle={toggleTheme} />
                
-              {/* YENI: Mobil Veri Yenile Butonu */}
+              {/* YENİ: Mobil Veri Yenile Butonu */}
               <button
                 onClick={() => fetchVeritabani(true)}
                 disabled={isRefreshing}
@@ -3052,46 +3451,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
               <button
                 onClick={() => {
-                  localStorage.removeItem('istek_it_user');
-                  setCurrentUser(null);
-                  setIsLoggingIn(false);
+                  handleLogout();
                 }}
                 className="p-1.5 bg-red-500/20 text-red-100 hover:bg-red-500 rounded-lg transition-colors shrink-0"
               >
                 <LogOut className="w-5 h-5" />
               </button>
-            </div>
-
-            {/* MASAÜSTÜ PROFİL VE YENİLE BUTONU (Hatasız Kısım) */}
-            <div className="hidden md:block mt-6">
-              <div className="bg-[#005595] p-3 rounded-xl border border-[#8bcdc5]/30 shadow-inner mb-4 flex items-center gap-3 relative group">
-              <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-[#0066b1] font-bold shadow-md shrink-0 border-2 border-[#8bcdc5] overflow-hidden">
-          {currentUser.picture ? (
-            <img src={currentUser.picture} alt="Profil" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={handleCurrentUserPictureError} />
-          ) : (
-            <span className="text-lg">{String(currentUser?.name || 'U').charAt(0)}</span>
-          )}
-        </div>
-                
-                <div className="flex flex-col flex-1 min-w-0 pr-6">
-                  <p className="text-sm font-bold text-white truncate" title={currentUser.name}>
-                    {currentUser.name}
-                  </p>
-                  <p className="text-xs text-[#96b4d9] mt-0.5 truncate" title={currentUser.campus}>
-                    {currentUser.campus}
-                  </p>
-                </div>
-
-                {/* YENI: SIK YENILE BUTONU (Saga Dayali) */}
-                <button
-                  onClick={() => fetchVeritabani(true)}
-                  disabled={isRefreshing}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/25 transition-all shadow-sm disabled:opacity-50"
-                  title="Verileri Yenile"
-                >
-                  <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-white' : 'text-white/80 group-hover:text-white'}`} />
-                </button>
-              </div>
             </div>
 
           </div>
@@ -3122,11 +3487,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
             >
               <Users className="w-4 h-4 sm:w-5 sm:h-5" />{' '}
               <span className="whitespace-nowrap">Personel</span>
-              {missingSignatureCount > 0 && (
-                <span className="absolute -top-2 -right-1 min-w-5 h-5 px-1 rounded-full bg-amber-400 text-[10px] leading-5 text-blue-950 font-black shadow-sm border border-amber-200">
-                  {missingSignatureCount > 999 ? '999+' : missingSignatureCount}
-                </span>
-              )}
             </button>
 
             <button
@@ -3140,32 +3500,85 @@ setTimeout(() => setSuccessMessage(null), 2500);
               <div className="relative flex items-center justify-center">
                 <Send className="w-4 h-4 sm:w-5 sm:h-5" />
                 {incomingTransfers.length > 0 && (
-                  <span className="absolute -top-2 -right-2.5 bg-red-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full shadow-sm animate-pulse">
-                    {incomingTransfers.length}
+                  <span
+                    className="absolute -top-2 -right-2.5 min-w-5 rounded-full bg-red-500 px-1.5 py-0.5 text-center text-[10px] font-black text-white shadow-sm animate-pulse"
+                    title={`${incomingTransfers.length} gelen transfer cihazı onay bekliyor`}
+                  >
+                    {incomingTransfers.length > 99 ? '99+' : incomingTransfers.length}
                   </span>
                 )}
               </div>
               <span className="whitespace-nowrap">Transfer</span>
             </button>
 
+            {currentUser?.isSuperAdmin && (
+              <button
+                onClick={() => handleTabChange('systemAdmin')}
+                className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm md:flex-none md:justify-start md:px-4 md:py-3 md:text-base md:space-x-3 ${
+                  activeTab === 'systemAdmin'
+                    ? 'bg-[#8bcdc5] text-[#0066b1] shadow-md'
+                    : 'text-white hover:bg-[#004a82] md:hover:bg-[#005595]'
+                }`}
+                title="Sistem Yönetimi"
+              >
+                <ShieldCheck className="w-4 h-4 sm:w-5 sm:h-5" />
+                <span className="whitespace-nowrap">Sistem</span>
+              </button>
+            )}
+
           </div>
         </nav>
 
         {/* Masaüstü Aksiyon Butonları (SADECE ÇIKIŞ YAP) */}
         <div className="hidden md:flex mt-auto p-4 border-t border-[#8bcdc5]/30 bg-[#005595] space-y-2 flex-col">
-          <OperationQueueIndicator
-            currentUser={currentUser}
-            gasUrl={GAS_URL}
-            onRefreshData={fetchVeritabani}
-            variant="desktop"
-            alwaysVisible
+          <ThemeToggle
+            theme={theme}
+            onToggle={toggleTheme}
+            showLabel
+            className="w-full"
           />
+
+          <Suspense fallback={<LazyInlineFallback label="İşlem kuyruğu..." />}>
+            <OperationQueueIndicator
+              currentUser={currentUser}
+              gasUrl={GAS_URL}
+              onRefreshData={fetchVeritabani}
+              variant="desktop"
+              alwaysVisible
+            />
+          </Suspense>
+
+          <div className="bg-[#005595] p-3 rounded-xl border border-[#8bcdc5]/30 shadow-inner flex items-center gap-3 relative group">
+            <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-[#0066b1] font-bold shadow-md shrink-0 border-2 border-[#8bcdc5] overflow-hidden">
+              {currentUser.picture ? (
+                <img src={currentUser.picture} alt="Profil" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={handleCurrentUserPictureError} />
+              ) : (
+                <span className="text-lg">{String(currentUser?.name || 'U').charAt(0)}</span>
+              )}
+            </div>
+
+            <div className="flex flex-col flex-1 min-w-0 pr-6">
+              <p className="text-sm font-bold text-white truncate" title={currentUser.name}>
+                {currentUser.name}
+              </p>
+              <p className="text-xs text-[#96b4d9] mt-0.5 truncate" title={currentUser.campus}>
+                {currentUser.campus}
+              </p>
+            </div>
+
+            <button
+              onClick={() => fetchVeritabani(true)}
+              disabled={isRefreshing}
+              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/25 transition-all shadow-sm disabled:opacity-50"
+              title="Verileri Yenile"
+            >
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-white' : 'text-white/80 group-hover:text-white'}`} />
+            </button>
+          </div>
 
           <button
             onClick={() => {
-              localStorage.removeItem('istek_it_user');
-              setCurrentUser(null);
-              setIsLoggingIn(false);
+              handleLogout();
             }}
             className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-100 hover:bg-red-500 hover:text-white rounded-lg transition-colors text-sm font-bold"
           >
@@ -3204,7 +3617,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         ref={mainContainerRef}
         onScroll={handleMainScroll}
         // iOS SSS (Smooth Scroll Safari) Bug Düzeltmesi: overscroll-behavior-y eklendi
-        className="flex-1 overflow-y-auto relative w-full overscroll-none"
+        className="app-main flex-1 overflow-y-auto relative w-full overscroll-none"
         style={{
           WebkitOverflowScrolling: 'touch', // iOS için pürüzsüz kaydırma
           overflowAnchor: 'none',
@@ -3220,18 +3633,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
           <div className="p-3 md:p-8 w-full max-w-[1400px] mx-auto relative pb-32">
             {/* HARDWARE TAB */}
             {activeTab === 'hardware' && (
-              <div className="space-y-0 animate-in fade-in relative">
+              <div className="app-tab-panel space-y-0 relative">
                 {/* Donanım ARAMA ÇUBUĞU (DAHA İNCE VE ZARİF) */}
                 <div
                   style={{ position: 'sticky', top: 0, zIndex: 80 }}
-                  className="bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
+                  className="responsive-tab-toolbar bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
                 >
-                  <div className="flex items-center gap-2 w-full">
+                  <div className="responsive-tab-toolbar__primary flex items-center gap-2 w-full">
                     {/* Arama Çubuğu (İnceltildi: h-10, text-sm) */}
-                    <div className="flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
+                    <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
                       <input
                         type="text"
-                        placeholder="Marka, Model, Seri No, Bilgisayar Ismi ara..."
+                        placeholder="Marka, Model, Seri No, Bilgisayar İsmi ara..."
                         className="flex-1 bg-transparent outline-none min-w-0 text-gray-800 text-sm h-full"
                         value={hardwareSearchQuery}
                         onChange={(e) => setHardwareSearchQuery(e.target.value)}
@@ -3262,29 +3675,102 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     >
                       <Filter className="w-4 h-4" />
                     </button>
-                    {/* Yeni Donanım Ekle Butonu */}
-                    <button
-                      onClick={() => setShowAddHardwareModal(true)}
-                      className="h-10 px-3 md:px-4 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm bg-[#0066b1] border-[#005595] text-white hover:bg-[#005595] font-bold gap-1.5"
-                      title="Yeni Donanım Ekle"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span className="hidden md:inline text-sm">
-                        Donanım Ekle
-                      </span>
-                    </button>
+                    {/* Donanım Ekleme Menüsü */}
+                    <div className="responsive-tab-toolbar__action responsive-tab-toolbar__actions-start relative shrink-0">
+                      <button
+                        onClick={() => {
+                          setShowAddHardwareMenu((open) => !open);
+                          setShowHardwareMenu(false);
+                        }}
+                        className="h-10 px-3 md:px-4 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm bg-[#0066b1] border-[#005595] text-white hover:bg-[#005595] font-bold gap-1.5"
+                        title="Donanım Ekle"
+                        aria-expanded={showAddHardwareMenu}
+                        aria-haspopup="menu"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span className="hidden md:inline text-sm">Donanım Ekle</span>
+                        <ChevronDown
+                          className={`hidden md:block w-3.5 h-3.5 transition-transform ${
+                            showAddHardwareMenu ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+
+                      {showAddHardwareMenu && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-[60]"
+                            onClick={() => setShowAddHardwareMenu(false)}
+                          />
+                          <div
+                            role="menu"
+                            className="absolute right-0 top-full z-[99999999] mt-2 min-w-[240px] overflow-hidden rounded-xl border border-gray-200 bg-white py-1 shadow-2xl"
+                          >
+                            <button
+                              role="menuitem"
+                              onClick={() => {
+                                setShowAddHardwareMenu(false);
+                                setShowAddHardwareModal(true);
+                              }}
+                              className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              <Plus className="h-4 w-4 shrink-0 text-[#0066b1]" />
+                              <span>Manuel Donanım Ekle</span>
+                            </button>
+                            <button
+                              role="menuitem"
+                              onClick={() => {
+                                setShowAddHardwareMenu(false);
+                                setShowBulkHardwareImportModal(true);
+                              }}
+                              className="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              <FileSpreadsheet className="h-4 w-4 shrink-0 text-[#0066b1]" />
+                              <span>Excel’den Toplu Donanım Ekle</span>
+                            </button>
+                            <button
+                              role="menuitem"
+                              onClick={() => {
+                                setShowAddHardwareMenu(false);
+                                setMissingGlpiSearchQuery('');
+                                setMissingGlpiFilterType('All');
+                                setMissingGlpiFilterCampus('All');
+                                setActiveMissingGlpiFilterDropdown(null);
+                                handleTabChange('glpiMissing');
+                              }}
+                              className="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              <div className="relative shrink-0">
+                                <HardDrive className="h-4 w-4 text-[#0066b1]" />
+                                {missingGlpiDevices.length > 0 && (
+                                  <span className="absolute -right-2.5 -top-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[9px] font-black text-[#005595] shadow-sm">
+                                    {missingGlpiDevices.length}
+                                  </span>
+                                )}
+                              </div>
+                              <span>GLPI'dan Donanım Ekle</span>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
 
                     {/* 3 Nokta Butonu */}
-                    <div className="relative shrink-0">
+                    <div className="responsive-tab-toolbar__action relative shrink-0">
                       <button
-                        onClick={() => setShowHardwareMenu(!showHardwareMenu)}
+                        onClick={() => {
+                          setShowHardwareMenu(!showHardwareMenu);
+                          setShowAddHardwareMenu(false);
+                        }}
+                        title="Dışa Aktar"
+                        aria-label="Dışa Aktar"
                         className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
                           showHardwareMenu
                             ? 'bg-blue-50 border-blue-300 text-[#0066b1]'
                             : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                         }`}
                       >
-                        <MoreVertical className="w-4 h-4" />
+                        <Download className="w-4 h-4" />
                       </button>
 
                       {showHardwareMenu && (
@@ -3305,29 +3791,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             }}
                           >
                             <div className="px-4 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100 bg-gray-50/50">
-                              GLPI
-                            </div>
-                            <button
-                              onClick={() => {
-                                setShowHardwareMenu(false);
-                                handleTabChange('glpiMissing');
-                                fetchMissingGlpiDevices(false);
-                              }}
-                              className="w-full px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-3 transition-colors text-left"
-                              style={{ whiteSpace: 'nowrap' }}
-                            >
-                              <div className="relative shrink-0">
-                                <HardDrive className="w-4 h-4 text-[#0066b1]" />
-                                {missingGlpiDevices.length > 0 && (
-                                  <span className="absolute -top-2 -right-2.5 bg-amber-400 text-[#005595] text-[9px] font-black px-1.5 py-0.5 rounded-full shadow-sm">
-                                    {missingGlpiDevices.length}
-                                  </span>
-                                )}
-                              </div>
-                              <span>GLPI'dan Donanıma Çek</span>
-                            </button>
-                            <div className="px-4 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100 bg-gray-50/50">
-                              Disa Aktar
+                              Dışa Aktar
                             </div>
                             <button
                               onClick={() => {
@@ -3335,10 +3799,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 const exportData =
                                   selectedBulkHardware.length > 0
                                     ? sortedHardware.filter((h) =>
-                                        selectedBulkHardware.includes(h.id)
+                                        selectedHardwareIdSet.has(h.id)
                                       )
                                     : sortedHardware;
-                                handleExportXLSX(
+                                handleExportCsv(
                                   exportData,
                                   'Donanım_Listesi',
                                   'hardware'
@@ -3351,7 +3815,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               <span>
                                 {selectedBulkHardware.length > 0
                                   ? `Seçili (${selectedBulkHardware.length}) İndir`
-                                  : 'XLSX Olarak ?ndir'}
+                                  : 'CSV Olarak İndir'}
                               </span>
                             </button>
                             <button
@@ -3360,7 +3824,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 const exportData =
                                   selectedBulkHardware.length > 0
                                     ? sortedHardware.filter((h) =>
-                                        selectedBulkHardware.includes(h.id)
+                                        selectedHardwareIdSet.has(h.id)
                                       )
                                     : sortedHardware;
                                 handleCreateGoogleSheet(exportData, 'hardware');
@@ -3388,7 +3852,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                   {/* --- BAŞLANGIÇ: FİLTRE ÇİPLERİ VE MENÜLERİ (DESKTOPTA HEP GÖRÜNÜR) --- */}
                   <div
-                    className={`relative mt-3 mb-0 z-[90] ${
+                    className={`responsive-tab-toolbar__filters relative mt-3 mb-0 z-[90] ${
                       showHardwareFilters
                         ? 'block animate-in slide-in-from-top-1 fade-in duration-200'
                         : 'hidden md:block'
@@ -3618,24 +4082,39 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   </div>
                   {/* --- BİTİŞ: FİLTRE ÇİPLERİ VE MENÜLERİ --- */}
                 </div>
-                {/* YENİ: TÜM SAYFALARI SEÇ (HEM MOBİL HEM DESKTOP İÇİN ORTAK) */}
-                {isSelectionMode &&
-                  sortedHardware.length > paginatedHardware.length && (
-                    <label className="flex items-center gap-3 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 cursor-pointer mb-3 animate-in fade-in transition-colors hover:bg-blue-100/50">
-                      <input
-                        type="checkbox"
-                        className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
-                        checked={sortedHardware.every((h) =>
-                          selectedBulkHardware.includes(h.id)
-                        )}
-                        onChange={(e) => handleSelectAllBulk(e, sortedHardware)}
-                      />
-                      <span className="text-sm font-bold text-[#0066b1]">
-                        Tüm Sayfalardaki Filtrelenmiş Cihazları Seç (
-                        {sortedHardware.length})
-                      </span>
-                    </label>
-                  )}
+                {isSelectionMode && sortedHardware.length > 0 && (
+                  <div className="flex flex-col gap-2 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 mb-3 animate-in fade-in sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-5">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+                        <input
+                          ref={(node) => {
+                            if (node) node.indeterminate = someHardwareOnPageSelected;
+                          }}
+                          type="checkbox"
+                          className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                          checked={allHardwareOnPageSelected}
+                          onChange={(e) => handleSelectAllBulk(e, paginatedHardware)}
+                        />
+                        Bu sayfadakileri seç ({paginatedHardware.length})
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+                        <input
+                          ref={(node) => {
+                            if (node) node.indeterminate = someFilteredHardwareSelected;
+                          }}
+                          type="checkbox"
+                          className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                          checked={allFilteredHardwareSelected}
+                          onChange={(e) => handleSelectAllBulk(e, sortedHardware)}
+                        />
+                        Filtrelenenlerin tümünü seç ({sortedHardware.length})
+                      </label>
+                    </div>
+                    <span className="text-xs font-bold text-slate-500">
+                      {selectedBulkHardware.length} cihaz seçili
+                    </span>
+                  </div>
+                )}
 
                 {/* --- DESKTOP VIEW (TABLE) --- */}
                 <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mt-1">
@@ -3649,7 +4128,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             checked={
                               paginatedHardware.length > 0 &&
                               paginatedHardware.every((h) =>
-                                selectedBulkHardware.includes(h.id)
+                                selectedHardwareIdSet.has(h.id)
                               )
                             }
                             onChange={(e) =>
@@ -3702,11 +4181,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     <tbody>
                       {paginatedHardware.map((item) => {
                         const personName =
-                          personnel.find((p) => p.id === item.assignedTo)
-                            ?.name || item.assignedTo;
-                        const isSelected = selectedBulkHardware.includes(
-                          item.id
-                        );
+                          personnelById.get(item.assignedTo)?.name || item.assignedTo;
+                        const isSelected = selectedHardwareIdSet.has(item.id);
                         const getIcon = (type) => {
                           const t = String(type || '').toLowerCase();
                           if (t.includes('laptop'))
@@ -3734,6 +4210,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             onClick={() => setViewingHardwareId(item.id)}
                             className={`border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer ${
                               isSelected ? 'bg-blue-50/50' : ''
+                            } ${
+                              recentlyUpdatedHardwareIds.has(item.id) ? 'app-record-updated' : ''
                             }`}
                           >
                             <td
@@ -3840,7 +4318,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             </td>
                             <td className="p-4">
                               <span
-                                className={`px-3 py-1 rounded-full text-xs font-bold ${
+                                className={`status-chip-motion px-3 py-1 rounded-full text-xs font-bold ${
                                   item.status === 'Available'
                                     ? 'bg-green-100 text-green-700'
                                     : item.status === 'Hurda'
@@ -3914,10 +4392,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 {/* --- Donanım MOBİL GÖRÜNÜM --- */}
                 <div className="block md:hidden space-y-2 mt-0">
                   {paginatedHardware.map((item) => {
-                    const personName =
-                      personnel.find((p) => p.id === item.assignedTo)?.name ||
-                      item.assignedTo;
-                    const isSelected = selectedBulkHardware.includes(item.id);
+                      const personName =
+                        personnelById.get(item.assignedTo)?.name || item.assignedTo;
+                    const isSelected = selectedHardwareIdSet.has(item.id);
 
                     const getIcon = (type) => {
                       const t = String(type || '').toLowerCase();
@@ -3933,7 +4410,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     };
 
                     let statusColor = 'bg-[#0066b1]';
-                    let statusText = 'ZIMMETLI';
+                    let statusText = 'ZİMMETLİ';
                     if (item.status === 'Available') {
                       statusColor = 'bg-green-500';
                       statusText = 'DEPODA';
@@ -3963,7 +4440,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           isSelectionMode && isSelected
                             ? 'border-[#0066b1] bg-[#e0f0ff] ring-1 ring-[#0066b1]/50'
                             : 'border-gray-200 active:bg-gray-50'
-                        }`}
+                        } ${recentlyUpdatedHardwareIds.has(item.id) ? 'app-record-updated' : ''}`}
                       >
                         <div className="flex items-start gap-3 w-full">
                           {isSelectionMode && (
@@ -4040,7 +4517,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                                 <div className="flex items-center gap-1.5">
                                   <div
-                                    className={`w-2.5 h-2.5 rounded-full ${statusColor} shadow-sm`}
+                                    className={`status-chip-motion w-2.5 h-2.5 rounded-full ${statusColor} shadow-sm`}
                                   ></div>
                                   <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider hidden sm:inline-block">
                                     {statusText}
@@ -4056,7 +4533,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                         <div className="bg-slate-50 p-3 rounded-xl border border-slate-100 mt-1 flex flex-col w-full">
                           <p className="text-[10px] font-bold text-slate-400 tracking-wider mb-2">
-                            ZIMMETLI PERSONEL:
+                            ZİMMETLİ PERSONEL:
                           </p>
                           <div className="flex justify-between items-end gap-2">
                             <div className="flex flex-wrap justify-start gap-2 flex-1">
@@ -4114,7 +4591,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     </div>
                   )}
 
-                  {/* YENI: MOBIL Donanım PAGINATION */}
+                  {/* YENİ: MOBİL Donanım PAGINATION */}
                   <div className="mt-4 pb-8 border-t border-gray-200 pt-4 flex justify-center">
                     <Pagination
                       currentPage={hardwarePage}
@@ -4128,67 +4605,80 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             {/* GLPI MISSING DEVICES TAB */}
             {activeTab === 'glpiMissing' && (
-              <GlpiMissingTab
-                missingGlpiSearchQuery={missingGlpiSearchQuery}
-                setMissingGlpiSearchQuery={setMissingGlpiSearchQuery}
-                showMissingGlpiFilters={showMissingGlpiFilters}
-                setShowMissingGlpiFilters={setShowMissingGlpiFilters}
-                fetchMissingGlpiDevices={fetchMissingGlpiDevices}
-                isLoadingMissingGlpi={isLoadingMissingGlpi}
-                activeMissingGlpiFilterDropdown={activeMissingGlpiFilterDropdown}
-                setActiveMissingGlpiFilterDropdown={setActiveMissingGlpiFilterDropdown}
-                missingGlpiFilterType={missingGlpiFilterType}
-                setMissingGlpiFilterType={setMissingGlpiFilterType}
-                missingGlpiFilterCampus={missingGlpiFilterCampus}
-                setMissingGlpiFilterCampus={setMissingGlpiFilterCampus}
-                missingGlpiTypeOptions={missingGlpiTypeOptions}
-                missingGlpiCampusOptions={missingGlpiCampusOptions}
-                isHQ={isHQ}
-                isGlpiSelectionMode={isGlpiSelectionMode}
-                displayMissingGlpiDevices={displayMissingGlpiDevices}
-                selectedMissingGlpiIds={selectedMissingGlpiIds}
-                setSelectedMissingGlpiIds={setSelectedMissingGlpiIds}
-                handleGlpiToggleBulk={handleGlpiToggleBulk}
-                handleGlpiTouchStart={handleGlpiTouchStart}
-                handleGlpiTouchEnd={handleGlpiTouchEnd}
-                renderDeviceTypeIcon={renderDeviceTypeIcon}
-                setViewingPersonId={setViewingPersonId}
-              />
+              <Suspense fallback={<LazyPanelFallback label="GLPI cihazları hazırlanıyor..." />}>
+                <GlpiMissingTab
+                  missingGlpiSearchQuery={missingGlpiSearchQuery}
+                  setMissingGlpiSearchQuery={setMissingGlpiSearchQuery}
+                  showMissingGlpiFilters={showMissingGlpiFilters}
+                  setShowMissingGlpiFilters={setShowMissingGlpiFilters}
+                  fetchMissingGlpiDevices={fetchMissingGlpiDevices}
+                  isLoadingMissingGlpi={isLoadingMissingGlpi}
+                  activeMissingGlpiFilterDropdown={activeMissingGlpiFilterDropdown}
+                  setActiveMissingGlpiFilterDropdown={setActiveMissingGlpiFilterDropdown}
+                  missingGlpiFilterType={missingGlpiFilterType}
+                  setMissingGlpiFilterType={setMissingGlpiFilterType}
+                  missingGlpiFilterCampus={missingGlpiFilterCampus}
+                  setMissingGlpiFilterCampus={setMissingGlpiFilterCampus}
+                  missingGlpiTypeOptions={missingGlpiTypeOptions}
+                  missingGlpiCampusOptions={missingGlpiCampusOptions}
+                  isHQ={isHQ}
+                  isGlpiSelectionMode={isGlpiSelectionMode}
+                  displayMissingGlpiDevices={displayMissingGlpiDevices}
+                  selectedMissingGlpiIds={selectedMissingGlpiIds}
+                  setSelectedMissingGlpiIds={setSelectedMissingGlpiIds}
+                  handleGlpiToggleBulk={handleGlpiToggleBulk}
+                  handleGlpiTouchStart={handleGlpiTouchStart}
+                  handleGlpiTouchEnd={handleGlpiTouchEnd}
+                  renderDeviceTypeIcon={renderDeviceTypeIcon}
+                  setViewingPersonId={setViewingPersonId}
+                  totalMissingGlpiCount={missingGlpiDevices.length}
+                />
+              </Suspense>
             )}
             {/* QR OPERATIONS TAB */}
             {activeTab === 'qrScan' && (
-              <QrScanTab
-                qrScannerActive={qrScannerActive}
-                qrScannerError={qrScannerError}
-                qrVideoRef={qrVideoRef}
-                qrScannedHardware={qrScannedHardware}
-                selectedQrHardwareIds={selectedQrHardwareIds}
-                setSelectedQrHardwareIds={setSelectedQrHardwareIds}
-                qrScanLog={qrScanLog}
-                isQrActionBusy={isQrActionBusy}
-                qrActionLabel={qrActionLabel}
-                stopQrCamera={stopQrCamera}
-                handleStartQrCamera={handleStartQrCamera}
-                handleQrInventoryMark={handleQrInventoryMark}
-                handleQrStatusUpdate={handleQrStatusUpdate}
-                handleQrStartZimmet={handleQrStartZimmet}
-                handleOpenQrLabelPrint={handleOpenQrLabelPrint}
-                setViewingHardwareId={setViewingHardwareId}
-                renderDeviceTypeIcon={renderDeviceTypeIcon}
-                getPersonName={(personId) => personnel.find((p) => p.id === personId)?.name || personId || '-'}
-              />
+              <Suspense fallback={<LazyPanelFallback label="QR ekranı hazırlanıyor..." />}>
+                <QrScanTab
+                  qrScannerActive={qrScannerActive}
+                  qrScannerError={qrScannerError}
+                  qrVideoRef={qrVideoRef}
+                  qrScannedHardware={qrScannedHardware}
+                  selectedQrHardwareIds={selectedQrHardwareIds}
+                  setSelectedQrHardwareIds={setSelectedQrHardwareIds}
+                  qrScanLog={qrScanLog}
+                  isQrActionBusy={isQrActionBusy}
+                  qrActionLabel={qrActionLabel}
+                  stopQrCamera={stopQrCamera}
+                  handleStartQrCamera={handleStartQrCamera}
+                  handleQrInventoryMark={handleQrInventoryMark}
+                  handleQrStatusUpdate={handleQrStatusUpdate}
+                  handleQrStartZimmet={handleQrStartZimmet}
+                  handleOpenQrLabelPrint={handleOpenQrLabelPrint}
+                  setViewingHardwareId={setViewingHardwareId}
+                  renderDeviceTypeIcon={renderDeviceTypeIcon}
+                  getPersonName={(personId) => personnelById.get(personId)?.name || personId || '-'}
+                />
+              </Suspense>
+            )}
+            {activeTab === 'systemAdmin' && currentUser?.isSuperAdmin && (
+              <Suspense fallback={<LazyPanelFallback label="Sistem yönetimi hazırlanıyor..." />}>
+                <SystemManagementTab
+                  currentUser={currentUser}
+                  onRefreshData={fetchVeritabani}
+                />
+              </Suspense>
             )}
             {/* PERSONNEL TAB */}
             {activeTab === 'personnel' && (
-              <div className="space-y-0 animate-in fade-in relative">
+              <div className="app-tab-panel space-y-0 relative">
                 {/* PERSONEL ARAMA ÇUBUĞU VE FİLTRELERİ */}
                 <div
                   style={{ position: 'sticky', top: 0, zIndex: 80 }}
-                  className="bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
+                  className="responsive-tab-toolbar bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-1"
                 >
-                  <div className="flex items-center gap-2 w-full">
+                  <div className="responsive-tab-toolbar__primary flex items-center gap-2 w-full">
                     {/* Arama Çubuğu */}
-                    <div className="flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
+                    <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 px-3 h-10 border border-gray-200 rounded-xl bg-white shadow-sm focus-within:border-[#0066b1] focus-within:ring-2 focus-within:ring-[#0066b1]/20 transition-all">
                       <input
                         type="text"
                         placeholder="Personel Adı, E-Posta veya Ünvan ara..."
@@ -4226,7 +4716,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     </button>
 
                     {/* 3 Nokta Butonu */}
-                    <div className="relative shrink-0">
+                    <div className="responsive-tab-toolbar__action responsive-tab-toolbar__actions-start relative shrink-0">
                       <button
                         onClick={() => setShowPersonnelMenu(!showPersonnelMenu)}
                         className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
@@ -4257,7 +4747,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             }}
                           >
                             <div className="px-4 py-2 text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b border-gray-100 bg-gray-50/50">
-                              Disa Aktar
+                              Dışa Aktar
                             </div>
                             <button
                               onClick={() => {
@@ -4265,10 +4755,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 const exportData =
                                   selectedBulkPersonnel.length > 0
                                     ? sortedPersonnel.filter((p) =>
-                                        selectedBulkPersonnel.includes(p.id)
+                                        selectedPersonnelIdSet.has(p.id)
                                       )
                                     : sortedPersonnel;
-                                handleExportXLSX(
+                                handleExportCsv(
                                   exportData,
                                   'Personel_Listesi',
                                   'personnel'
@@ -4280,8 +4770,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               <Download className="w-4 h-4 text-blue-500 shrink-0" />
                               <span>
                                 {selectedBulkPersonnel.length > 0
-                                  ? `Seçili (${selectedBulkPersonnel.length}) XLSX Olarak İndir`
-                                  : 'XLSX Olarak ?ndir'}
+                                  ? `Seçili (${selectedBulkPersonnel.length}) CSV Olarak İndir`
+                                  : 'CSV Olarak İndir'}
                               </span>
                             </button>
                             <button
@@ -4290,7 +4780,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 const exportData =
                                   selectedBulkPersonnel.length > 0
                                     ? sortedPersonnel.filter((p) =>
-                                        selectedBulkPersonnel.includes(p.id)
+                                        selectedPersonnelIdSet.has(p.id)
                                       )
                                     : sortedPersonnel;
                                 handleCreateGoogleSheet(
@@ -4321,7 +4811,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                   {/* PERSONEL FİLTRE ÇİPLERİ (DURUM VE KAMPÜS) */}
                   <div
-                    className={`relative mt-3 mb-0 z-[90] ${
+                    className={`responsive-tab-toolbar__filters relative mt-3 mb-0 z-[90] ${
                       showPersonnelFilters
                         ? 'block animate-in slide-in-from-top-1 fade-in duration-200'
                         : 'hidden md:block'
@@ -4562,36 +5052,43 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     )}
                   </div>
                 </div>
-                {/* YENİ: TÜM SAYFALARI SEÇ (HEM MOBİL HEM DESKTOP İÇİN ORTAK) */}
-                {isPersonnelSelectionMode &&
-                  sortedPersonnel.length > paginatedPersonnel.length && (
-                    <label className="flex items-center gap-3 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 cursor-pointer mb-3 animate-in fade-in transition-colors hover:bg-blue-100/50">
-                      <input
-                        type="checkbox"
-                        className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
-                        checked={sortedPersonnel.every((p) =>
-                          selectedBulkPersonnel.includes(p.id)
-                        )}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            const newIds = sortedPersonnel.map((p) => p.id);
-                            setSelectedBulkPersonnel((prev) => [
-                              ...new Set([...prev, ...newIds]),
-                            ]);
-                          } else {
-                            const pageIds = sortedPersonnel.map((p) => p.id);
-                            setSelectedBulkPersonnel((prev) =>
-                              prev.filter((id) => !pageIds.includes(id))
-                            );
+                {isPersonnelSelectionMode && sortedPersonnel.length > 0 && (
+                  <div className="flex flex-col gap-2 bg-blue-50/80 p-3 rounded-xl shadow-sm border border-blue-200 mb-3 animate-in fade-in sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-5">
+                      <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+                        <input
+                          ref={(node) => {
+                            if (node) node.indeterminate = somePersonnelOnPageSelected;
+                          }}
+                          type="checkbox"
+                          className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                          checked={allPersonnelOnPageSelected}
+                          onChange={(e) =>
+                            updatePersonnelBulkSelection(e.target.checked, paginatedPersonnel)
                           }
-                        }}
-                      />
-                      <span className="text-sm font-bold text-[#0066b1]">
-                        Tüm Sayfalardaki Filtrelenmiş Personelleri Seç (
-                        {sortedPersonnel.length})
-                      </span>
-                    </label>
-                  )}
+                        />
+                        Bu sayfadakileri seç ({paginatedPersonnel.length})
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer text-sm font-bold text-[#0066b1]">
+                        <input
+                          ref={(node) => {
+                            if (node) node.indeterminate = someFilteredPersonnelSelected;
+                          }}
+                          type="checkbox"
+                          className="w-5 h-5 cursor-pointer text-[#0066b1] rounded border-gray-300 focus:ring-[#0066b1]"
+                          checked={allFilteredPersonnelSelected}
+                          onChange={(e) =>
+                            updatePersonnelBulkSelection(e.target.checked, sortedPersonnel)
+                          }
+                        />
+                        Filtrelenenlerin tümünü seç ({sortedPersonnel.length})
+                      </label>
+                    </div>
+                    <span className="text-xs font-bold text-slate-500">
+                      {selectedBulkPersonnel.length} personel seçili
+                    </span>
+                  </div>
+                )}
 
                 {/* --- DESKTOP VIEW (TABLE) --- */}
                 <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mt-4">
@@ -4605,7 +5102,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             checked={
                               paginatedPersonnel.length > 0 &&
                               paginatedPersonnel.every((p) =>
-                                selectedBulkPersonnel.includes(p.id)
+                                selectedPersonnelIdSet.has(p.id)
                               )
                             }
                             onChange={(e) => {
@@ -4642,8 +5139,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     </thead>
                     <tbody>
                       {paginatedPersonnel.map((person) => {
-                        const assignedHardware = hardware.filter((h) => h.assignedTo === person.id);
-                        const isSelected = selectedBulkPersonnel.includes(person.id);
+                        const assignedHardware = hardwareByAssignee.get(person.id) || [];
+                        const isSelected = selectedPersonnelIdSet.has(person.id);
 
                         return (
                           <tr
@@ -4651,6 +5148,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             onClick={() => setViewingPersonId(person.id)}
                             className={`border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer ${
                               isSelected ? 'bg-blue-50/50' : ''
+                            } ${
+                              recentlyUpdatedPersonnelIds.has(person.id) ? 'app-record-updated' : ''
                             }`}
                           >
                             <td className="p-4 text-center" onClick={(e) => e.stopPropagation()}>
@@ -4772,15 +5271,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 <div className="block md:hidden space-y-3 mt-1 pb-32">
                   {paginatedPersonnel.map((person) => {
                     // DÜZELTME: Artık tüm veritabanından (hardware) tarama yapılıyor
-                    const assignedHardware = hardware.filter(
-                      (h) => h.assignedTo === person.id
-                    );
+                    const assignedHardware = hardwareByAssignee.get(person.id) || [];
                     const appSheetDocs = assignedHardware.filter(
                       (h) => h.driveLink
                     );
-                    const isSelected = selectedBulkPersonnel.includes(
-                      person.id
-                    );
+                    const isSelected = selectedPersonnelIdSet.has(person.id);
 
                     return (
                       <div
@@ -4804,7 +5299,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           isPersonnelSelectionMode && isSelected
                             ? 'border-[#0066b1] bg-[#e0f0ff] ring-1 ring-[#0066b1]/50'
                             : 'border-gray-200 active:bg-gray-50'
-                        }`}
+                        } ${recentlyUpdatedPersonnelIds.has(person.id) ? 'app-record-updated' : ''}`}
                       >
                         <div className="flex items-center gap-3 w-full">
                           {isPersonnelSelectionMode && (
@@ -4866,7 +5361,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                         <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 mt-3 flex flex-col w-full">
                           <p className="text-[10px] font-bold text-slate-400 tracking-wider mb-2">
-                            ZIMMETLI CIHAZLAR:
+                            ZİMMETLİ CİHAZLAR:
                           </p>
                           <div className="flex flex-wrap gap-2 w-full">
                             {assignedHardware.length > 0 ? (
@@ -4929,7 +5424,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     </div>
                   )}
 
-                  {/* YENI: MOBIL PERSONEL PAGINATION */}
+                  {/* YENİ: MOBİL PERSONEL PAGINATION */}
                   <div className="mt-6 pb-28 border-t border-gray-200 pt-4 flex justify-center">
                     <Pagination
                       currentPage={personnelPage}
@@ -4942,15 +5437,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
             )}
             {/* TRANSFER MERKEZI (LOG) TAB                 */}
             {activeTab === 'transfer' && (
-              <div className="max-w-5xl mx-auto space-y-4 animate-in fade-in pb-32">
+              <div className="app-tab-panel max-w-5xl mx-auto space-y-4 pb-32">
                 {/* 1. STICKY ARAMA VE FİLTRE ÇUBUĞU (EN ÜSTTE) */}
                 <div
                   style={{ position: 'sticky', top: 0, zIndex: 80 }}
-                  className="bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-2"
+                  className="responsive-tab-toolbar bg-slate-50/95 backdrop-blur-sm -mx-3 px-2 py-2 md:mx-0 md:px-0 md:bg-transparent md:backdrop-blur-none mb-2"
                 >
-                  <div className="flex items-center gap-2 w-full">
+                  <div className="responsive-tab-toolbar__primary flex items-center gap-2 w-full">
                     {/* Arama Çubuğu */}
-                    <div className="flex items-center flex-1 px-4 py-2.5 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#0066b1] transition-all shadow-sm">
+                    <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 h-10 px-4 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#0066b1] transition-all shadow-sm">
                       <Search className="w-5 h-5 text-gray-400 mr-3 shrink-0" />
                       <input
                         type="text"
@@ -4974,7 +5469,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       onClick={() =>
                         setShowTransferFilters(!showTransferFilters)
                       }
-                      className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
+                      className={`responsive-tab-toolbar__mobile-filter w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
                         showTransferFilters
                           ? 'bg-blue-50 border-blue-300 text-[#0066b1]'
                           : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
@@ -4985,10 +5480,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   </div>
 
                   {/* FİLTRE ÇİPLERİ VE AÇILIR MENÜLER */}
-                  {showTransferFilters && (
-                    <div
-                      className={`relative mt-3 mb-0 z-[90] animate-in slide-in-from-top-1 fade-in duration-200`}
-                    >
+                  <div
+                    className={`responsive-tab-toolbar__filters relative mt-3 mb-0 z-[90] ${
+                      showTransferFilters
+                        ? 'block animate-in slide-in-from-top-1 fade-in duration-200'
+                        : 'hidden'
+                    }`}
+                  >
                       <style>{`.hide-scroll-bar::-webkit-scrollbar { display: none; } .hide-scroll-bar { -ms-overflow-style: none; scrollbar-width: none; }`}</style>
 
                       <div className="flex items-center gap-2 pb-1 overflow-x-auto hide-scroll-bar w-full">
@@ -5192,7 +5690,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </div>
                       )}
                     </div>
-                  )}
                 </div>
 
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-4 md:p-6">
@@ -5315,7 +5812,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     const pendingInKeys = Object.keys(myPendingInbound);
                     const completedKeys = Object.keys(myCompletedTransfers);
 
-                    // --- ARAMA VE FILTRELEME MANTIGI ---
+                    // --- ARAMA VE FİLTRELEME MANTIĞI ---
                     const searchTerms = toTrLower(transferSearchQuery).split(/\s+/).filter(Boolean);
                     const formattedFilterDate = transferFilterDate ? transferFilterDate.split('-').reverse().join('.') : '';
 
@@ -5352,13 +5849,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         <div className="flex flex-wrap sm:flex-nowrap bg-gray-100 p-1.5 rounded-xl shadow-inner w-full md:w-auto md:inline-flex gap-1">
                           <button
                             onClick={() => setTransferViewTab('pending')}
-                            className={`flex-1 min-w-[140px] md:w-auto px-4 py-2.5 text-[13px] sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
+                            className={`flex-1 min-w-[130px] md:w-auto px-3 sm:px-4 py-2.5 text-[13px] sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                               transferViewTab === 'pending'
                                 ? 'bg-white text-[#0066b1] shadow-sm'
                                 : 'text-gray-500 hover:text-gray-700'
                             }`}
                           >
-                            <span className="truncate">Bekleyenler</span>
+                            <span className="whitespace-nowrap">Bekleyenler</span>
                             <span
                               className={`px-1.5 sm:px-2 py-0.5 rounded-full text-[10px] shrink-0 ${
                                 transferViewTab === 'pending'
@@ -5371,13 +5868,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </button>
                           <button
                             onClick={() => setTransferViewTab('completed')}
-                            className={`flex-1 min-w-[130px] px-3 sm:px-6 py-2.5 text-[13px] sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
+                            className={`flex-1 min-w-[160px] px-3 sm:px-5 py-2.5 text-[13px] sm:text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
                               transferViewTab === 'completed'
                                 ? 'bg-white text-[#0066b1] shadow-sm'
                                 : 'text-gray-500 hover:text-gray-700'
                             }`}
                           >
-                            <span className="truncate">Tamamlananlar</span>
+                            <span className="whitespace-nowrap">Tamamlananlar</span>
                             <span
                               className={`px-1.5 sm:px-2 py-0.5 rounded-full text-[10px] shrink-0 ${
                                 transferViewTab === 'completed'
@@ -5390,7 +5887,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </button>
                         </div>
 
-                        {/* BEKLEYENLER LISTESI */}
+                        {/* BEKLEYENLER LİSTESİ */}
                         {transferViewTab === 'pending' && (
                           <div className="space-y-4 animate-in fade-in duration-200">
                             {filteredPendingIn.length === 0 &&
@@ -5403,17 +5900,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               </div>
                             ) : (
                               <>
-                                {/* 1. BIZE GELEN TRANSFERLER */}
+                                {/* 1. BİZE GELEN TRANSFERLER */}
                                 {filteredPendingIn.map((key) => {
                                   const group = myPendingInbound[key];
-                                  let sentDate = 'Tarih Bilinmiyor';
-                                  let senderN = 'IT Personeli';
+                                  let sentDate =
+                                    group.items[0]?.lastEventDate ||
+                                    group.items[0]?.updatedAt ||
+                                    '';
+                                  let senderN =
+                                    group.items[0]?.lastEventPersonName || 'IT Personeli';
                                   
                                   if (Array.isArray(group.items[0]?.history) && group.items[0].history.length > 0) {
                                     const latestLog = group.items[0].history[0];
                                     // YENİ: latestLog null/undefined gelirse çökmeyi engelleyen if şartı
                                     if (latestLog) {
-                                      sentDate = latestLog.date || "Tarih Bilinmiyor";
+                                      sentDate = latestLog.date || sentDate;
                                       senderN = latestLog.personName || "IT Personeli";
                                     }
                                   }
@@ -5425,7 +5926,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     >
                                       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
                                         <span className="text-[#0066b1] text-[11px] font-black tracking-wide uppercase flex items-center gap-2 bg-blue-50 px-3 py-1.5 rounded-md border border-blue-100">
-                                          Gelen Transfer (Onayiniz Bekleniyor)
+                                          Gelen Transfer (Onayınız Bekleniyor)
                                         </span>
                                         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                                           <button
@@ -5446,7 +5947,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                             className="w-full sm:w-auto bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-md hover:bg-green-700 transition-colors flex items-center justify-center gap-1.5"
                                           >
                                             <CheckCircle2 className="w-4 h-4" />{' '}
-                                            ?ncele ve Teslim Al
+                                            İncele ve Teslim Al
                                           </button>
                                         </div>
                                       </div>
@@ -5454,7 +5955,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                       {/* YENİ ROTA GÖRÜNÜMÜ */}
                                       <div className="flex flex-col mb-4 bg-gray-50 w-full px-4 py-3 rounded-xl border border-gray-100">
                                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-                                          Transfer Rotasi:
+                                          Transfer Rotası:
                                         </span>
                                         <div className="flex items-center justify-between gap-3 w-full max-w-lg">
                                           <div className="flex flex-col flex-1">
@@ -5471,7 +5972,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                               {group.senderCampus}
                                             </span>
                                           </div>
-                                          <ChevronRight className="w-5 h-5 text-gray-300 shrink-0" />
+                                          <div className="transfer-route-progress" role="img" aria-label="Transfer yolda">
+                                            <span className="transfer-route-dot is-complete" />
+                                            <span className="transfer-route-line" />
+                                            <span className="transfer-route-dot is-current" />
+                                          </div>
                                           <div className="flex flex-col flex-1 text-right">
                                             <span className="text-[10px] font-bold text-[#0066b1] uppercase">
                                               Teslim Alan
@@ -5516,7 +6021,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         <History className="w-4 h-4 text-gray-400" />{' '}
                                         Gönderim Zamanı:{' '}
                                         <span className="text-gray-800">
-                                          {sentDate}
+                                          {formatTransferDateTime(sentDate)}
                                         </span>
                                       </div>
                                     </div>
@@ -5526,12 +6031,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 {/* 2. BİZİM GÖNDERDİKLERİMİZ */}
                                 {filteredPendingOut.map((key) => {
                                   const group = myPendingOutbound[key];
-                                  let sentDate = 'Tarih Bilinmiyor';
+                                  let sentDate =
+                                    group.items[0]?.lastEventDate ||
+                                    group.items[0]?.updatedAt ||
+                                    '';
                                   
                                   if (Array.isArray(group.items[0]?.history) && group.items[0].history.length > 0) {
                                     const latestLog = group.items[0].history[0];
                                     if (latestLog) {
-                                      sentDate = latestLog.date || "Tarih Bilinmiyor";
+                                      sentDate = latestLog.date || sentDate;
                                       // HATA DÜZELTİLDİ: Tanımlanmayan 'senderN' satırı tamamen silindi çünkü burada kullanılmıyor!
                                     }
                                   }
@@ -5544,14 +6052,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                       <div className="flex justify-between items-center mb-4">
                                         <span className="text-amber-600 text-[11px] font-extrabold tracking-wide uppercase flex items-center gap-1.5 bg-amber-50 px-3 py-1.5 rounded border border-amber-100">
                                           <Loader2 className="w-3.5 h-3.5 animate-spin" />{' '}
-                                          Karsi Taraf Onayi Bekliyor
+                                          Alıcı Onayı Bekleniyor
                                         </span>
                                       </div>
 
                                       {/* ROTA GÖRÜNÜMÜ */}
                                       <div className="flex flex-col mb-4 bg-gray-50 w-full px-4 py-3 rounded-xl border border-gray-100">
                                         <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-                                          Transfer Rotasi:
+                                          Transfer Rotası:
                                         </span>
                                         <div className="flex items-center justify-between gap-3 w-full max-w-lg">
                                           <div className="flex flex-col flex-1">
@@ -5568,7 +6076,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                               {currentUser.campus}
                                             </span>
                                           </div>
-                                          <ChevronRight className="w-5 h-5 text-gray-300 shrink-0" />
+                                          <div className="transfer-route-progress" role="img" aria-label="Transfer yolda">
+                                            <span className="transfer-route-dot is-complete" />
+                                            <span className="transfer-route-line" />
+                                            <span className="transfer-route-dot is-current" />
+                                          </div>
                                           <div className="flex flex-col flex-1 text-right">
                                             <span className="text-[10px] font-bold text-gray-500 uppercase">
                                               Teslim Alan
@@ -5583,7 +6095,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         </div>
                                       </div>
 
-                                      {/* CIHAZ LISTESI */}
+                                      {/* CİHAZ LİSTESİ */}
                                       <div className="flex flex-wrap gap-2 mb-4">
                                         {group.items.map((hw) => (
                                           <button
@@ -5607,18 +6119,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         ))}
                                       </div>
 
-                                      {/* ALT BILGI VE BUTONLAR (IPTAL ET DAHIL) */}
+                                      {/* ALT BİLGİ VE BUTONLAR (İPTAL ET DAHİL) */}
                                       <div className="pt-3 border-t border-gray-100 text-[11px] text-gray-500 font-bold flex flex-col sm:flex-row items-center justify-between gap-3">
                                         <span className="flex items-center gap-1.5 self-start sm:self-center">
                                           <History className="w-4 h-4 text-gray-400" />{' '}
-                                          İşlem Zamani:{' '}
+                                          İşlem Zamanı:{' '}
                                           <span className="text-gray-800">
-                                            {sentDate}
+                                          {formatTransferDateTime(sentDate)}
                                           </span>
                                         </span>
                                         
                                         <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
-                                          {/* IPTAL ET BUTONU */}
+                                          {/* İPTAL ET BUTONU */}
                                           <button
                                             onClick={() => handleCancelTransfer(group.items, currentUser.campus)}
                                             className="text-red-500 hover:text-white bg-red-50 hover:bg-red-500 px-3 py-1.5 rounded flex items-center gap-1.5 transition-colors border border-red-200 shadow-sm"
@@ -5874,13 +6386,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   })()}
                 </div>
 
-                {/* YENI TRANSFER MODAL UI EKLENTISI */}
+                {/* YENİ TRANSFER MODAL UI EKLENTİSİ */}
                 {showNewTransferModal && (
                   <div
-                    className="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex justify-center items-center p-4 sm:p-6"
+                    className="app-modal-backdrop fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex justify-center items-center p-4 sm:p-6"
                     style={{ zIndex: 9999999 }}
                   >
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden animate-in zoom-in-95 duration-500 max-h-[90vh]">
+                    <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden max-h-[90vh]">
                       {/* Üst Kısım */}
                       <div className="p-4 border-b bg-[#0066b1] text-white flex justify-between items-center shrink-0">
                         <h3 className="font-bold flex items-center gap-2 text-base md:text-lg">
@@ -6091,7 +6603,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           }
                           className="px-5 py-2.5 bg-[#0066b1] text-white font-bold rounded-lg shadow-md hover:bg-[#005595] disabled:opacity-50 disabled:shadow-none transition-all flex items-center gap-2"
                         >
-                          <Send className="w-4 h-4" /> Transferi Baslat
+                          <Send className="w-4 h-4" /> Transferi Başlat
                         </button>
                       </div>
                     </div>
@@ -6102,7 +6614,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             {/* ASSIGNMENT TAB (AKORDEON VE TEK SCROLL SISTEMI) */}
             {activeTab === 'assign' && (
-              <div className="max-w-3xl mx-auto space-y-4 animate-in fade-in pb-32">
+              <div className="app-tab-panel max-w-3xl mx-auto space-y-4 pb-32">
                 {/* 1. ADIM: PERSONEL SEÇİMİ AKORDEONU */}
                 <div
                   className={`bg-white rounded-2xl shadow-sm border transition-all duration-300 overflow-hidden ${
@@ -6138,8 +6650,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </span>
                           <span className="text-sm font-bold text-gray-800">
                             {selectedPerson
-                              ? personnel.find((p) => p.id === selectedPerson)
-                                  ?.name
+                              ? personnelById.get(selectedPerson)?.name
                               : 'Seçilmedi'}
                           </span>
                         </div>
@@ -6148,7 +6659,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                     {assignStep !== 1 && selectedPerson && (
                       <span className="text-xs font-bold text-[#0066b1] hover:underline px-2 py-1 shrink-0">
-                        Degistir
+                        Değiştir
                       </span>
                     )}
                   </div>
@@ -6300,8 +6811,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                   {assignStep === 2 && (
                     <div className="p-4 md:p-6 pt-2 border-t border-gray-100 animate-in slide-in-from-top-2 relative">
-                      <div className="flex items-center gap-2 w-full relative z-10">
-                        <div className="flex items-center flex-1 px-4 py-2.5 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#8bcdc5] focus-within:border-[#0066b1] transition-all">
+                      <div className="responsive-tab-toolbar">
+                      <div className="responsive-tab-toolbar__primary flex items-center gap-2 w-full relative z-10">
+                        <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 h-10 px-4 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#8bcdc5] focus-within:border-[#0066b1] transition-all">
                           <input
                             type="text"
                             placeholder="Cihaz ara (Marka, model, seri no)..."
@@ -6325,7 +6837,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </div>
 
                         {Array.from(new Set(availableHardwareForAssign.map(h => h.groupName).filter(Boolean))).length > 0 && (
-                          <div className="relative shrink-0 hidden sm:block">
+                          <div className="responsive-tab-toolbar__action responsive-tab-toolbar__actions-start relative shrink-0 hidden sm:block">
                             <select
                               onChange={(e) => {
                                 const selectedGrp = e.target.value;
@@ -6356,7 +6868,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           onClick={() =>
                             setShowAssignFilters(!showAssignFilters)
                           }
-                          className={`w-11 h-11 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
+                          className={`responsive-tab-toolbar__mobile-filter w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 transition-colors shadow-sm ${
                             showAssignFilters
                               ? 'bg-blue-50 border-blue-300 text-[#0066b1]'
                               : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
@@ -6368,7 +6880,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                       {/* ZİMMET AÇILIR FİLTRE MENÜLERİ */}
                       <div
-                        className={`relative mt-3 mb-0 z-[50] ${
+                        className={`responsive-tab-toolbar__filters relative mt-3 mb-0 z-[50] ${
                           showAssignFilters
                             ? 'block animate-in slide-in-from-top-1 fade-in duration-200'
                             : 'hidden'
@@ -6503,6 +7015,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </div>
                         )}
                       </div>
+                      </div>
 
                       {/* SEÇİLEN CİHAZLAR SEPETİ */}
                       {selectedHardware.length > 0 && (
@@ -6512,7 +7025,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </span>
                           
                           {selectedHardware.map(id => {
-                            const hwItem = hardware.find(h => h.id === id);
+                            const hwItem = hardwareById.get(id);
                             if(!hwItem) return null;
                             
                             const bStr = String(hwItem.brand || '');
@@ -6553,7 +7066,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                       {/* YENİ: AKSESUAR SEÇİMİ (SADECE LAPTOP SEÇİLİYSE GÖRÜNÜR) */}
                       {selectedHardware.some((id) => {
-                        const h = hardware.find((hw) => hw.id === id);
+                        const h = hardwareById.get(id);
                         return h && String(h.type || '').toLowerCase().includes('laptop');
                       }) && (
                         <div className="mt-4 p-4 bg-gray-50 border border-gray-200 rounded-xl shadow-sm animate-in fade-in">
@@ -6611,7 +7124,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </div>
                       )}
                       
-                      {/* Donanım LISTESI */}
+                      {/* Donanım LİSTESİ */}
                       <div className="space-y-3 mt-4 relative z-0">
                         {(() => {
                           const displayList = availableHardwareForAssign.slice(0, 30);
@@ -6619,7 +7132,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             <>
                               {displayList.map((h) => {
                                 const isSelected = selectedHardware.includes(h.id);
-                                const currentOwner = h.status === 'Assigned' ? personnel.find((p) => p.id === h.assignedTo)?.name : null;
+                                const currentOwner = h.status === 'Assigned' ? personnelById.get(h.assignedTo)?.name : null;
                                 
                                 // String koruması eklendi (Çökme engellendi)
                                 const brandStr = String(h.brand || '');
@@ -6674,199 +7187,148 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   )}
                 </div>
 
-                {/* YEPYENI 3D TUTANAK OLUSTUR BUTONU */}
-                {selectedPerson && selectedHardware.length > 0 && (
-                  <div
-                    className={`fixed left-0 right-0 flex justify-center px-4 w-full transition-all duration-300 pointer-events-none`}
-                    style={{ bottom: '24px', zIndex: 999999 }}
-                  >
-                    <style>{`
-                      .btn-tutanak {
-                        pointer-events: auto; /* Tiklanabilirligi geri getirir */
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        background-color: #0066b1;
-                        color: #ffffff;
-                        border: 1px solid #004a82;
-                        border-radius: 9999px;
-                        padding: 12px 16px 12px 24px;
-                        font-weight: 800;
-                        font-size: 16px;
-                        cursor: pointer;
-                        box-shadow: 0 10px 30px rgba(0, 102, 177, 0.4), inset 0 2px 5px rgba(255, 255, 255, 0.25);
-                        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-                        width: 95%;
-                        max-width: 400px;
-                        transform-origin: center bottom;
-                      }
-
-                      @media (min-width: 768px) {
-                        .btn-tutanak {
-                          width: auto;
-                          padding: 14px 20px 14px 28px;
-                          font-size: 17px;
-                        }
-                      }
-
-                      /* Hover Efekti (Fare Üzerindeyken) */
-                      .btn-tutanak:hover:not(:disabled) {
-                        background-color: #005595;
-                        box-shadow: 0 14px 35px rgba(0, 102, 177, 0.5), inset 0 2px 5px rgba(255, 255, 255, 0.3);
-                        transform: translateY(-2px);
-                      }
-
-                      /* Aktif Efekti (Tiklanirken) */
-                      .btn-tutanak:active:not(:disabled) {
-                        background-color: #003a66;
-                        box-shadow: 0 4px 12px rgba(0, 102, 177, 0.6), inset 0 4px 10px rgba(0, 0, 0, 0.4);
-                        transform: translateY(2px);
-                      }
-
-                      /* Buton İkonu Gölgelendirmesi */
-                      .btn-tutanak-icon {
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        background-color: rgba(255, 255, 255, 0.15);
-                        padding: 8px;
-                        border-radius: 50%;
-                        margin-left: 16px;
-                        box-shadow: inset 0 1px 3px rgba(0,0,0,0.15);
-                        transition: background-color 0.2s ease;
-                      }
-
-                      .btn-tutanak:hover:not(:disabled) .btn-tutanak-icon {
-                        background-color: rgba(255, 255, 255, 0.25);
-                      }
-                    `}</style>
-                    <button
-                      onClick={handleCreateAssignment}
-                      disabled={!selectedPerson || selectedHardware.length === 0}
-                      className="btn-tutanak animate-in slide-in-from-bottom-8 fade-in"
-                    >
-                      <span className="whitespace-nowrap tracking-wide">
-                        Tutanak Oluştur ve İmzaya Geç
-                      </span>
-                      <div className="btn-tutanak-icon">
-                        <CheckCircle2 className="w-5 h-5 text-white" strokeWidth={3} />
-                      </div>
-                    </button>
-                  </div>
-                )}
               </div>
             )}
 
             {/* HARDWARE PROFILE MODAL */}
-            <HardwareProfileModal
-              deps={{
-                viewingHardwareId,
-                viewedHardware,
-                setViewingHardwareId,
-                setShowHardwareHistory,
-                setIsEditingDeviceName,
-                setEditComputerNumber,
-                setIsEditingSingleGroup,
-                setEditSingleGroupText,
-                setIsEditingNote,
-                setEditNoteText,
-                currentUser,
-                setConfirmDialog,
-                setHardware,
-                hardware,
-                fetchVeritabani,
-                clientIp,
-                handleOpenQrLabelPrint,
-                setTransferModalObj,
-                setTransferSignature,
-                setViewingPersonId,
-                setReturningData,
-                isEditingDeviceName,
-                editComputerNumber,
-                isUpdatingName,
-                handleSaveDeviceName,
-                viewedHardwarePerson,
-                isEditingSingleGroup,
-                editSingleGroupText,
-                isUpdatingSingleGroup,
-                handleSaveSingleGroup,
-                isEditingNote,
-                editNoteText,
-                isUpdatingNote,
-                handleSaveNote,
-                manualUploadFile,
-                setManualUploadFile,
-                fileInputRef,
-                handleMissingDocumentUpload,
-                isUploadingManual,
-                showManualUpload,
-                setShowManualUpload,
-                manualUploadSearch,
-                setManualUploadSearch,
-                manualUploadPerson,
-                setManualUploadPerson,
-                campusPersonnel,
-                handleManualUploadSubmit,
-                handleOpenHistory,
-                isLoadingHistory,
-                showHardwareHistory,
-                handlePdfClick,
-                
-                // --- EKSİK OLANLAR BURAYA EKLENDİ ---
-                isTransferMode,
-                setIsTransferMode,
-                selectedTargetCampus,
-                setSelectedTargetCampus,
-                copiedSerial,
-                setCopiedSerial,
-                successMessage,
-                setSuccessMessage,
-                isGenerating,
-                setIsGenerating
-              }}
-            />
+            {viewingHardwareId && (
+              <Suspense fallback={<LazyPanelFallback label="Cihaz profili hazırlanıyor..." />}>
+                <HardwareProfileModal
+                  deps={{
+                    viewingHardwareId,
+                    viewedHardware,
+                    setViewingHardwareId,
+                    setShowHardwareHistory,
+                    setIsEditingDeviceName,
+                    setEditComputerNumber,
+                    setIsEditingSingleGroup,
+                    setEditSingleGroupText,
+                    setIsEditingNote,
+                    setEditNoteText,
+                    currentUser,
+                    setConfirmDialog,
+                    setHardware,
+                    hardware,
+                    fetchVeritabani,
+                    clientIp,
+                    handleOpenQrLabelPrint,
+                    setTransferModalObj,
+                    setTransferSignature,
+                    setViewingPersonId,
+                    setReturningData,
+                    isEditingDeviceName,
+                    editComputerNumber,
+                    isUpdatingName,
+                    handleSaveDeviceName,
+                    viewedHardwarePerson,
+                    isEditingSingleGroup,
+                    editSingleGroupText,
+                    isUpdatingSingleGroup,
+                    handleSaveSingleGroup,
+                    isEditingNote,
+                    editNoteText,
+                    isUpdatingNote,
+                    handleSaveNote,
+                    manualUploadFile,
+                    setManualUploadFile,
+                    fileInputRef,
+                    handleMissingDocumentUpload,
+                    isUploadingManual,
+                    showManualUpload,
+                    setShowManualUpload,
+                    manualUploadSearch,
+                    setManualUploadSearch,
+                    manualUploadPerson,
+                    setManualUploadPerson,
+                    campusPersonnel,
+                    personnel,
+                    handleManualUploadSubmit,
+                    handleOpenHistory,
+                    isLoadingHistory,
+                    showHardwareHistory,
+                    handlePdfClick,
+
+                    // --- EKSİK OLANLAR BURAYA EKLENDİ ---
+                    isTransferMode,
+                    setIsTransferMode,
+                    selectedTargetCampus,
+                    setSelectedTargetCampus,
+                    copiedSerial,
+                    setCopiedSerial,
+                    successMessage,
+                    setSuccessMessage,
+                    isGenerating,
+                    setIsGenerating
+                  }}
+                />
+              </Suspense>
+            )}
 
             {/* RETURN HARDWARE MODAL & PDF */}
-            <ReturnZimmetModal
-              deps={{
-                returningData,
-                setReturningData,
-                isGenerating,
-                currentUser,
-                returnItSignature,
-                setReturnItSignature,
-                returnPersonSignature,
-                setReturnPersonSignature,
-                returnPersonOtpData,
-                setReturnPersonOtpData,
-                returnCondition,
-                setReturnCondition,
-                returnExplanation,
-                setReturnExplanation,
-                returnIncludeCharger,
-                setReturnIncludeCharger,
-                returnIncludeBag,
-                setReturnIncludeBag,
-                returnIncludeMouse,
-                setReturnIncludeMouse,
-                isReturnAccepted,
-                setIsReturnAccepted,
-                handleFinalizeReturn,
+            {returningData && (
+              <Suspense fallback={<LazyPanelFallback label="İade ekranı hazırlanıyor..." />}>
+                <ReturnZimmetModal
+                  deps={{
+                    returningData,
+                    setReturningData,
+                    isGenerating,
+                    currentUser,
+                    returnItSignature,
+                    setReturnItSignature,
+                    returnPersonSignature,
+                    setReturnPersonSignature,
+                    returnPersonOtpData,
+                    setReturnPersonOtpData,
+                    returnCondition,
+                    setReturnCondition,
+                    returnExplanation,
+                    setReturnExplanation,
+                    returnIncludeCharger,
+                    setReturnIncludeCharger,
+                    returnIncludeBag,
+                    setReturnIncludeBag,
+                    returnIncludeMouse,
+                    setReturnIncludeMouse,
+                    isReturnAccepted,
+                    setIsReturnAccepted,
+                    handleFinalizeReturn,
 
-                // --- EKSİK OLANLAR BURAYA EKLENDİ ---
-                clientIp,
-                handlePersonPhoneSaved,
-                handlePdfClick
-              }}
-            />
+                    // --- EKSİK OLANLAR BURAYA EKLENDİ ---
+                    clientIp,
+                    handlePersonPhoneSaved,
+                    handlePdfClick
+                  }}
+                />
+              </Suspense>
+            )}
 
-            {/* YENI Donanım EKLE MODAL */}
+            {showBulkHardwareImportModal && (
+              <Suspense fallback={<LazyInlineFallback label="Excel içe aktarma hazırlanıyor..." />}>
+                <BulkHardwareImportModal
+                  currentUser={currentUser}
+                  existingHardware={hardware}
+                  onClose={() => setShowBulkHardwareImportModal(false)}
+                  onImported={async (result) => {
+                    await fetchVeritabani(false);
+                    const skippedMessage = result.skipped
+                      ? ` ${result.skipped} mevcut seri numarası atlandı.`
+                      : '';
+                    setSuccessMessage(
+                      `${result.imported} donanım depoya eklendi.${skippedMessage}`
+                    );
+                    setTimeout(() => setSuccessMessage(null), 3500);
+                  }}
+                />
+              </Suspense>
+            )}
+
+            {/* YENİ Donanım EKLE MODAL */}
             {showAddHardwareModal && (
               <div
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
+                className="app-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
                 style={{ zIndex: 999999 }}
               >
-                <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden animate-in zoom-in-95 duration-500 border border-white/20">
+                <div className="app-modal-panel bg-white rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden border border-white/20">
                   <div className="flex justify-between items-center p-4 md:p-5 border-b bg-[#0066b1] text-white shrink-0">
                     <h3 className="font-bold text-base flex items-center gap-2">
                       <Plus className="w-5 h-5" /> Yeni Donanım Ekle
@@ -6880,7 +7342,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   </div>
 
                   <div className="p-5 md:p-6 overflow-y-auto bg-slate-50/50">
-                    {/* Uyari/Bilgi */}
+                    {/* Uyarı/Bilgi */}
                     <div className="bg-blue-50/80 border border-blue-200 text-blue-800 text-[11px] p-3 rounded-xl flex items-start gap-2 shadow-sm">
                       <Building2 className="w-4 h-4 shrink-0 mt-0.5 text-blue-600" />
                       <p>
@@ -6990,7 +7452,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                       <div>
                         <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wide mb-1.5 ml-1">
-                          Seri Numarasi (S/N)
+                          Seri Numarası (S/N)
                         </label>
                         <input
                           type="text"
@@ -7010,9 +7472,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       {showComputerName && (
                         <div className="bg-blue-50/50 p-4 rounded-2xl border border-blue-100 shadow-sm animate-in fade-in mt-2">
                           <label className="flex items-center justify-between block text-[11px] font-bold text-[#0066b1] uppercase tracking-wide mb-3 ml-1">
-                            <span>Bilgisayar Ismi Atamasi</span>
+                            <span>Bilgisayar İsmi Ataması</span>
                             <span className="bg-white text-gray-400 px-2 py-0.5 rounded-full border border-gray-200 text-[9px] tracking-wider shadow-sm">
-                              OPSIYONEL
+                              OPSİYONEL
                             </span>
                           </label>
                           <div className="flex items-center w-full border border-gray-300 rounded-xl overflow-hidden bg-white focus-within:ring-2 focus-within:ring-[#0066b1] focus-within:border-[#0066b1] transition-all shadow-inner">
@@ -7021,8 +7483,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             </span>
                             <input
                                   type="text"
-                                  inputMode="numeric" // YENI
-                                  pattern="[0-9]*"    // YENI
+                                  inputMode="numeric" // YENİ
+                                  pattern="[0-9]*"    // YENİ
                                   maxLength="4"
                                   placeholder="0000"
                                   value={editComputerNumber}
@@ -7076,10 +7538,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
             {/* PERSONNEL PROFILE MODAL */}
             {viewingPersonId && viewedPerson && (
               <div
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+                className="app-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
                 style={{ zIndex: 99999 }}
               >
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh] overflow-hidden">
+                <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md flex flex-col max-h-[90vh] overflow-hidden">
                   {/* HEADER: p-4 ve daha temiz border */}
                   <div className="flex justify-between items-center p-4 border-b border-gray-100 shrink-0">
                     {/* SOL TARAF: Baslik ve Rozet Bir Arada */}
@@ -7089,7 +7551,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         Profili
                       </h3>
 
-                      {/* YENI EKLENEN AKTIF ROZETI */}
+                      {/* YENİ EKLENEN AKTİF ROZETİ */}
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider shrink-0 shadow-sm border ${
                           viewedPerson.status === 'Kullanıcı Bulunamadı'
@@ -7122,7 +7584,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     className="p-4 space-y-4 overflow-y-auto flex-1 bg-white overscroll-contain"
                     style={{ WebkitOverflowScrolling: 'touch', touchAction: 'pan-y' }}
                   >
-                    {/* 1. KISI BILGISI HEADER */}
+                    {/* 1. KİŞİ BİLGİSİ HEADER */}
                     <div className="flex items-center gap-4 pb-2">
                       {/* Avatar */}
                       <div
@@ -7189,7 +7651,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         <p className="font-bold text-blue-600 text-[14px] truncate leading-tight group-hover:text-blue-800 transition-colors">
                           {copiedEmail ? (
                             <span className="text-green-600 flex items-center gap-1.5">
-                              <CheckCircle2 className="w-4 h-4" /> Kopyalandi
+                              <CheckCircle2 className="w-4 h-4" /> Kopyalandı
                             </span>
                           ) : (
                             viewedPerson.email || '-'
@@ -7245,7 +7707,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           {viewedPerson.signatureLink && (
                             <button
                               type="button"
-                              onClick={() => window.open(viewedPerson.signatureLink, '_blank')}
+                              onClick={() => {
+                                if (!openSafeExternalUrl(viewedPerson.signatureLink)) {
+                                  showAppAlert('İmza bağlantısı güvenli olmadığı için açılamadı.');
+                                }
+                              }}
                               className={`${isSignatureEligiblePerson(viewedPerson) ? 'h-10 px-3' : 'h-10 flex-1 px-3'} rounded-xl bg-white border border-gray-200 text-gray-600 hover:text-[#0066b1] hover:border-blue-200 transition-colors inline-flex items-center justify-center gap-2 text-xs font-black`}
                               title="İmza linkini aç"
                             >
@@ -7256,7 +7722,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </div>
                       </div>
 
-                      {/* AD Sifre Sifirlama */}
+                      {/* AD Şifre Sıfırlama */}
                       <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-100 flex items-center gap-3">
                         <div className="flex-1 min-w-0">
                           <p className="text-[10px] text-blue-500 mb-1.5 font-bold uppercase tracking-wider">
@@ -7303,15 +7769,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </h4>
 
                         {/* SEÇİLİ CİHAZLARI İADE AL BUTONU */}
-                        {hardware.filter(
-                          (h) => h.assignedTo === viewedPerson.id
-                        ).length > 0 &&
+                        {viewedPersonHardware.length > 0 &&
                           selectedForReturn.length > 0 && (
                             <button
                               onClick={() => {
-                                const selectedHardwareObjs = hardware.filter(
-                                  (h) => selectedForReturn.includes(h.id)
-                                );
+                                const selectedHardwareObjs = selectedForReturn
+                                  .map((id) => hardwareById.get(id))
+                                  .filter(Boolean);
                                 setReturningData({
                                   hardwareArray: selectedHardwareObjs,
                                   person: viewedPerson,
@@ -7326,11 +7790,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       </div>
 
                       <div className="space-y-2.5">
-                        {hardware.filter(
-                          (h) => h.assignedTo === viewedPerson.id
-                        ).length > 0 ? (
-                          hardware
-                            .filter((h) => h.assignedTo === viewedPerson.id)
+                        {viewedPersonHardware.length > 0 ? (
+                          viewedPersonHardware
                             .map((h) => {
                               const bStr = h.brand || '';
                               const mStr = h.model || '';
@@ -7496,7 +7957,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     .toLocaleLowerCase('tr-TR')
                                     .includes('iade');
 
-                                // Dosya isminden cihaz verilerini ayiklama
+                                // Dosya isminden cihaz verilerini ayıklama
                                 // (Format: Serial, İsim, Kampüs, Marka Model, Tipi.pdf)
                                 const parts = doc.name.split(',');
                                 let deviceName = 'Cihaz Belgesi';
@@ -7575,72 +8036,80 @@ setTimeout(() => setSuccessMessage(null), 2500);
             )}
 
             {showAdPasswordResetModal && viewedPerson && (
-              <AdPasswordResetModal
-                person={viewedPerson}
-                currentUser={currentUser}
-                clientIp={clientIp}
-                onClose={() => setShowAdPasswordResetModal(false)}
-                onQueued={(result) => {
-                  setAdPasswordJobs((prev) => [
-                    {
-                      queueId: result.queueId || 'Bekliyor',
-                      createdAt: new Date().toLocaleString('tr-TR'),
-                      updatedAt: new Date().toLocaleString('tr-TR'),
-                      status: 'BEKLIYOR',
-                      personName: viewedPerson.name,
-                      adUser: viewedPersonAdLogin,
-                      mode: 'Şifre',
-                      campus: viewedPerson.campus,
-                    },
-                    ...prev,
-                  ]);
-                  setSuccessMessage(`Bilgisayar/Wi‑Fi şifre değiştirme işlemi başlatıldı: ${result.queueId || 'Bekliyor'}`);
-                  setTimeout(() => setSuccessMessage(null), 3000);
-                }}
-                onPhoneSaved={handlePersonPhoneSaved}
-              />
+              <Suspense fallback={<LazyPanelFallback label="Şifre ekranı hazırlanıyor..." />}>
+                <AdPasswordResetModal
+                  person={viewedPerson}
+                  currentUser={currentUser}
+                  clientIp={clientIp}
+                  onClose={() => setShowAdPasswordResetModal(false)}
+                  onQueued={(result) => {
+                    setAdPasswordJobs((prev) => [
+                      {
+                        queueId: result.queueId || 'Bekliyor',
+                        createdAt: new Date().toLocaleString('tr-TR'),
+                        updatedAt: new Date().toLocaleString('tr-TR'),
+                        status: 'BEKLIYOR',
+                        personName: viewedPerson.name,
+                        adUser: viewedPersonAdLogin,
+                        mode: 'Şifre',
+                        campus: viewedPerson.campus,
+                      },
+                      ...prev,
+                    ]);
+                    setSuccessMessage(`Bilgisayar/Wi‑Fi şifre değiştirme işlemi başlatıldı: ${result.queueId || 'Bekliyor'}`);
+                    setTimeout(() => setSuccessMessage(null), 3000);
+                  }}
+                  onPhoneSaved={handlePersonPhoneSaved}
+                />
+              </Suspense>
             )}
 
             {signatureModalPerson && (
-              <SignatureCreateModal
-                person={signatureModalPerson}
-                titles={signatureTitles}
-                campuses={signatureCampuses}
-                canChooseCampus={canChooseSignatureCampus}
-                isLoadingTitles={isLoadingSignatureTitles}
-                isSubmitting={isCreatingSignature}
-                onClose={() => setSignatureModalPerson(null)}
-                onSubmit={handleCreatePersonnelSignature}
-              />
+              <Suspense fallback={<LazyPanelFallback label="İmza ekranı hazırlanıyor..." />}>
+                <SignatureCreateModal
+                  person={signatureModalPerson}
+                  titles={signatureTitles}
+                  campuses={signatureCampuses}
+                  canChooseCampus={canChooseSignatureCampus}
+                  isLoadingTitles={isLoadingSignatureTitles}
+                  isSubmitting={isCreatingSignature}
+                  onClose={() => setSignatureModalPerson(null)}
+                  onSubmit={handleCreatePersonnelSignature}
+                />
+              </Suspense>
             )}
 
-            <ReturnZimmetModal
-              deps={{
-                returningData,
-                setReturningData,
-                isGenerating,
-                currentUser,
-                returnItSignature,
-                setReturnItSignature,
-                returnPersonSignature,
-                setReturnPersonSignature,
-                returnPersonOtpData,
-                setReturnPersonOtpData,
-                returnCondition,
-                setReturnCondition,
-                returnExplanation,
-                setReturnExplanation,
-                returnIncludeCharger,
-                setReturnIncludeCharger,
-                returnIncludeBag,
-                setReturnIncludeBag,
-                returnIncludeMouse,
-                setReturnIncludeMouse,
-                isReturnAccepted,
-                setIsReturnAccepted,
-                handleFinalizeReturn,
-              }}
-            />
+            {returningData && (
+              <Suspense fallback={<LazyPanelFallback label="İade ekranı hazırlanıyor..." />}>
+                <ReturnZimmetModal
+                  deps={{
+                    returningData,
+                    setReturningData,
+                    isGenerating,
+                    currentUser,
+                    returnItSignature,
+                    setReturnItSignature,
+                    returnPersonSignature,
+                    setReturnPersonSignature,
+                    returnPersonOtpData,
+                    setReturnPersonOtpData,
+                    returnCondition,
+                    setReturnCondition,
+                    returnExplanation,
+                    setReturnExplanation,
+                    returnIncludeCharger,
+                    setReturnIncludeCharger,
+                    returnIncludeBag,
+                    setReturnIncludeBag,
+                    returnIncludeMouse,
+                    setReturnIncludeMouse,
+                    isReturnAccepted,
+                    setIsReturnAccepted,
+                    handleFinalizeReturn,
+                  }}
+                />
+              </Suspense>
+            )}
           </div>
         )}
         {/* YENİ ZİMMET BUTONUNUN ALTTA KALMAMASI İÇİN GARANTİLİ FİZİKSEL BOŞLUK */}
@@ -7672,11 +8141,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             return (
               <div
-                className="fixed inset-0 bg-black/80 backdrop-blur-sm overflow-y-auto"
+                className="app-modal-backdrop fixed inset-0 bg-black/80 backdrop-blur-sm overflow-y-auto"
                 style={{ zIndex: 9999999 }}
               >
                 <div className="min-h-full flex items-start md:items-center justify-center p-2 sm:p-4 py-8">
-                  <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden">
+                  <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden">
                     <div
                       className={`flex justify-between items-center p-4 border-b text-white shrink-0 ${
                         transferModalObj.type === 'out'
@@ -7714,7 +8183,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           fontSize: '12px',
                           lineHeight: '1.5',
                         }}
-                        className="shadow-lg transition-all duration-300 relative"
+          className="theme-paper shadow-lg transition-all duration-300 relative"
                       >
                         {/* LOGO KISMI */}
                         <div style={{ marginBottom: '30px' }}>
@@ -7758,7 +8227,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           </h3>
                         </div>
 
-                        {/* GIRIS METNI */}
+                        {/* GİRİŞ METNİ */}
                         <p
                           style={{
                             textAlign: 'justify',
@@ -7880,7 +8349,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           {new Date().toLocaleDateString('tr-TR')}
                         </div>
 
-                        {/* IMZA KISMI (Sol ve Sag - Tam Ortalanmis Format) */}
+                        {/* EL YAZISI TESLİM BEYANLARI */}
                         <div
                           style={{
                             display: 'flex',
@@ -7890,7 +8359,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             marginTop: '40px',
                           }}
                         >
-                          {/* Sol İmza (Gönderen / Teslim Eden) */}
+                          {/* Gönderen / Teslim Eden Beyanı */}
                           <div
                             style={{
                               width: isGenerating ? '50%' : '100%',
@@ -7909,7 +8378,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               <>
                                 {!isGenerating && (
                                   <div style={{ marginTop: '10px' }}>
-                                    <SignaturePad onSign={setTransferSignature} label="İmzanızı Atın" />
+                                    <Suspense fallback={<LazyInlineFallback label="Beyan alanı hazırlanıyor..." />}>
+                                      <HandwrittenStatementPad
+                                        value={transferSignature}
+                                        onChange={setTransferSignature}
+                                        label="Teslim Eden Beyanı"
+                                        statement="Eksiksiz teslim ettim."
+                                      />
+                                    </Suspense>
                                   </div>
                                 )}
                                 <div
@@ -7925,9 +8401,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 >
                                   {transferSignature && (
                                     <>
-                                      <img src={transferSignature.image} alt="İmza" style={{ maxHeight: '70px', maxWidth: '100%' }} />
+                                      <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Eksiksiz teslim ettim.”</div>
+                                      <img src={transferSignature.image} alt="Teslim eden beyanı" style={{ maxHeight: '70px', maxWidth: '100%' }} />
                                       <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>
-                                        ID: {transferSignature.hash}
+                                        Beyan ID: {transferSignature.hash}
                                       </span>
                                     </>
                                   )}
@@ -7936,7 +8413,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             )}
                           </div>
 
-                          {/* Sağ İmza (Alan / Teslim Alan) */}
+                          {/* Alıcı / Teslim Alan Beyanı */}
                           <div
                             style={{
                               width: isGenerating ? '50%' : '100%',
@@ -7955,7 +8432,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               <>
                                 {!isGenerating && (
                                   <div style={{ marginTop: '10px' }}>
-                                    <SignaturePad onSign={setTransferSignature} label="İmzanızı Atın" />
+                                    <Suspense fallback={<LazyInlineFallback label="Beyan alanı hazırlanıyor..." />}>
+                                      <HandwrittenStatementPad
+                                        value={transferSignature}
+                                        onChange={setTransferSignature}
+                                        label="Teslim Alan Beyanı"
+                                        statement="Eksiksiz teslim aldım."
+                                      />
+                                    </Suspense>
                                   </div>
                                 )}
                                 <div
@@ -7971,9 +8455,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 >
                                   {transferSignature && (
                                     <>
-                                      <img src={transferSignature.image} alt="İmza" style={{ maxHeight: '70px', maxWidth: '100%' }} />
+                                      <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Eksiksiz teslim aldım.”</div>
+                                      <img src={transferSignature.image} alt="Teslim alan beyanı" style={{ maxHeight: '70px', maxWidth: '100%' }} />
                                       <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>
-                                        ID: {transferSignature.hash}
+                                        Beyan ID: {transferSignature.hash}
                                       </span>
                                     </>
                                   )}
@@ -8069,20 +8554,36 @@ setTimeout(() => setSuccessMessage(null), 2500);
           })()}
       </main>
 
-      <QrLabelModal
-        items={qrLabelPrintItems}
-        getPayload={getHardwareQrPayload}
-        onClose={() => setQrLabelPrintItems([])}
-      />
+      {qrLabelPrintItems.length > 0 && (
+        <Suspense fallback={<LazyPanelFallback label="QR etiketi hazırlanıyor..." />}>
+          <QrLabelModal
+            items={qrLabelPrintItems}
+            getPayload={getHardwareQrPayload}
+            onClose={() => setQrLabelPrintItems([])}
+          />
+        </Suspense>
+      )}
 
-      {/* YENI: GLPI FLOATING ACTION BAR */}
+      {activeTab === 'assign' &&
+        selectedPerson &&
+        selectedHardware.length > 0 &&
+        !isSigning &&
+        !showZimmetliOnayModal && (
+          <AssignmentFloatingAction
+            ref={assignmentActionBtnRef}
+            selectedCount={selectedHardware.length}
+            onClick={handleCreateAssignment}
+          />
+        )}
+
+      {/* YENİ: GLPI FLOATING ACTION BAR */}
       {activeTab === 'glpiMissing' && selectedMissingGlpiIds.length > 0 && (
         <div
           className="fixed z-[999999] flex items-center justify-between glpi-floating-container"
           style={{
             bottom: '24px', left: '50%', transform: 'translateX(-50%)',
-            backgroundColor: 'rgba(255, 255, 255, 0.95)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
-            boxShadow: '0 12px 45px rgba(0,0,0,0.2)', border: '1px solid rgba(0,0,0,0.08)', borderRadius: '9999px',
+            backgroundColor: 'var(--app-floating-bg)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+            boxShadow: 'var(--app-floating-shadow)', border: '1px solid var(--app-floating-border)', borderRadius: '9999px',
             transition: 'all 0.7s cubic-bezier(0.32, 0.72, 0, 1)',
           }}
         >
@@ -8129,7 +8630,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             <div className="hidden sm:flex flex-col justify-center px-3 min-w-[140px]">
               <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">GLPI Seçimi</span>
-              <span className="text-xs font-bold text-gray-700 truncate">Laptoplar'a depo olarak ekle</span>
+              <span className="text-xs font-bold text-gray-700 truncate">Donanımlara Depoda olarak ekle</span>
             </div>
 
             {/* Orta Buton */}
@@ -8165,11 +8666,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
             bottom: '24px',
             left: '50%',
             transform: 'translateX(-50%)',
-            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            backgroundColor: 'var(--app-floating-bg)',
             backdropFilter: 'blur(8px)',
             WebkitBackdropFilter: 'blur(8px)',
-            boxShadow: '0 12px 45px rgba(0,0,0,0.2)',
-            border: '1px solid rgba(0,0,0,0.08)',
+            boxShadow: 'var(--app-floating-shadow)',
+            border: '1px solid var(--app-floating-border)',
             borderRadius: '9999px',
             transition: 'all 0.7s cubic-bezier(0.32, 0.72, 0, 1)',
           }}
@@ -8236,7 +8737,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   <Send size={16} className="md:w-[18px] md:h-[18px]" /> Transfer
                 </button>
                 <button
-                  onClick={() => handleOpenQrLabelPrint(hardware.filter((h) => selectedBulkHardware.includes(h.id)))}
+                  onClick={() => handleOpenQrLabelPrint(hardware.filter((h) => selectedHardwareIdSet.has(h.id)))}
                   className="bulk-btn"
                   style={{ backgroundColor: '#e0f2fe', color: '#075985' }}
                 >
@@ -8280,7 +8781,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
               <button
                 onClick={() => {
-                  const selectedObjs = hardware.filter((h) => selectedBulkHardware.includes(h.id));
+                  const selectedObjs = hardware.filter((h) => selectedHardwareIdSet.has(h.id));
                   setTransferModalObj({ type: 'out', items: selectedObjs, targetCampus: bulkTargetCampus, senderCampus: currentUser.campus });
                   setBulkCampusTransferMode(false);
                 }}
@@ -8309,16 +8810,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </div>
       )}
 
-      {/* YENI ZIMMET / YENI TRANSFER BUTONU (FLOATING ACTION BUTTON) */}
+      {/* YENİ ZİMMET / YENİ TRANSFER BUTONU (FLOATING ACTION BUTTON) */}
       {currentUser &&
         activeTab !== 'assign' &&
         activeTab !== 'qrScan' &&
         activeTab !== 'glpiMissing' &&
+        activeTab !== 'systemAdmin' &&
         !isSigning &&
         !viewingHardwareId &&
         !viewingPersonId &&
         !returningData &&
         !showAddHardwareModal &&
+        !showBulkHardwareImportModal &&
         !transferModalObj &&  
         !showNewTransferModal && 
         !confirmDialog && 
@@ -8443,10 +8946,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
           </div>
         )}
 
-      {/* YENI: SIK ONAY (CONFIRM) KUTUSU */}
+      {/* YENİ: ŞIK ONAY (CONFIRM) KUTUSU */}
       {confirmDialog && (
-        <div className="fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-500" style={{ zIndex: 99999999 }}>
-          <div className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center transform transition-all animate-in zoom-in-95">
+        <div className="app-modal-backdrop fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm" style={{ zIndex: 99999999 }}>
+          <div className="app-modal-panel bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center">
             <div className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${confirmDialog.type === 'danger' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-[#0066b1]'}`}>
               <span className="text-3xl">⚠️</span>
             </div>
@@ -8460,10 +8963,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </div>
       )}
 
-      {/* YENI: ZIMMETLI CIHAZ UYARI MODALI */}
+      {/* YENİ: ZİMMETLİ CİHAZ UYARI MODALI */}
       {showZimmetliOnayModal && (
-        <div className="fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300" style={{ zIndex: 99999999 }}>
-          <div className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center transform transition-all animate-in zoom-in-95">
+        <div className="app-modal-backdrop fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm" style={{ zIndex: 99999999 }}>
+          <div className="app-modal-panel bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center">
             <div className="w-16 h-16 rounded-full flex items-center justify-center mb-4 bg-amber-100 text-amber-600">
               <span className="text-3xl">⚠️</span>
             </div>
@@ -8472,7 +8975,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             
             <div className="w-full bg-amber-50 p-3 rounded-xl border border-amber-100 max-h-32 overflow-y-auto mb-6 text-left">
               {zimmetliCihazlarListesi.map((h) => {
-                const owner = personnel.find((p) => p.id === h.assignedTo)?.name || 'Bilinmiyor';
+                const owner = personnelById.get(h.assignedTo)?.name || 'Bilinmiyor';
                 return (
                   <div key={h.id} className="text-xs font-bold text-amber-800 mb-1 truncate">
                     • {h.brand} {h.model} <span className="text-amber-600 font-medium">(Mevcut: {owner})</span>
@@ -8577,7 +9080,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       {/* GRUP OLUŞTURMA MODALI (iPad Klavye Bug Kesin Çözümü) */}
       {showGroupModal && (
         <div 
-          className="fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200" 
+          className="app-modal-backdrop fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm"
           style={{ zIndex: 999999 }}
           onPointerDown={(e) => {
             // Arka plana tiklayinca klavyeyi kapat (blur)
@@ -8585,7 +9088,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
           }}
         >
           <div 
-            className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col max-w-sm w-full transform transition-all animate-in zoom-in-95"
+            className="app-modal-panel bg-white p-6 rounded-3xl shadow-2xl flex flex-col max-w-sm w-full"
             onPointerDown={(e) => e.stopPropagation()} // iOS Safari'nin tiklamayi yutmasini engeller
           >
             <h3 className="text-lg font-black text-gray-900 mb-2 flex items-center gap-2">
@@ -8638,10 +9141,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
       {/* YENİ: DIŞA AKTARIM DOSYASI OLUŞTURULDU MODALI (Pop-up Engeline Takılmamak İçin) */}
       {generatedSheetUrl && (
         <div
-          className="fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300"
+          className="app-modal-backdrop fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm"
           style={{ zIndex: 9999999999 }}
         >
-          <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center transform transition-all animate-in zoom-in-95">
+          <div className="app-modal-panel bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center">
             <div className="w-20 h-20 rounded-full flex items-center justify-center mb-5 bg-green-100 text-green-600 border-4 border-green-50 shadow-inner">
               <Table className="w-10 h-10" />
             </div>
@@ -8655,7 +9158,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
               <a
                 href={generatedSheetUrl}
                 target="_blank"
-                rel="noreferrer"
+                rel="noopener noreferrer"
                 onClick={() => setGeneratedSheetUrl(null)} // Tiklayinca modali kapat
                 className="w-full py-3.5 bg-green-600 text-white font-black rounded-xl shadow-md hover:bg-green-700 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
               >
@@ -8694,4 +9197,3 @@ setTimeout(() => setSuccessMessage(null), 2500);
     </div>
   );
 }
-

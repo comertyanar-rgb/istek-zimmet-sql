@@ -163,8 +163,34 @@ function Invoke-SignatureApi {
     throw "Signature API URL is empty."
   }
 
+  if ([string]::IsNullOrWhiteSpace($SignatureAgentSecret)) {
+    throw "Signature agent secret is empty."
+  }
+
   $json = $Payload | ConvertTo-Json -Depth 10 -Compress
-  return Invoke-RestMethod -Uri $Url -Method Post -Body $json -ContentType "application/json; charset=utf-8" -TimeoutSec $TimeoutSec
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+  $nonce = [Guid]::NewGuid().ToString("N")
+  $prefixBytes = [System.Text.Encoding]::UTF8.GetBytes("$timestamp`n$nonce`n")
+  $hmac = New-Object System.Security.Cryptography.HMACSHA256
+  $stream = New-Object System.IO.MemoryStream
+  try {
+    $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($SignatureAgentSecret)
+    $stream.Write($prefixBytes, 0, $prefixBytes.Length)
+    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+    $stream.Position = 0
+    $signature = ([BitConverter]::ToString($hmac.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $stream.Dispose()
+    $hmac.Dispose()
+  }
+  $headers = @{
+    "X-Zimmet-Timestamp" = $timestamp
+    "X-Zimmet-Nonce" = $nonce
+    "X-Zimmet-Signature" = $signature
+    "X-Zimmet-Action" = [string]$Payload.action
+  }
+  return Invoke-RestMethod -Uri $Url -Method Post -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec $TimeoutSec
 }
 
 function New-SignatureInputFilesFromJobs {
@@ -259,7 +285,6 @@ function Receive-SignatureJobsFromSql {
   Write-AgentInfo "SQL imza kuyruğu okunuyor..."
   $payload = @{
     action = "fetchSignatureJobs"
-    secret = $SignatureAgentSecret
     limit = $SignatureFetchLimit
     machine = $env:COMPUTERNAME
   }
@@ -487,13 +512,12 @@ var SIGNATURE_JOB = {
 
         $payload = @{
           action = "completeSignatureJob"
-          secret = $SignatureAgentSecret
           signatureId = $signatureId
           templateVariant = $templateVariant
           machine = $env:COMPUTERNAME
-        } | ConvertTo-Json -Compress
+        }
 
-        $callbackResponse = Invoke-RestMethod -Uri $SignatureCallbackUrl -Method Post -Body $payload -ContentType "application/json; charset=utf-8" -TimeoutSec 30
+        $callbackResponse = Invoke-SignatureApi -Payload $payload -Url $SignatureCallbackUrl -TimeoutSec 30
         if (!$callbackResponse.success) {
           throw "Signature status callback failed for ${signatureId}: $($callbackResponse.error)"
         }

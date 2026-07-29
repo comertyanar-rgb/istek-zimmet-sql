@@ -38,8 +38,30 @@ function Write-AgentLog {
 
 function Invoke-ZimmetApi {
   param([hashtable]$Payload)
-  $json = $Payload | ConvertTo-Json -Depth 8
-  $response = Invoke-RestMethod -Uri $script:ApiUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $json
+  $json = $Payload | ConvertTo-Json -Depth 8 -Compress
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+  $nonce = [Guid]::NewGuid().ToString("N")
+  $prefixBytes = [System.Text.Encoding]::UTF8.GetBytes("$timestamp`n$nonce`n")
+  $hmac = New-Object System.Security.Cryptography.HMACSHA256
+  $stream = New-Object System.IO.MemoryStream
+  try {
+    $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($script:AgentSecret)
+    $stream.Write($prefixBytes, 0, $prefixBytes.Length)
+    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+    $stream.Position = 0
+    $signature = ([BitConverter]::ToString($hmac.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $stream.Dispose()
+    $hmac.Dispose()
+  }
+  $headers = @{
+    "X-Zimmet-Timestamp" = $timestamp
+    "X-Zimmet-Nonce" = $nonce
+    "X-Zimmet-Signature" = $signature
+    "X-Zimmet-Action" = [string]$Payload.action
+  }
+  $response = Invoke-RestMethod -Uri $script:ApiUrl -Method Post -Headers $headers -ContentType "application/json; charset=utf-8" -Body $bodyBytes
   if ($response.success -eq $false) {
     $message = [string]$response.error
     if ([string]::IsNullOrWhiteSpace($message)) {
@@ -280,7 +302,6 @@ $rsa = Import-PrivateKey -Path $script:PrivateKeyPath
 
 $fetchResult = Invoke-ZimmetApi @{
   action = "fetchADPasswordJobs"
-  secret = $script:AgentSecret
   limit = $Limit
 }
 
@@ -309,8 +330,8 @@ foreach ($job in $jobs) {
 
     Invoke-ZimmetApi @{
       action = "completeADPasswordJob"
-      secret = $script:AgentSecret
       queueId = $job.queueId
+      leaseToken = $job.leaseToken
       success = $true
       result = $resultMessage
     } | Out-Null
@@ -320,8 +341,8 @@ foreach ($job in $jobs) {
     $errorMessage = $_.Exception.Message
     Invoke-ZimmetApi @{
       action = "completeADPasswordJob"
-      secret = $script:AgentSecret
       queueId = $job.queueId
+      leaseToken = $job.leaseToken
       success = $false
       error = $errorMessage
     } | Out-Null

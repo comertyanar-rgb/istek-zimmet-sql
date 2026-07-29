@@ -241,7 +241,7 @@ function QrLabelSvg({ value, className = '' }) {
 
 function QrLabelCard({ item, payload }) {
   return (
-    <div className="qr-label-card bg-white border border-gray-300 rounded-lg shadow-sm p-3 flex items-center gap-3 min-h-[96px]">
+    <div className="theme-paper qr-label-card bg-white border border-gray-300 rounded-lg shadow-sm p-3 flex items-center gap-3 min-h-[96px]">
       <QrLabelSvg value={payload} className="w-[72px] h-[72px] shrink-0" />
       <div className="min-w-0 flex-1">
         <div className="text-[10px] font-black text-[#0066b1] tracking-wider uppercase">
@@ -272,7 +272,7 @@ export function QrLabelModal({ items, getPayload, onClose }) {
 
   return (
     <div
-      className="fixed inset-0 z-[9999999] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center p-3 md:p-6 print:block print:bg-white print:p-0"
+      className="app-modal-backdrop fixed inset-0 z-[9999999] bg-slate-900/55 backdrop-blur-sm flex items-center justify-center p-3 md:p-6 print:block print:bg-white print:p-0"
       onClick={onClose}
     >
       <style>{`
@@ -310,7 +310,7 @@ export function QrLabelModal({ items, getPayload, onClose }) {
 
       <div
         id="qr-label-print-area"
-        className="bg-white rounded-3xl shadow-2xl border border-gray-200 w-full max-w-md md:max-w-3xl max-h-[92vh] overflow-hidden flex flex-col"
+        className="app-modal-panel bg-white rounded-3xl shadow-2xl border border-gray-200 w-full max-w-md md:max-w-3xl max-h-[92vh] overflow-hidden flex flex-col"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="qr-print-toolbar p-4 border-b border-gray-100 flex items-center justify-between gap-3">
@@ -336,7 +336,7 @@ export function QrLabelModal({ items, getPayload, onClose }) {
         <div className="p-4 md:p-5 overflow-y-auto">
           {isSingle ? (
             <div className="qr-label-preview flex flex-col items-center text-center">
-              <div className="w-56 h-56 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
+              <div className="theme-paper w-56 h-56 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
                 <QrLabelSvg value={firstPayload} className="w-full h-full" />
               </div>
               <div className="mt-4 max-w-full">

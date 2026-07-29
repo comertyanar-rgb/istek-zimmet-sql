@@ -18,24 +18,24 @@ if ([string]::IsNullOrWhiteSpace($BackendDirectory)) {
 }
 
 if (-not (Test-Path -LiteralPath $BackendDirectory)) {
-  throw "Backend klasoru bulunamadi: $BackendDirectory"
+  throw "Backend klasörü bulunamadı: $BackendDirectory"
 }
 
 if ([string]::IsNullOrWhiteSpace($NodePath)) {
   $node = Get-Command node.exe -ErrorAction SilentlyContinue
   if (-not $node) {
-    throw "node.exe bulunamadi. Node.js kurulu olmali."
+    throw "node.exe bulunamadı. Node.js kurulu olmalı."
   }
   $NodePath = $node.Source
 }
 
 if (-not (Test-Path -LiteralPath $NodePath)) {
-  throw "Node bulunamadi: $NodePath"
+  throw "Node bulunamadı: $NodePath"
 }
 
 $serverPath = Join-Path $BackendDirectory "src\server.js"
 if (-not (Test-Path -LiteralPath $serverPath)) {
-  throw "Backend server dosyasi bulunamadi: $serverPath"
+  throw "Backend server dosyası bulunamadı: $serverPath"
 }
 
 $logDir = Split-Path -Parent $LogPath

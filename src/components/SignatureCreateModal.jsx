@@ -2,6 +2,7 @@ import { CheckCircle2, ChevronLeft, ChevronRight, ExternalLink, FileSignature, L
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toTrLower } from '../utils/text.js';
+import { toSafeExternalUrl } from '../utils/safeUrls.js';
 
 const TITLE_PAGE_SIZE = 10;
 
@@ -19,6 +20,7 @@ export function SignatureCreateModal({
   const [selectedTitle, setSelectedTitle] = useState(person?.department || '');
   const [selectedCampus, setSelectedCampus] = useState(person?.signatureCampus || person?.campus || '');
   const [page, setPage] = useState(1);
+  const safeSignatureUrl = toSafeExternalUrl(person?.signatureLink);
 
   const filteredTitles = useMemo(() => {
     const terms = toTrLower(query).split(/\s+/).filter(Boolean);
@@ -62,10 +64,10 @@ export function SignatureCreateModal({
 
   const modal = (
     <div
-      className="fixed inset-0 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4"
+      className="app-modal-backdrop fixed inset-0 bg-black/55 backdrop-blur-sm flex items-center justify-center p-4"
       style={{ zIndex: 120000 }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
         <div className="p-4 border-b border-gray-100 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-11 h-11 rounded-2xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
@@ -121,11 +123,11 @@ export function SignatureCreateModal({
             </div>
           )}
 
-          {person?.signatureLink ? (
+          {safeSignatureUrl ? (
             <a
-              href={person.signatureLink}
+              href={safeSignatureUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="flex items-center justify-between gap-3 rounded-xl border border-green-200 bg-green-50 px-3 py-2.5 text-sm font-black text-green-800"
             >
               <span className="inline-flex items-center gap-2 min-w-0">

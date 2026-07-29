@@ -1,0 +1,24 @@
+SET NOCOUNT ON;
+SET XACT_ABORT ON;
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+GO
+
+IF OBJECT_ID(N'dbo.ADPasswordQueue', N'U') IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1
+     FROM sys.indexes
+     WHERE object_id = OBJECT_ID(N'dbo.ADPasswordQueue')
+       AND name = N'IX_ADPasswordQueue_PersonStatus'
+   )
+BEGIN
+  CREATE INDEX IX_ADPasswordQueue_PersonStatus
+    ON dbo.ADPasswordQueue(PersonId, Status, CreatedAt DESC)
+    INCLUDE (PublicId);
+END;
+GO

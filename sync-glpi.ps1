@@ -1,6 +1,6 @@
 # GLPI -> Zimmet SQL API Sync
-# Bu dosyayi GLPI'ye erisebilen ic agdaki Windows PC/sunucuda calistirin.
-# Token degerlerini bu dosyaya yazmayin; Windows ortam degiskenlerinden okunur.
+# Bu dosyayı GLPI'ye erişebilen iç ağdaki Windows PC/sunucuda çalıştırın.
+# Token değerlerini bu dosyaya yazmayın; Windows ortam değişkenlerinden okunur.
 
 $ErrorActionPreference = "Stop"
 
@@ -10,10 +10,10 @@ $ZimmetApiUrl = if ($env:ZIMMET_API_URL) { $env:ZIMMET_API_URL } else { "http://
 $AppToken = $env:GLPI_APP_TOKEN
 $UserToken = $env:GLPI_USER_TOKEN
 $SyncSecret = if ($env:GLPI_SYNC_SECRET) { $env:GLPI_SYNC_SECRET } else { $env:ZIMMET_SYNC_SECRET }
-# Varsayilan calisma sadece GLPI_Cihazlar sekmesini yeniler.
-# Laptoplar sekmesindeki GLPI eslesme kolonlarini hemen yenilemek icin:
+# Varsayılan çalışma sadece GLPI_Cihazlar sekmesini yeniler.
+# Laptoplar sekmesindeki GLPI eşleşme kolonlarını hemen yenilemek için:
 # $env:ZIMMET_GLPI_RECONCILE = "true"
-# Mesai saatlerinde eslestirmeyi Islem Kuyrugu'na almak icin:
+# Mesai saatlerinde eşleştirmeyi İşlem Kuyruğu'na almak için:
 # $env:ZIMMET_GLPI_RECONCILE = "queue"
 $RunReconcileRaw = $env:ZIMMET_GLPI_RECONCILE
 if ($RunReconcileRaw -match '^(queue|kuyruk)$') {
@@ -22,9 +22,9 @@ if ($RunReconcileRaw -match '^(queue|kuyruk)$') {
   $RunReconcile = $RunReconcileRaw -match '^(1|true|yes|evet)$'
 }
 
-if ([string]::IsNullOrWhiteSpace($AppToken)) { throw "GLPI_APP_TOKEN ortam degiskeni bos." }
-if ([string]::IsNullOrWhiteSpace($UserToken)) { throw "GLPI_USER_TOKEN ortam degiskeni bos." }
-if ([string]::IsNullOrWhiteSpace($SyncSecret)) { throw "GLPI_SYNC_SECRET/ZIMMET_SYNC_SECRET ortam degiskeni bos." }
+if ([string]::IsNullOrWhiteSpace($AppToken)) { throw "GLPI_APP_TOKEN ortam değişkeni boş." }
+if ([string]::IsNullOrWhiteSpace($UserToken)) { throw "GLPI_USER_TOKEN ortam değişkeni boş." }
+if ([string]::IsNullOrWhiteSpace($SyncSecret)) { throw "GLPI_SYNC_SECRET/ZIMMET_SYNC_SECRET ortam değişkeni boş." }
 if ([string]::IsNullOrWhiteSpace($ZimmetApiUrl)) { throw "ZIMMET_API_URL bos." }
 
 function Convert-GlpiText {
@@ -34,6 +34,42 @@ function Convert-GlpiText {
     return $Value.ToString("0", [System.Globalization.CultureInfo]::InvariantCulture)
   }
   return [string]$Value
+}
+
+function Invoke-SignedZimmetApi {
+  param(
+    [string]$Uri,
+    [hashtable]$Payload,
+    [string]$Secret,
+    [int]$Depth = 10,
+    [int]$TimeoutSec = 120
+  )
+
+  $json = $Payload | ConvertTo-Json -Depth $Depth -Compress
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+  $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
+  $nonce = [Guid]::NewGuid().ToString("N")
+  $prefixBytes = [System.Text.Encoding]::UTF8.GetBytes("$timestamp`n$nonce`n")
+  $hmac = New-Object System.Security.Cryptography.HMACSHA256
+  $stream = New-Object System.IO.MemoryStream
+  try {
+    $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes($Secret)
+    $stream.Write($prefixBytes, 0, $prefixBytes.Length)
+    $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+    $stream.Position = 0
+    $signature = ([BitConverter]::ToString($hmac.ComputeHash($stream))).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $stream.Dispose()
+    $hmac.Dispose()
+  }
+
+  $headers = @{
+    "X-Zimmet-Timestamp" = $timestamp
+    "X-Zimmet-Nonce" = $nonce
+    "X-Zimmet-Signature" = $signature
+    "X-Zimmet-Action" = [string]$Payload.action
+  }
+  return Invoke-RestMethod $Uri -Method Post -Headers $headers -ContentType "application/json; charset=utf-8" -Body $bodyBytes -TimeoutSec $TimeoutSec
 }
 
 $loginHeaders = @{
@@ -81,12 +117,11 @@ try {
 
   $payload = @{
     action = "syncGLPI"
-    secret = $SyncSecret
     items = $items
     reconcile = $RunReconcile
-  } | ConvertTo-Json -Depth 8
+  }
 
-  $result = Invoke-RestMethod $ZimmetApiUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $payload
+  $result = Invoke-SignedZimmetApi -Uri $ZimmetApiUrl -Payload $payload -Secret $SyncSecret -Depth 8
   $result
 }
 finally {

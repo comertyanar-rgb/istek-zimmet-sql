@@ -117,6 +117,65 @@ Personel sync kurulum ayrintisi: `personnel/windows/README.md`
 
 Backend startup kurulum ayrintisi: `backend/windows/README.md`
 
+## Teknik Dogrulama
+
+Gercek zimmet/transfer kaydi olusturmayan teknik kontroller:
+
+```powershell
+cd backend
+npm test
+npm run verify:runtime
+npm run smoke:api
+npm run smoke:cookie
+npm run smoke:ui
+npm run smoke:ui:auth
+npm run smoke:ui:cookie
+```
+
+`verify:runtime` sema, SQL yetkileri ve log zincirini; `smoke:api` ise calisan
+servisin saglik, HTTP guvenlik basliklari, CORS, istek dogrulama, oturum ve export
+korumalarini denetler. `smoke:cookie`, ana servise dokunmadan gecici bir portta
+HttpOnly cookie modunu acip body-token reddi, cross-site korumasi, logout ve SQL
+oturum temizligini gercek veritabaniyla dogrular. `smoke:ui`, login ekranini masaustu ve mobil boyutta gercek
+Chrome/Edge ile acar; beyaz ekran, React hatasi ve tasma kontrolu yapar.
+`smoke:ui:auth`, gecici bir SQL oturumuyla gercek veriyi okuyup Donanim, Personel
+ve Transfer sekmelerini desktop/mobil gorunumde acar; test oturumunu sonunda siler.
+`smoke:ui:cookie`, ayni-domain production build'ini gecici cookie modlu backend
+uzerinde acar; desktop/mobil yenileme, localStorage token gizliligi ve logout
+sonrasi tarayici ile SQL oturum temizligini dogrular. Ikinci gecici oturumu SQL'de
+suresi dolmus hale getirerek 401, cookie temizligi ve uygulama ici oturum uyarisi
+akisini da gercek tarayicida sinar.
+
+GitHub'a gonderilen her push ve pull request icin `.github/workflows/ci.yml`
+frontend lint/build/audit ile backend syntax/test/audit adimlarini salt-okunur
+repo yetkisiyle otomatik calistirir. SQL ve gercek is akislari CI'da tetiklenmez.
+
+## Görsel Hareket ve Erişilebilirlik
+
+Arayüz hareketleri ek bağımlılık kullanmadan ortak CSS sınıflarıyla uygulanır:
+
+- İlk veri yükleme, lazy panel ve GLPI yenilemelerinde yerleşimi taklit eden skeleton ekranlar.
+- Sekme ve modal açılışlarında kısa opacity/transform geçişleri.
+- Sunucudan veya optimistic işlemden değişen donanım/personel satırlarında geçici vurgu.
+- İşlem kuyruğunda bekliyor, işleniyor, tamamlandı ve hata durumlarını gösteren ince aşama çizgisi.
+- QR okumada odak çerçevesi, onay katmanı ve son eklenen cihaz kartında eşzamanlı geri bildirim.
+- Bekleyen transferlerde gönderen ve alıcı arasında hareketli durum çizgisi.
+
+Tüm hareketler `prefers-reduced-motion: reduce` ayarında otomatik olarak kapanır.
+Animasyonlar yerleşim ölçülerini değiştirmez ve ağırlıklı olarak `transform` ile
+`opacity` kullanır.
+
+SQL Express gunluk yedek ve gercek restore tatbikati:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Install-SqlBackupTask.ps1" -RunNow
+powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Test-IstekZimmetRestore.ps1"
+```
+
+Restore tatbikati benzersiz gecici veritabaninda `DBCC CHECKDB` ve log zinciri
+kontrolu yapar, sonra yalniz kendi olusturdugu test veritabanini siler. Ayrintilar:
+`backend/windows/README.md`.
+
 Mevcut Windows gorevlerini denetlemek ve eski dogrudan PowerShell/Node calisan
 gorevleri ayirt etmek icin:
 
@@ -156,6 +215,12 @@ API_PUBLIC_URL=https://zimmet.example.com
 CORS_ORIGINS=https://zimmet.example.com
 SERVE_FRONTEND=true
 QUEUE_WORKER_ENABLED=true
+SESSION_COOKIE_ENABLED=true
+SESSION_COOKIE_NAME=__Host-istek_session
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAME_SITE=Lax
+SESSION_COOKIE_DOMAIN=
+SESSION_COOKIE_ALLOW_BODY_TOKEN_FALLBACK=false
 ```
 
 Frontend `.env` icindeki API adresi ayni domaini gostermelidir:
@@ -170,6 +235,15 @@ eklenmelidir:
 ```text
 https://zimmet.example.com
 ```
+
+Bu tek-domain yapıda gerçek oturum anahtarı `Secure + HttpOnly + SameSite=Lax`
+cookie içinde kalır ve frontend JavaScript'i tarafından okunamaz. Cookie modu
+açıldığında mevcut token oturumları bilinçli olarak yeniden giriş ister.
+
+Frontend Vercel'de, API başka bir sitede kalacaksa cookie modunu doğrudan açmayın.
+Önerilen canlı yapı React build'ini backend üzerinden aynı domain altında servis
+etmektir. `SESSION_COOKIE_ALLOW_BODY_TOKEN_FALLBACK` yalnız kısa geçiş için vardır;
+normal canlı kullanımda `false` kalmalıdır.
 
 ## Not
 

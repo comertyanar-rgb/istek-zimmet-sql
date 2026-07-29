@@ -1,7 +1,11 @@
 node_modules/
 .npm-cache/
+.account-work/
+.artifact-work/
+.codex-tmp/
 dist/
 backend/generated-pdfs/
+tmp/
 
 .env
 .env.*

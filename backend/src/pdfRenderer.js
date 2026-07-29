@@ -1,9 +1,5 @@
-import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
+import puppeteer from 'puppeteer-core';
 import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { config } from './config.js';
 
 const DEFAULT_CHROME_PATHS = [
@@ -12,6 +8,12 @@ const DEFAULT_CHROME_PATHS = [
   'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
 ];
+
+let executablePromise = null;
+let browserPromise = null;
+let browserInstance = null;
+let activePages = 0;
+const pageWaiters = [];
 
 async function exists(filePath) {
   try {
@@ -34,43 +36,144 @@ async function findChromeExecutable() {
   throw new Error('PDF üretimi için Chrome/Edge bulunamadı. PDF_CHROME_PATH ortam değişkenini ayarlayın.');
 }
 
-function runProcess(command, args, options = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { windowsHide: true, ...options });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`PDF renderer hata kodu ${code}: ${stderr.slice(0, 1200)}`));
-    });
-  });
+function getChromeExecutable() {
+  if (!executablePromise) executablePromise = findChromeExecutable();
+  return executablePromise;
 }
 
-export async function renderHtmlToPdfBuffer(html, pdfName = 'belge.pdf') {
-  const chromePath = await findChromeExecutable();
-  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'istek-pdf-'));
-  const safeBase = String(pdfName || 'belge.pdf').replace(/[\\/:*?"<>|]/g, '-').replace(/\.pdf$/i, '');
-  const htmlPath = path.join(workDir, `${safeBase || crypto.randomUUID()}.html`);
-  const pdfPath = path.join(workDir, `${safeBase || crypto.randomUUID()}.pdf`);
+function browserIsConnected(browser) {
+  if (!browser) return false;
+  if (typeof browser.isConnected === 'function') return browser.isConnected();
+  return Boolean(browser.connected);
+}
+
+async function launchBrowser() {
+  const executablePath = await getChromeExecutable();
+  const browser = await puppeteer.launch({
+    executablePath,
+    headless: true,
+    timeout: config.chrome.launchTimeoutMs,
+    args: [
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-dev-shm-usage',
+      '--disable-extensions',
+      '--disable-gpu',
+      '--disable-sync',
+      '--no-default-browser-check',
+      '--no-first-run'
+    ]
+  });
+
+  browserInstance = browser;
+  browser.on('disconnected', () => {
+    if (browserInstance === browser) browserInstance = null;
+    browserPromise = null;
+  });
+  return browser;
+}
+
+async function getBrowser() {
+  if (browserIsConnected(browserInstance)) return browserInstance;
+  if (!browserPromise) {
+    browserPromise = launchBrowser().catch((error) => {
+      browserPromise = null;
+      browserInstance = null;
+      throw error;
+    });
+  }
+  return browserPromise;
+}
+
+function releasePageSlot() {
+  activePages = Math.max(0, activePages - 1);
+  const next = pageWaiters.shift();
+  if (next) next();
+}
+
+async function acquirePageSlot() {
+  const maxPages = config.chrome.maxConcurrentPages;
+  if (activePages >= maxPages) {
+    await new Promise((resolve) => pageWaiters.push(resolve));
+  }
+  activePages += 1;
+  return releasePageSlot;
+}
+
+function isRecoverableBrowserError(error) {
+  return /browser has disconnected|connection closed|session closed|target closed|protocol error/i.test(
+    String(error?.message || error || '')
+  );
+}
+
+async function discardBrowser() {
+  const browser = browserInstance;
+  browserInstance = null;
+  browserPromise = null;
+  if (!browser) return;
+  try {
+    await browser.close();
+  } catch {
+    // Çökmüş tarayıcı zaten kapanmış olabilir.
+  }
+}
+
+async function renderOnce(html) {
+  const browser = await getBrowser();
+  const page = await browser.newPage();
 
   try {
-    await fs.writeFile(htmlPath, html, 'utf8');
-    await runProcess(chromePath, [
-      '--headless=new',
-      '--disable-gpu',
-      '--disable-extensions',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--no-pdf-header-footer',
-      '--run-all-compositor-stages-before-draw',
-      '--virtual-time-budget=1000',
-      `--print-to-pdf=${pdfPath}`,
-      pathToFileURL(htmlPath).href
-    ]);
+    page.setDefaultTimeout(config.chrome.renderTimeoutMs);
+    page.setDefaultNavigationTimeout(config.chrome.renderTimeoutMs);
+    await page.setJavaScriptEnabled(false);
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const url = request.url();
+      if (url === 'about:blank' || url.startsWith('data:')) {
+        request.continue();
+        return;
+      }
+      request.abort('blockedbyclient');
+    });
 
-    return await fs.readFile(pdfPath);
+    await page.setContent(html, {
+      waitUntil: 'load',
+      timeout: config.chrome.renderTimeoutMs
+    });
+    await page.emulateMediaType('print');
+
+    const bytes = await page.pdf({
+      format: 'A4',
+      printBackground: true,
+      preferCSSPageSize: true,
+      displayHeaderFooter: false,
+      timeout: config.chrome.renderTimeoutMs
+    });
+    return Buffer.from(bytes);
   } finally {
-    await fs.rm(workDir, { recursive: true, force: true });
+    try {
+      await page.close();
+    } catch {
+      // Tarayıcı çöktüyse sayfa ayrıca kapatılamayabilir.
+    }
   }
+}
+
+export async function renderHtmlToPdfBuffer(html) {
+  const release = await acquirePageSlot();
+  try {
+    try {
+      return await renderOnce(html);
+    } catch (error) {
+      if (!isRecoverableBrowserError(error)) throw error;
+      await discardBrowser();
+      return await renderOnce(html);
+    }
+  } finally {
+    release();
+  }
+}
+
+export async function closePdfRenderer() {
+  await discardBrowser();
 }

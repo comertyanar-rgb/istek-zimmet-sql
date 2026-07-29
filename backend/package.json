@@ -7,7 +7,17 @@
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
     "check": "node --check src/server.js",
-    "import:xlsx": "node scripts/import-sheets-xlsx.js"
+    "test": "node --test",
+    "verify:runtime": "node scripts/verify-runtime.js",
+    "smoke:api": "node scripts/smoke-api.js",
+    "smoke:cookie": "node scripts/smoke-cookie-session.js",
+    "smoke:ui": "node scripts/smoke-ui.js",
+    "smoke:ui:auth": "node scripts/smoke-ui-authenticated.js",
+    "smoke:ui:stability": "node scripts/smoke-ui-stability.js",
+    "smoke:ui:cookie": "node scripts/smoke-ui-cookie.js",
+    "smoke:pdf-load": "node scripts/smoke-pdf-load.js",
+    "smoke:business-bulk": "node scripts/smoke-business-bulk.js",
+    "import:personnel-contact": "node scripts/import-personnel-contact-data.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
@@ -17,6 +27,7 @@
     "mssql": "^11.0.1",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
-    "xlsx": "^0.18.5"
+    "puppeteer-core": "^25.3.0",
+    "read-excel-file": "^9.3.5"
   }
 }

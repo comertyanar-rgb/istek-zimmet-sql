@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
+import { fetchWithTimeout } from './fetchWithTimeout.js';
 
 function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex').toUpperCase();
@@ -28,7 +29,7 @@ export async function uploadPdfThroughGoogleBridge({ pdfBuffer, pdfName, campus,
     throw new Error('Google PDF köprüsü ayarlı değil. GOOGLE_BRIDGE_URL ve GOOGLE_BRIDGE_SECRET tanımlayın.');
   }
 
-  const response = await fetch(config.googleBridge.url, {
+  const response = await fetchWithTimeout(config.googleBridge.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -41,7 +42,7 @@ export async function uploadPdfThroughGoogleBridge({ pdfBuffer, pdfName, campus,
       email,
       meta
     })
-  });
+  }, { timeoutMs: 60000, label: 'Google PDF köprüsü' });
 
   const text = await response.text();
   let data;
@@ -73,7 +74,7 @@ export async function uploadFileThroughGoogleBridge({ fileBuffer, fileName, mime
     throw new Error('Google dosya köprüsü ayarlı değil. GOOGLE_BRIDGE_URL ve GOOGLE_BRIDGE_SECRET tanımlayın.');
   }
 
-  const response = await fetch(config.googleBridge.url, {
+  const response = await fetchWithTimeout(config.googleBridge.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -89,7 +90,7 @@ export async function uploadFileThroughGoogleBridge({ fileBuffer, fileName, mime
       email,
       meta
     })
-  });
+  }, { timeoutMs: 60000, label: 'Google dosya köprüsü' });
 
   const text = await response.text();
   let data;
@@ -111,7 +112,7 @@ export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, repl
     throw new Error('Google e-posta köprüsü ayarlı değil. GOOGLE_BRIDGE_URL ve GOOGLE_BRIDGE_SECRET tanımlayın.');
   }
 
-  const response = await fetch(config.googleBridge.url, {
+  const response = await fetchWithTimeout(config.googleBridge.url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -124,7 +125,7 @@ export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, repl
       replyTo,
       name
     })
-  });
+  }, { timeoutMs: 30000, label: 'Google e-posta köprüsü' });
 
   const text = await response.text();
   let data;

@@ -10,7 +10,8 @@ $newSilentTasks = @(
   "ISTEK Zimmet Personnel Sync",
   "ISTEK Zimmet GLPI Sync",
   "ISTEK Zimmet AD Password Agent",
-  "ISTEK Zimmet Imza Agent"
+  "ISTEK Zimmet Imza Agent",
+  "ISTEK Zimmet SQL Backup"
 )
 
 $knownWorkPatterns = @(
@@ -20,7 +21,8 @@ $knownWorkPatterns = @(
   "Run-ImzaPipeline.ps1",
   "server.js",
   "npm run dev",
-  "backend\\src\\server.js"
+  "backend\\src\\server.js",
+  "Backup-IstekZimmet.ps1"
 )
 
 function Get-ActionText {
@@ -43,14 +45,16 @@ function Get-TaskKind {
 
   $isNewName = $newSilentTasks -contains $TaskName
   $usesWscript = $ActionText -match "(^|\\)wscript\.exe(\s|$)|wscript\.exe"
+  $usesHiddenPowerShell = $ActionText -match "(?i)-WindowStyle\s+Hidden"
+  $isSilentAction = $usesWscript -or $usesHiddenPowerShell
   $taskNameLower = $TaskName.ToLowerInvariant()
   $actionTextLower = $ActionText.ToLowerInvariant()
 
-  if ($isNewName -and $usesWscript) {
+  if ($isNewName -and $isSilentAction) {
     return "YENI_SESSIZ"
   }
 
-  if ($isNewName -and -not $usesWscript) {
+  if ($isNewName -and -not $isSilentAction) {
     return "YENI_AMA_GORUNUR"
   }
 
@@ -67,7 +71,7 @@ function Get-TaskKind {
     }
   }
 
-  if ($nameLooksRelevant -and $actionLooksRelevant -and -not $usesWscript) {
+  if ($nameLooksRelevant -and $actionLooksRelevant -and -not $isSilentAction) {
     return "ESKI_ADAY"
   }
 

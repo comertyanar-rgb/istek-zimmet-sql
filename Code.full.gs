@@ -1689,6 +1689,43 @@ function handleGLPISync_(data) {
   return jsonOut(response);
 }
 
+function ensurePdfBridgeLedger_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("PDF_Kopru_Kayitlari");
+  if (!sheet) sheet = ss.insertSheet("PDF_Kopru_Kayitlari");
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(["Queue ID", "File URL", "File ID", "File Hash", "File Name", "Email Status", "Created At", "Updated At"]);
+    sheet.getRange("A1:H1").setFontWeight("bold").setBackground("#d9ead3");
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function findPdfBridgeLedgerRow_(sheet, queueId) {
+  if (!queueId || sheet.getLastRow() < 2) return 0;
+  var match = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
+    .createTextFinder(queueId)
+    .matchEntireCell(true)
+    .findNext();
+  return match ? match.getRow() : 0;
+}
+
+function sendGeneratedDocumentEmail_(email, blob) {
+  if (!email || !email.to) return;
+  var mailOptions = {
+    attachments: [blob],
+    name: "İSTEK Demirbaş Yönetim Sistemi"
+  };
+  if (email.cc) mailOptions.cc = email.cc;
+  if (email.replyTo) mailOptions.replyTo = email.replyTo;
+  GmailApp.sendEmail(
+    email.to,
+    email.subject || "Donanım Belgesi",
+    email.body || "Tutanak ektedir.",
+    mailOptions
+  );
+}
+
 function handleGeneratedPdfUpload_(data) {
   var props = PropertiesService.getScriptProperties();
   var expectedSecret = props.getProperty("PDF_BRIDGE_SECRET") || props.getProperty("GOOGLE_BRIDGE_SECRET");
@@ -1721,34 +1758,77 @@ function handleGeneratedPdfUpload_(data) {
   }
 
   var blob = Utilities.newBlob(bytes, mimeType, fileName);
-  var folder = getOrCreateCampusFolder(ROOT_FOLDER_ID, data.campus || "Bilinmiyor");
-  var file = folder.createFile(blob);
-  var fileUrl = file.getUrl();
-
   var email = data.email || {};
-  if (email.to) {
-    var mailOptions = {
-      attachments: [blob],
-      name: "İSTEK Demirbaş Yönetim Sistemi"
-    };
-    if (email.cc) mailOptions.cc = email.cc;
-    if (email.replyTo) mailOptions.replyTo = email.replyTo;
+  var queueId = data.meta && data.meta.queueId ? data.meta.queueId.toString().trim() : "";
+  var lock = queueId ? LockService.getScriptLock() : null;
+  if (lock) lock.waitLock(30000);
 
-    GmailApp.sendEmail(
-      email.to,
-      email.subject || "Donanım Belgesi",
-      email.body || "Tutanak ektedir.",
-      mailOptions
-    );
+  try {
+    var ledger = queueId ? ensurePdfBridgeLedger_() : null;
+    var ledgerRow = ledger ? findPdfBridgeLedgerRow_(ledger, queueId) : 0;
+    var fileUrl = "";
+    var fileId = "";
+    var emailStatus = email.to ? "BEKLIYOR" : "YOK";
+    var reused = false;
+
+    if (ledgerRow) {
+      var existing = ledger.getRange(ledgerRow, 1, 1, 8).getValues()[0];
+      var existingHash = (existing[3] || "").toString();
+      if (existingHash && data.pdfHash && existingHash !== data.pdfHash) {
+        throw new Error("Aynı queueId için farklı dosya hash'i gönderildi.");
+      }
+      fileUrl = (existing[1] || "").toString();
+      fileId = (existing[2] || "").toString();
+      emailStatus = (existing[5] || "").toString() || emailStatus;
+      reused = Boolean(fileUrl);
+    }
+
+    if (!fileUrl) {
+      var folder = getOrCreateCampusFolder(ROOT_FOLDER_ID, data.campus || "Bilinmiyor");
+      var file = folder.createFile(blob);
+      fileUrl = file.getUrl();
+      fileId = file.getId();
+      if (ledger) {
+        ledger.appendRow([queueId, fileUrl, fileId, data.pdfHash || "", fileName, emailStatus, new Date(), new Date()]);
+        ledgerRow = ledger.getLastRow();
+      }
+    }
+
+    if (email.to && emailStatus !== "GONDERILDI" && emailStatus !== "GONDERILIYOR") {
+      if (ledger) {
+        ledger.getRange(ledgerRow, 6).setValue("GONDERILIYOR");
+        ledger.getRange(ledgerRow, 8).setValue(new Date());
+      }
+      try {
+        sendGeneratedDocumentEmail_(email, blob);
+        emailStatus = "GONDERILDI";
+        if (ledger) {
+          ledger.getRange(ledgerRow, 6).setValue(emailStatus);
+          ledger.getRange(ledgerRow, 8).setValue(new Date());
+        }
+      } catch (mailError) {
+        emailStatus = "HATA";
+        if (ledger) {
+          ledger.getRange(ledgerRow, 6).setValue(emailStatus);
+          ledger.getRange(ledgerRow, 8).setValue(new Date());
+        }
+        throw mailError;
+      }
+    }
+
+    return jsonOut({
+      success: true,
+      url: fileUrl,
+      fileUrl: fileUrl,
+      fileId: fileId,
+      pdfHash: data.pdfHash || "",
+      queueId: queueId,
+      reused: reused,
+      emailStatus: emailStatus
+    });
+  } finally {
+    if (lock) lock.releaseLock();
   }
-
-  return jsonOut({
-    success: true,
-    url: fileUrl,
-    fileUrl: fileUrl,
-    pdfHash: data.pdfHash || "",
-    queueId: data.meta && data.meta.queueId ? data.meta.queueId : ""
-  });
 }
 
 function handleBridgeEmail_(data) {

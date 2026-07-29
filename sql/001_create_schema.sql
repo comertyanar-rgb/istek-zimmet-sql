@@ -3,6 +3,15 @@
   Once test database'inde calistirin.
 */
 
+SET ANSI_NULLS ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET QUOTED_IDENTIFIER ON;
+SET NUMERIC_ROUNDABORT OFF;
+GO
+
 CREATE TABLE dbo.Campuses (
   CampusId UNIQUEIDENTIFIER NOT NULL CONSTRAINT DF_Campuses_CampusId DEFAULT NEWID(),
   CampusCode NVARCHAR(32) NULL,
@@ -30,13 +39,88 @@ CREATE TABLE dbo.AuthorizedUsers (
 
 CREATE TABLE dbo.Sessions (
   SessionToken UNIQUEIDENTIFIER NOT NULL,
+  TokenHash CHAR(64) NOT NULL,
   Email NVARCHAR(320) NOT NULL,
   ExpiresAt DATETIME2(0) NOT NULL,
   CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_Sessions_CreatedAt DEFAULT SYSUTCDATETIME(),
   LastSeenAt DATETIME2(0) NULL,
   CONSTRAINT PK_Sessions PRIMARY KEY (SessionToken),
+  CONSTRAINT UQ_Sessions_TokenHash UNIQUE (TokenHash),
   CONSTRAINT FK_Sessions_AuthorizedUsers FOREIGN KEY (Email) REFERENCES dbo.AuthorizedUsers(Email)
 );
+
+CREATE TABLE dbo.AgentRequestNonces (
+  NonceHash CHAR(64) NOT NULL,
+  ActionType NVARCHAR(120) NOT NULL,
+  ExpiresAt DATETIME2(0) NOT NULL,
+  CreatedAt DATETIME2(0) NOT NULL
+    CONSTRAINT DF_AgentRequestNonces_CreatedAt DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_AgentRequestNonces PRIMARY KEY (NonceHash),
+  CONSTRAINT CK_AgentRequestNonces_NonceHash
+    CHECK (LEN(NonceHash) = 64 AND NonceHash NOT LIKE '%[^0-9a-f]%'),
+  CONSTRAINT CK_AgentRequestNonces_Expiry CHECK (ExpiresAt > CreatedAt)
+);
+
+CREATE INDEX IX_AgentRequestNonces_ExpiresAt
+  ON dbo.AgentRequestNonces(ExpiresAt);
+GO
+
+CREATE OR ALTER PROCEDURE dbo.ReserveAgentRequestNonce
+  @ActionType NVARCHAR(120),
+  @NonceHash CHAR(64),
+  @ExpiresAt DATETIME2(0)
+AS
+BEGIN
+  SET XACT_ABORT ON;
+  SET NOCOUNT ON;
+
+  DECLARE @now DATETIME2(0) = SYSUTCDATETIME();
+
+  IF NULLIF(LTRIM(RTRIM(@ActionType)), N'') IS NULL OR LEN(@ActionType) > 120
+    THROW 51010, N'Agent aksiyon adı geçersiz.', 1;
+
+  IF LEN(@NonceHash) <> 64 OR @NonceHash LIKE '%[^0-9a-f]%'
+    THROW 51011, N'Agent nonce özeti geçersiz.', 1;
+
+  IF @ExpiresAt <= @now OR @ExpiresAt > DATEADD(MINUTE, 20, @now)
+    THROW 51012, N'Agent nonce geçerlilik süresi geçersiz.', 1;
+
+  BEGIN TRY
+    BEGIN TRANSACTION;
+
+    DELETE FROM dbo.AgentRequestNonces WITH (ROWLOCK)
+    WHERE NonceHash = @NonceHash
+      AND ExpiresAt <= @now;
+
+    DELETE TOP (500) FROM dbo.AgentRequestNonces WITH (ROWLOCK, READPAST)
+    WHERE ExpiresAt <= @now;
+
+    INSERT INTO dbo.AgentRequestNonces (NonceHash, ActionType, ExpiresAt)
+    VALUES (@NonceHash, @ActionType, @ExpiresAt);
+
+    COMMIT TRANSACTION;
+    SELECT CAST(1 AS BIT) AS Reserved;
+  END TRY
+  BEGIN CATCH
+    IF XACT_STATE() <> 0 ROLLBACK TRANSACTION;
+
+    IF ERROR_NUMBER() IN (2601, 2627)
+    BEGIN
+      SELECT CAST(0 AS BIT) AS Reserved;
+      RETURN;
+    END;
+
+    THROW;
+  END CATCH;
+END;
+GO
+
+IF DATABASE_PRINCIPAL_ID(N'zimmet_api') IS NOT NULL
+BEGIN
+  GRANT EXECUTE ON OBJECT::dbo.ReserveAgentRequestNonce TO zimmet_api;
+  DENY SELECT, INSERT, UPDATE, DELETE ON OBJECT::dbo.AgentRequestNonces TO zimmet_api;
+END;
+GO
 
 CREATE TABLE dbo.Personnel (
   PersonId NVARCHAR(160) NOT NULL,
@@ -48,6 +132,7 @@ CREATE TABLE dbo.Personnel (
   PhotoUrl NVARCHAR(1000) NULL,
   AdUsername NVARCHAR(160) NULL,
   Phone NVARCHAR(20) NULL,
+  NationalIdHash CHAR(64) NULL,
   SignatureUrl NVARCHAR(1000) NULL,
   SignatureStatus NVARCHAR(80) NULL,
   SignatureId NVARCHAR(80) NULL,
@@ -57,12 +142,23 @@ CREATE TABLE dbo.Personnel (
   CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_Personnel_CreatedAt DEFAULT SYSUTCDATETIME(),
   UpdatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_Personnel_UpdatedAt DEFAULT SYSUTCDATETIME(),
   CONSTRAINT PK_Personnel PRIMARY KEY (PersonId),
-  CONSTRAINT FK_Personnel_Campuses FOREIGN KEY (CampusId) REFERENCES dbo.Campuses(CampusId)
+  CONSTRAINT FK_Personnel_Campuses FOREIGN KEY (CampusId) REFERENCES dbo.Campuses(CampusId),
+  CONSTRAINT CK_Personnel_NationalIdHash CHECK (
+    NationalIdHash IS NULL
+    OR (
+      LEN(NationalIdHash) = 64
+      AND NationalIdHash NOT LIKE '%[^0-9a-f]%'
+    )
+  )
 );
 
 CREATE UNIQUE INDEX IX_Personnel_Email ON dbo.Personnel(Email) WHERE Email IS NOT NULL;
 CREATE INDEX IX_Personnel_AdUsername ON dbo.Personnel(AdUsername);
 CREATE INDEX IX_Personnel_CampusId ON dbo.Personnel(CampusId);
+CREATE UNIQUE INDEX UX_Personnel_NationalIdHash ON dbo.Personnel(NationalIdHash)
+  WHERE NationalIdHash IS NOT NULL;
+CREATE INDEX IX_Personnel_UpdatedAt ON dbo.Personnel(UpdatedAt)
+  INCLUDE (PersonId, CampusId);
 
 CREATE TABLE dbo.Hardware (
   HardwareId INT IDENTITY(1,1) NOT NULL,
@@ -100,6 +196,8 @@ CREATE INDEX IX_Hardware_CampusStatus ON dbo.Hardware(CampusId, HardwareStatus);
 CREATE INDEX IX_Hardware_AssignedPersonId ON dbo.Hardware(AssignedPersonId);
 CREATE INDEX IX_Hardware_ComputerName ON dbo.Hardware(ComputerName);
 CREATE INDEX IX_Hardware_GlpiId ON dbo.Hardware(GlpiId);
+CREATE INDEX IX_Hardware_UpdatedAt ON dbo.Hardware(UpdatedAt)
+  INCLUDE (HardwareId, CampusId, SerialNo, HardwareStatus, AssignedPersonId);
 
 CREATE TABLE dbo.HardwareHistory (
   HistoryId BIGINT IDENTITY(1,1) NOT NULL,
@@ -150,6 +248,8 @@ CREATE TABLE dbo.OperationQueue (
   CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_OperationQueue_CreatedAt DEFAULT SYSUTCDATETIME(),
   StartedAt DATETIME2(0) NULL,
   FinishedAt DATETIME2(0) NULL,
+  LeaseToken UNIQUEIDENTIFIER NULL,
+  LeaseExpiresAt DATETIME2(0) NULL,
   CONSTRAINT PK_OperationQueue PRIMARY KEY (QueueId),
   CONSTRAINT UQ_OperationQueue_PublicId UNIQUE (PublicId),
   CONSTRAINT FK_OperationQueue_Campuses FOREIGN KEY (CampusId) REFERENCES dbo.Campuses(CampusId)
@@ -165,9 +265,22 @@ CREATE TABLE dbo.SystemLogs (
   Details NVARCHAR(MAX) NULL,
   FileHash NVARCHAR(128) NULL,
   DriveLink NVARCHAR(1000) NULL,
-  ChainHash NVARCHAR(128) NULL,
+  ChainHash NVARCHAR(128) NOT NULL,
   ClientInfo NVARCHAR(MAX) NULL,
-  CONSTRAINT PK_SystemLogs PRIMARY KEY (LogId)
+  CONSTRAINT PK_SystemLogs PRIMARY KEY (LogId),
+  CONSTRAINT CK_SystemLogs_ChainHash CHECK (LEN(ChainHash) = 64)
 );
 
 CREATE INDEX IX_SystemLogs_CreatedAt ON dbo.SystemLogs(CreatedAt DESC);
+
+GO
+
+CREATE OR ALTER TRIGGER dbo.TR_SystemLogs_AppendOnly
+ON dbo.SystemLogs
+INSTEAD OF UPDATE, DELETE
+AS
+BEGIN
+  SET NOCOUNT ON;
+  THROW 51001, N'Sistem logları yalnızca eklenebilir; güncellenemez veya silinemez.', 1;
+END;
+GO

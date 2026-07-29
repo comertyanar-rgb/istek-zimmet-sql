@@ -18,7 +18,7 @@ if (!filePath) {
 
 const resolvedFilePath = path.resolve(filePath);
 if (!fs.existsSync(resolvedFilePath)) {
-  console.error(`Excel dosyasi bulunamadi: ${resolvedFilePath}`);
+  console.error(`Excel dosyası bulunamadı: ${resolvedFilePath}`);
   process.exit(1);
 }
 
@@ -140,7 +140,7 @@ BEGIN
 END
 `);
   } catch (error) {
-    throw new Error(`Transfer uyumluluk scripti uygulanamadi. SSMS'te Windows yetkili kullanicinla once sql/002_allow_transfer_sender.sql dosyasini calistir. Detay: ${error.message}`);
+    throw new Error(`Transfer uyumluluk scripti uygulanamadı. SSMS'te Windows yetkili kullanıcınla önce sql/002_allow_transfer_sender.sql dosyasını çalıştır. Detay: ${error.message}`);
   }
 }
 
@@ -611,7 +611,7 @@ async function main() {
     if (onlyMode) {
       for (const item of parsed.signatureTitles) await upsertSignatureTitle(tx, item);
       await tx.commit();
-      console.log('Import tamamlandi.');
+      console.log('Import tamamlandı.');
       console.table({
         signatureTitles: parsed.signatureTitles.length,
         emptyTitleEn: parsed.signatureTitles.filter((item) => !item.titleEn).length,
@@ -649,7 +649,7 @@ async function main() {
     await pool.close();
   }
 
-  console.log('Import tamamlandi.');
+  console.log('Import tamamlandı.');
   console.table({
     campuses: parsed.campuses.length,
     authorizedUsers: parsed.authorizedUsers.length,
@@ -662,6 +662,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error('Import basarisiz:', error.message);
+  console.error('Import başarısız:', error.message);
   process.exit(1);
 });

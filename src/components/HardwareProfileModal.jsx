@@ -24,8 +24,9 @@ import {
   FileSignature,
   Terminal // <-- EKSİK OLAN İKON EKLENDİ
 } from 'lucide-react';
-import { GAS_URL } from '../config/appConfig.js';
 import { CAMPUS_CODES } from '../constants/inventory.js';
+import { postApiAction } from '../services/apiClient.js';
+import { showAppAlert } from '../services/uiMessageService.js';
 import { toTrLower } from '../utils/text.js';
 
 function getGlpiMismatchInfo(value) {
@@ -104,6 +105,7 @@ export const HardwareProfileModal = ({ deps }) => {
     manualUploadPerson,
     setManualUploadPerson,
     campusPersonnel,
+    personnel,
     handleManualUploadSubmit,
     handleOpenHistory,
     isLoadingHistory,
@@ -123,12 +125,33 @@ export const HardwareProfileModal = ({ deps }) => {
     setIsGenerating
   } = deps;
   const glpiMismatchInfo = getGlpiMismatchInfo(viewedHardware?.glpiMismatch);
+  const historyPersonNameByKey = React.useMemo(() => {
+    const names = new Map();
+    const addName = (key, name) => {
+      const normalizedKey = toTrLower(String(key || '').trim());
+      const displayName = String(name || '').trim();
+      if (normalizedKey && displayName) names.set(normalizedKey, displayName);
+    };
+
+    addName(currentUser?.email, currentUser?.name);
+    (personnel || []).forEach((person) => {
+      addName(person?.email, person?.name);
+      addName(person?.id, person?.name);
+      addName(person?.adUsername, person?.name);
+    });
+    return names;
+  }, [currentUser?.email, currentUser?.name, personnel]);
+
+  const resolveHistoryPersonName = (record) => {
+    const rawName = String(record?.personName || '').trim();
+    return historyPersonNameByKey.get(toTrLower(rawName)) || rawName || 'Sistem';
+  };
 
   return (
     <>
       {viewingHardwareId && viewedHardware && (
         <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
+          className="app-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
           style={{ zIndex: 99999 }}
           onClick={() => {
             // YENI: Cihaz kapatilirken HER SEYI sıfırla
@@ -148,7 +171,7 @@ export const HardwareProfileModal = ({ deps }) => {
         >
           {/* DİKKAT: max-w-lg, max-w-md YAPILDI (Güvenli şekilde) */}
           <div
-            className="bg-white rounded-2xl shadow-2xl w-full max-w-md flex flex-col max-h-[92vh] overflow-hidden animate-in zoom-in-95 duration-200"
+            className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md flex flex-col max-h-[92vh] overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* COMPACT HEADER (Baslik, Butonlar) */}
@@ -163,7 +186,7 @@ export const HardwareProfileModal = ({ deps }) => {
                       Cihaz Profili
                     </h3>
                   </div>
-                  {/* Bilgisayar Ismi Koca Kutu Yerine Buraya Geldi */}
+                  {/* Bilgisayar İsmi Koca Kutu Yerine Buraya Geldi */}
                   {(() => {
                     const showProfileComputerName =
                       viewedHardware.type === 'Laptop' ||
@@ -219,7 +242,7 @@ export const HardwareProfileModal = ({ deps }) => {
                               : 'text-gray-400 border-b border-dashed border-gray-300'
                           }`}
                         >
-                          {viewedHardware.deviceName || 'Isim Ata'}
+                          {viewedHardware.deviceName || 'İsim Ata'}
                         </span>
                       </div>
                     ) : (
@@ -284,7 +307,7 @@ export const HardwareProfileModal = ({ deps }) => {
                   <button
                     onClick={() => {
                       setConfirmDialog({
-                        message: `Bu cihaz (S/N: ${viewedHardware.serial}) DEPOYA çekilecek. Onaylıyor musunuz?`,
+                        message: `Bu cihaz (S/N: ${viewedHardware.serial}) DEPOYA çekilecek.${viewedHardware.assignedTo ? ' Cihaz halen personele zimmetli; mevcut zimmet bağlantısı kaldırılacak.' : ''} Onaylıyor musunuz?`,
                         type: 'info',
                         onConfirm: () => {
                           setConfirmDialog(null);
@@ -300,24 +323,20 @@ export const HardwareProfileModal = ({ deps }) => {
                           setTimeout(() => setSuccessMessage(null), 2000);
 
                           // 2. Arka planda sunucuya bildir
-                          fetch(GAS_URL, {
-                            method: 'POST',
-                            body: JSON.stringify({
-                              authToken: currentUser.token,
-                              action: 'bulkStatusUpdate',
-                              hardwareIds: [targetId], 
-                              newStatus: 'Available',
-                            }),
+                          postApiAction({
+                            authToken: currentUser.token,
+                            action: 'bulkStatusUpdate',
+                            hardwareIds: [targetId],
+                            newStatus: 'Available',
+                            confirmUnassignAssigned: Boolean(viewedHardware.assignedTo),
                           })
-                          .then(response => response.json())
-                          .then(result => {
-                            if (!result.success) throw new Error(result.error);
+                          .then(() => {
                             fetchVeritabani(false);
                           })
                           .catch(error => {
                             console.error('Depo Hata:', error);
                             setHardware(previousHardwareState); // Hata olursa ekrani geri al
-                            alert('HATA: İnternet sorunu nedeniyle cihaz depoya çekilemedi.');
+                            showAppAlert('HATA: İnternet sorunu nedeniyle cihaz depoya çekilemedi.');
                           });
                         }
                       });
@@ -334,7 +353,7 @@ export const HardwareProfileModal = ({ deps }) => {
                   <button
                     onClick={() => {
                       setConfirmDialog({
-                        message: `DİKKAT: Bu cihaz (S/N: ${viewedHardware.serial}) HURDAYA ayrılacak. Emin misiniz?`,
+                        message: `DİKKAT: Bu cihaz (S/N: ${viewedHardware.serial}) HURDAYA ayrılacak.${viewedHardware.assignedTo ? ' Cihaz halen personele zimmetli; mevcut zimmet bağlantısı kaldırılacak.' : ''} Emin misiniz?`,
                         type: 'danger',
                         onConfirm: () => {
                           setConfirmDialog(null);
@@ -346,28 +365,24 @@ export const HardwareProfileModal = ({ deps }) => {
                           // 1. Ekranda Anında Güncelle
                           setHardware((prev) => prev.map((h) => h.id === targetId ? { ...h, status: 'Hurda', assignedTo: null, groupName: '' } : h));
                           
-                          setSuccessMessage('Cihaz arka planda hurdaya ayriliyor...');
+                          setSuccessMessage('Cihaz arka planda hurdaya ayrılıyor...');
                           setTimeout(() => setSuccessMessage(null), 2000);
 
                           // 2. Arka planda sunucuya bildir
-                          fetch(GAS_URL, {
-                            method: 'POST',
-                            body: JSON.stringify({
-                              authToken: currentUser.token,
-                              action: 'bulkStatusUpdate',
-                              hardwareIds: [targetId],
-                              newStatus: 'Hurda',
-                            }),
+                          postApiAction({
+                            authToken: currentUser.token,
+                            action: 'bulkStatusUpdate',
+                            hardwareIds: [targetId],
+                            newStatus: 'Hurda',
+                            confirmUnassignAssigned: Boolean(viewedHardware.assignedTo),
                           })
-                          .then(response => response.json())
-                          .then(result => {
-                            if (!result.success) throw new Error(result.error);
+                          .then(() => {
                             fetchVeritabani(false);
                           })
                           .catch(error => {
                             console.error('Hurda Hata:', error);
                             setHardware(previousHardwareState); // Hata olursa ekrani geri al
-                            alert('HATA: Internet sorunu nedeniyle cihaz hurdaya ayrilamadi.');
+                            showAppAlert('HATA: İnternet sorunu nedeniyle cihaz hurdaya ayrılamadı.');
                           });
                         }
                       });
@@ -525,7 +540,7 @@ export const HardwareProfileModal = ({ deps }) => {
                   <p className="font-bold text-[#0066b1] text-[13px] sm:text-sm break-all leading-tight">
                     {copiedSerial ? (
                       <span className="text-green-600 flex items-center gap-1">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Kopyalandi
+                        <CheckCircle2 className="w-3.5 h-3.5" /> Kopyalandı
                       </span>
                     ) : (
                       viewedHardware.serial
@@ -562,7 +577,7 @@ export const HardwareProfileModal = ({ deps }) => {
                     <div className="min-w-0">
                       <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500">GLPI</p>
                       <p className="text-[12px] font-bold text-gray-800 truncate">
-                        {viewedHardware.glpiComputerName || viewedHardware.deviceName || 'Eslesme yok'}
+                        {viewedHardware.glpiComputerName || viewedHardware.deviceName || 'Eşleşme yok'}
                         {viewedHardware.glpiAdUser ? ` • ${viewedHardware.glpiAdUser}` : ''}
                       </p>
                     </div>
@@ -580,17 +595,17 @@ export const HardwareProfileModal = ({ deps }) => {
                 </div>
               )}
               {/* YENI: GRUP ETIKETI ALANI (Genis ve Sik) */}
-              <div className="bg-indigo-50/50 rounded-xl border border-indigo-100 p-2.5 flex items-center justify-between gap-3 shadow-sm transition-all">
+              <div className="hardware-group-panel bg-indigo-50/50 rounded-xl border border-indigo-100 p-2.5 flex items-center justify-between gap-3 shadow-sm transition-all">
                 <div className="flex items-center gap-2 flex-1 min-w-0">
-                  <div className="w-7 h-7 rounded-lg bg-indigo-100 flex items-center justify-center shrink-0">
+                  <div className="hardware-group-icon w-7 h-7 rounded-lg bg-indigo-100 flex items-center justify-center shrink-0">
                     <Tag className="w-4 h-4 text-indigo-600" />
                   </div>
                   
                   {!isEditingSingleGroup ? (
                     <div className="flex flex-col min-w-0 w-full cursor-pointer" onClick={() => { setEditSingleGroupText(viewedHardware.groupName || ''); setIsEditingSingleGroup(true); }}>
-                      <span className="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">Cihaz Grubu</span>
-                      <span className={`text-[12px] font-bold truncate ${viewedHardware.groupName ? 'text-indigo-900' : 'text-indigo-400/70 italic'}`}>
-                        {viewedHardware.groupName || 'Bir gruba dahil degil. Ekle'}
+                      <span className="hardware-group-label text-[9px] font-bold text-indigo-600 uppercase tracking-wider">Cihaz Grubu</span>
+                      <span className={`hardware-group-value text-[12px] font-bold truncate ${viewedHardware.groupName ? 'text-indigo-900' : 'hardware-group-value--empty text-indigo-400/70 italic'}`}>
+                        {viewedHardware.groupName || 'Bir gruba dahil değil. Ekle'}
                       </span>
                     </div>
                   ) : (
@@ -646,7 +661,7 @@ export const HardwareProfileModal = ({ deps }) => {
                             : 'text-gray-400 italic'
                         }`}
                       >
-                        {viewedHardware.notes || 'Not eklenmemis.'}
+                        {viewedHardware.notes || 'Not eklenmemiş.'}
                       </span>
                     </div>
                   ) : (
@@ -720,7 +735,7 @@ export const HardwareProfileModal = ({ deps }) => {
                   {/* ALT SATIR: Isim (Sol) ve Butonlar (Sag) */}
                   <div className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center w-full min-w-0 gap-3">
                     
-                    {/* SOL: Personel Ismi */}
+                    {/* SOL: Personel İsmi */}
                     <div className="flex flex-col min-w-0 flex-1 justify-center">
                       <button
                         onClick={() => {
@@ -960,14 +975,16 @@ export const HardwareProfileModal = ({ deps }) => {
                 {showHardwareHistory &&
                   viewedHardware.history?.length > 0 && (
                     <div className="p-2 bg-slate-50/50 space-y-1.5 animate-in slide-in-from-top-2 duration-200 max-h-[180px] overflow-y-auto">
-                      {viewedHardware.history.map((record, idx) => (
-                        <div
-                          key={idx}
-                          className="p-2.5 bg-white border border-gray-200 shadow-sm rounded-lg flex justify-between items-center hover:border-blue-200 transition-colors"
-                        >
+                      {viewedHardware.history.map((record, idx) => {
+                        const historyPersonName = resolveHistoryPersonName(record);
+                        return (
+                          <div
+                            key={idx}
+                            className="p-2.5 bg-white border border-gray-200 shadow-sm rounded-lg flex justify-between items-center hover:border-blue-200 transition-colors"
+                          >
                           <div className="pr-2 min-w-0">
                             <p className="font-bold text-[12px] text-gray-800 leading-tight mb-0.5 truncate">
-                              {record.personName}
+                              {historyPersonName}
                             </p>
                             <div className="flex items-center gap-1.5 truncate">
                               <p className="text-[10px] font-medium text-gray-500">
@@ -985,7 +1002,7 @@ export const HardwareProfileModal = ({ deps }) => {
                                 e.stopPropagation();
                                 handlePdfClick(
                                   record.driveLink,
-                                  `${record.personName} Belgesi`
+                                  `${historyPersonName} Belgesi`
                                 );
                               }}
                               className="text-[10px] bg-slate-50 text-slate-700 px-2 py-1.5 rounded-md font-bold border border-slate-200 hover:bg-white hover:text-blue-600 hover:border-blue-200 transition-colors flex items-center gap-1 shadow-sm shrink-0"
@@ -997,8 +1014,9 @@ export const HardwareProfileModal = ({ deps }) => {
                               Belge Yok
                             </span>
                           )}
-                        </div>
-                      ))}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
               </div>

@@ -45,9 +45,25 @@ BEGIN
     ErrorMessage NVARCHAR(MAX) NULL,
     AttemptCount INT NOT NULL CONSTRAINT DF_ADPasswordQueue_AttemptCount DEFAULT 0,
     UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_ADPasswordQueue_UpdatedAt DEFAULT SYSUTCDATETIME(),
+    LeaseToken UNIQUEIDENTIFIER NULL,
+    LeaseExpiresAt DATETIME2 NULL,
     ClientIp NVARCHAR(120) NULL,
     UserAgent NVARCHAR(500) NULL
   );
+END;
+GO
+
+IF OBJECT_ID(N'dbo.ADPasswordQueue', N'U') IS NOT NULL
+   AND NOT EXISTS (
+     SELECT 1
+     FROM sys.indexes
+     WHERE object_id = OBJECT_ID(N'dbo.ADPasswordQueue')
+       AND name = N'IX_ADPasswordQueue_PersonStatus'
+   )
+BEGIN
+  CREATE INDEX IX_ADPasswordQueue_PersonStatus
+    ON dbo.ADPasswordQueue(PersonId, Status, CreatedAt DESC)
+    INCLUDE (PublicId);
 END;
 GO
 

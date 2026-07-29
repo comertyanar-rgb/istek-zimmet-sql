@@ -1,9 +1,16 @@
-// Backend URL.
-// Varsayilan Apps Script'tir. SQL Server API testinde .env icine
-// VITE_API_URL=http://localhost:8787/api/action yazinca frontend yeni API'ye gider.
-export const GAS_URL =
-  import.meta.env.VITE_API_URL ||
-  'https://script.google.com/macros/s/AKfycbzTTHM21Flpg6h7DI66UZStTc8ttdIuX95mcvKa4irjsR61IWAqgmMkyIyN20sUFnAW-A/exec';
+const configuredApiUrl = String(import.meta.env.VITE_API_URL || '').trim();
+const allowLegacyAppsScript =
+  import.meta.env.DEV && String(import.meta.env.VITE_ALLOW_LEGACY_APPS_SCRIPT || '') === 'true';
+
+if (import.meta.env.PROD && !configuredApiUrl) {
+  throw new Error('Production build için VITE_API_URL zorunludur.');
+}
+
+// Adı geriye dönük uyumluluk için korunuyor; normal hedef artık SQL API'dir.
+export const GAS_URL = configuredApiUrl ||
+  (allowLegacyAppsScript
+    ? 'https://script.google.com/macros/s/AKfycbzTTHM21Flpg6h7DI66UZStTc8ttdIuX95mcvKa4irjsR61IWAqgmMkyIyN20sUFnAW-A/exec'
+    : 'http://localhost:8787/api/action');
 
 // Google Cloud OAuth Client ID
 export const GOOGLE_CLIENT_ID =
@@ -19,8 +26,8 @@ X0/WjRxkYomrmsNR0XEeQ9C8q8FG8z3b7H5PCIvRiVzTwZK6cp9BBa7eZjczj7/H
 0QIDAQAB
 -----END PUBLIC KEY-----`;
 
-// AD sifre sifirlama icin tarayici tarafinda kullanilacak RSA public key.
-// Public key gizli degildir; env bos gelirse iPad/PWA icin fallback kullanilir.
+// AD şifre sıfırlama için tarayıcı tarafında kullanılacak RSA public key.
+// Public key gizli değildir; env boş gelirse iPad/PWA için fallback kullanılır.
 export const AD_PASSWORD_PUBLIC_KEY =
   (import.meta.env.VITE_AD_PASSWORD_PUBLIC_KEY || FALLBACK_AD_PASSWORD_PUBLIC_KEY)
     .replace(/\\n/g, '\n')

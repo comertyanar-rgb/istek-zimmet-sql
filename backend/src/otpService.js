@@ -1,11 +1,30 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
 import { sendEmailThroughGoogleBridge } from './googleBridge.js';
+import { fetchWithTimeout } from './fetchWithTimeout.js';
 
 const OTP_TTL_MS = 180 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
 const APPROVAL_TTL_MS = 10 * 60 * 1000;
+const MAX_OTP_ATTEMPTS = 5;
+const MAX_ACTIVE_OTP_CHALLENGES = 5000;
+const MAX_VALID_APPROVALS = 5000;
 const otpChallenges = new Map();
+const challengeIdByContext = new Map();
+const challengeIdByPerson = new Map();
+const lastOtpSentAtByPerson = new Map();
 const validApprovals = new Map();
+let otpTestObserver = null;
+
+export function setOtpTestObserver(observer) {
+  if (config.nodeEnv !== 'test' || process.env.OTP_TEST_CAPTURE_ALLOWED !== 'YES') {
+    throw new Error('OTP test gözlemcisi yalnız açıkça izin verilen test sürecinde kullanılabilir.');
+  }
+  if (observer !== null && typeof observer !== 'function') {
+    throw new TypeError('OTP test gözlemcisi fonksiyon veya null olmalıdır.');
+  }
+  otpTestObserver = observer;
+}
 
 function isDevelopment() {
   return config.nodeEnv !== 'production';
@@ -13,6 +32,71 @@ function isDevelopment() {
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function normalizeOtpAction(value) {
+  const action = String(value || '').trim().toLowerCase();
+  if (action !== 'zimmet' && action !== 'return') {
+    throw new Error('OTP işlem türü geçersiz.');
+  }
+  return action;
+}
+
+function normalizeHardwareIds(values) {
+  const source = Array.isArray(values) ? values : [];
+  const ids = [...new Set(source.map((value) => String(value ?? '').trim()).filter(Boolean))].sort();
+  if (ids.length === 0 || ids.length > 100) throw new Error('OTP için cihaz seçimi geçersiz.');
+  return ids;
+}
+
+function normalizeOtpContext(value = {}) {
+  const requesterEmail = normalizeEmail(value.requesterEmail);
+  const personEmail = normalizeEmail(value.personEmail);
+  const personId = String(value.personId || '').trim();
+  if (!requesterEmail || !requesterEmail.includes('@')) throw new Error('OTP oturum bilgisi geçersiz.');
+  if (!personEmail || !personEmail.includes('@')) throw new Error('Personelin geçerli e-posta adresi bulunmuyor.');
+  if (!personId) throw new Error('OTP için personel seçimi boş.');
+
+  return {
+    requesterEmail,
+    personId,
+    personEmail,
+    action: normalizeOtpAction(value.action),
+    hardwareIds: normalizeHardwareIds(value.hardwareIds)
+  };
+}
+
+function otpContextKey(context) {
+  return JSON.stringify(context);
+}
+
+function removeChallenge(challengeId) {
+  const challenge = otpChallenges.get(challengeId);
+  if (!challenge) return;
+  if (Buffer.isBuffer(challenge.codeHash)) challenge.codeHash.fill(0);
+  otpChallenges.delete(challengeId);
+  if (challengeIdByContext.get(challenge.contextKey) === challengeId) {
+    challengeIdByContext.delete(challenge.contextKey);
+  }
+  if (challengeIdByPerson.get(challenge.personKey) === challengeId) {
+    challengeIdByPerson.delete(challenge.personKey);
+  }
+}
+
+function otpCodeHash(challengeId, code) {
+  return crypto
+    .createHmac('sha256', config.appSecret)
+    .update(`${challengeId}:${String(code || '')}`, 'utf8')
+    .digest();
+}
+
+function otpCodeMatches(challenge, challengeId, code) {
+  if (!/^\d{6}$/.test(code) || !Buffer.isBuffer(challenge?.codeHash)) return false;
+  const candidateHash = otpCodeHash(challengeId, code);
+  return (
+    candidateHash.length === challenge.codeHash.length &&
+    crypto.timingSafeEqual(candidateHash, challenge.codeHash)
+  );
 }
 
 export function normalizeTrMobile(value) {
@@ -38,11 +122,14 @@ function escapeXml(value) {
 
 function cleanupExpired() {
   const now = Date.now();
-  for (const [key, item] of otpChallenges.entries()) {
-    if (item.expiresAt <= now) otpChallenges.delete(key);
+  for (const [challengeId, item] of otpChallenges.entries()) {
+    if (item.expiresAt <= now) removeChallenge(challengeId);
   }
   for (const [key, item] of validApprovals.entries()) {
     if (item.expiresAt <= now) validApprovals.delete(key);
+  }
+  for (const [personKey, sentAt] of lastOtpSentAtByPerson.entries()) {
+    if (sentAt <= now - OTP_RESEND_COOLDOWN_MS) lastOtpSentAtByPerson.delete(personKey);
   }
 }
 
@@ -74,11 +161,11 @@ async function sendSmsViaMobildev(phone, message) {
   <MessageType>N</MessageType>
 </MainmsgBody>`.trim();
 
-  const response = await fetch(apiUrl, {
+  const response = await fetchWithTimeout(apiUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/xml; charset=utf-8' },
     body: xmlPayload
-  });
+  }, { timeoutMs: 15000, label: 'Mobildev SMS' });
 
   const body = (await response.text()).trim();
   const okBody = /^id\s*:/i.test(body) || /^\d+$/.test(body);
@@ -98,69 +185,127 @@ async function sendEmailOtp(email, message) {
   });
 }
 
-export async function sendOtpChallenge({ personEmail, personName, personPhone, channel }) {
+export async function sendOtpChallenge({ person, personPhone, channel, context }) {
   cleanupExpired();
-  const email = normalizeEmail(personEmail);
-  if (!email || !email.includes('@')) throw new Error('Personelin geçerli e-posta adresi bulunmuyor.');
+  const normalizedContext = normalizeOtpContext({
+    ...context,
+    personId: person?.id,
+    personEmail: person?.email
+  });
+  const contextKey = otpContextKey(normalizedContext);
+  const personKey = normalizedContext.personId;
+  const existingChallengeId = challengeIdByContext.get(contextKey);
+  const existingChallenge = existingChallengeId ? otpChallenges.get(existingChallengeId) : null;
+  if (!challengeIdByPerson.has(personKey) && otpChallenges.size >= MAX_ACTIVE_OTP_CHALLENGES) {
+    throw new Error('OTP servisi geçici olarak yoğun. Lütfen kısa süre sonra tekrar deneyin.');
+  }
+  const lastSentAt = Math.max(
+    Number(existingChallenge?.sentAt || 0),
+    Number(lastOtpSentAtByPerson.get(personKey) || 0)
+  );
+
+  if (lastSentAt && Date.now() - lastSentAt < OTP_RESEND_COOLDOWN_MS) {
+    const waitSeconds = Math.max(
+      1,
+      Math.ceil((OTP_RESEND_COOLDOWN_MS - (Date.now() - lastSentAt)) / 1000)
+    );
+    throw new Error(`Yeni kod göndermek için ${waitSeconds} saniye bekleyin.`);
+  }
 
   const otpCode = crypto.randomInt(100000, 1000000).toString();
+  const challengeId = crypto.randomUUID();
   const requestedChannel = channel === 'sms' ? 'sms' : 'email';
-  const message = `ISTEK Demirbas teslim/iade onay kodunuz: ${otpCode}. Kod 2 dakika gecerlidir. Bu kodu islemi yapan IT personeliyle paylasarak donanim tutanagini onaylamis olursunuz.`;
+  const actionLabel = normalizedContext.action === 'return' ? 'donanım iade' : 'donanım zimmet teslim';
+  const message = `İSTEK ${actionLabel} işlemi onay kodunuz: ${otpCode}. Kod 2 dakika geçerlidir. Bu kodu işlemi yapan IT personeliyle paylaşarak ilgili tutanağı onaylamış olursunuz.`;
 
   let phone = '';
   let deliveryResult;
   if (requestedChannel === 'sms') {
-    phone = normalizeTrMobile(personPhone);
+    phone = normalizeTrMobile(personPhone || person?.phone);
     deliveryResult = await sendSmsViaMobildev(phone, message);
   } else {
-    deliveryResult = await sendEmailOtp(email, message);
+    deliveryResult = await sendEmailOtp(normalizedContext.personEmail, message);
   }
 
-  otpChallenges.set(email, {
-    code: otpCode,
+  const existingPersonChallengeId = challengeIdByPerson.get(personKey);
+  if (existingPersonChallengeId) removeChallenge(existingPersonChallengeId);
+  if (existingChallengeId && existingChallengeId !== existingPersonChallengeId) {
+    removeChallenge(existingChallengeId);
+  }
+  const sentAt = Date.now();
+  otpChallenges.set(challengeId, {
+    codeHash: otpCodeHash(challengeId, otpCode),
     channel: requestedChannel,
     phone,
-    personName: String(personName || ''),
-    expiresAt: Date.now() + OTP_TTL_MS
+    personName: String(person?.name || ''),
+    context: normalizedContext,
+    contextKey,
+    personKey,
+    attempts: 0,
+    sentAt,
+    expiresAt: sentAt + OTP_TTL_MS
   });
+  challengeIdByContext.set(contextKey, challengeId);
+  challengeIdByPerson.set(personKey, challengeId);
+  lastOtpSentAtByPerson.set(personKey, sentAt);
+
+  if (config.nodeEnv === 'test' && process.env.OTP_TEST_CAPTURE_ALLOWED === 'YES' && otpTestObserver) {
+    otpTestObserver(Object.freeze({ challengeId, otpCode, channel: requestedChannel }));
+  }
 
   return {
+    challengeId,
     channel: requestedChannel,
     phone,
-    delivery: deliveryResult.delivery,
-    ...(isDevelopment() ? { debugOtp: otpCode } : {})
+    delivery: deliveryResult.delivery
   };
 }
 
-export function verifyOtpCode(personEmail, otpCode) {
+export function verifyOtpCode({ challengeId, otpCode, context }) {
   cleanupExpired();
-  const email = normalizeEmail(personEmail);
-  const challenge = otpChallenges.get(email);
+  const normalizedChallengeId = String(challengeId || '').trim();
+  const normalizedContext = normalizeOtpContext(context);
+  const contextKey = otpContextKey(normalizedContext);
+  const challenge = otpChallenges.get(normalizedChallengeId);
   const code = String(otpCode || '').trim();
 
-  if (!challenge || challenge.expiresAt <= Date.now()) {
-    otpChallenges.delete(email);
+  if (!challenge || challenge.expiresAt <= Date.now() || challenge.contextKey !== contextKey) {
+    if (challenge?.expiresAt <= Date.now()) removeChallenge(normalizedChallengeId);
     throw new Error('Hatalı veya süresi dolmuş kod.');
   }
 
-  if (challenge.code !== code) {
+  if (!otpCodeMatches(challenge, normalizedChallengeId, code)) {
+    challenge.attempts = Number(challenge.attempts || 0) + 1;
+    if (challenge.attempts >= MAX_OTP_ATTEMPTS) removeChallenge(normalizedChallengeId);
     throw new Error('Hatalı veya süresi dolmuş kod.');
   }
 
-  otpChallenges.delete(email);
-  const hash = `DIJIT-ONAY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-  validApprovals.set(hash, { email, expiresAt: Date.now() + APPROVAL_TTL_MS });
-  return { hash };
+  if (validApprovals.size >= MAX_VALID_APPROVALS) {
+    cleanupExpired();
+    if (validApprovals.size >= MAX_VALID_APPROVALS) {
+      throw new Error('OTP servisi geçici olarak yoğun. Lütfen kısa süre sonra tekrar deneyin.');
+    }
+  }
+
+  removeChallenge(normalizedChallengeId);
+  const hash = `DIJIT-ONAY-${crypto.randomUUID().toUpperCase()}`;
+  validApprovals.set(hash, {
+    context: normalizedContext,
+    contextKey,
+    expiresAt: Date.now() + APPROVAL_TTL_MS
+  });
+  return { hash, channel: challenge.channel };
 }
 
-export function consumeOtpApproval(hash, personEmail) {
+export function consumeOtpApproval(hash, context) {
   cleanupExpired();
-  const email = normalizeEmail(personEmail);
-  const approval = validApprovals.get(hash);
-  if (!approval || approval.expiresAt <= Date.now() || approval.email !== email) {
-    validApprovals.delete(hash);
+  const normalizedHash = String(hash || '').trim();
+  const normalizedContext = normalizeOtpContext(context);
+  const approval = validApprovals.get(normalizedHash);
+  if (!approval || approval.expiresAt <= Date.now() || approval.contextKey !== otpContextKey(normalizedContext)) {
+    if (approval?.expiresAt <= Date.now()) validApprovals.delete(normalizedHash);
     throw new Error('OTP doğrulama geçersiz veya zaman aşımına uğramış.');
   }
-  validApprovals.delete(hash);
+  validApprovals.delete(normalizedHash);
   return true;
 }

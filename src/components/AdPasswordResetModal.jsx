@@ -1,6 +1,6 @@
 import { CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LockKeyhole, Mail, MessageSquare, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
-import { GAS_URL } from '../config/appConfig.js';
+import { postApiAction } from '../services/apiClient.js';
 import { encryptAdPassword } from '../utils/adPasswordCrypto.js';
 
 function getDefaultAdUser(person) {
@@ -98,26 +98,21 @@ export function AdPasswordResetModal({ person, currentUser, clientIp, onClose, o
     try {
       const encrypted = await encryptAdPassword(password);
       const normalizedPhone = normalizePhone(phone);
-      const res = await fetch(GAS_URL, {
-        method: 'POST',
-        body: JSON.stringify({
-          action: 'enqueueADPasswordReset',
-          authToken: currentUser.token,
-          personId: person.id,
-          passwordMode: mode,
-          passwordCiphertext: encrypted.ciphertext,
-          encryptionAlg: encrypted.algorithm,
-          encryptionKeyId: encrypted.keyId,
-          reason: `Personel profili üzerinden ${modeLabel.toLocaleLowerCase('tr-TR')} bilgisayar/Wi-Fi şifre sıfırlama`,
-          notifyEmail,
-          notifySms,
-          notifyPhone: notifySms ? normalizedPhone : '',
-          clientIp,
-          userAgent: navigator.userAgent,
-        }),
+      const result = await postApiAction({
+        action: 'enqueueADPasswordReset',
+        authToken: currentUser.token,
+        personId: person.id,
+        passwordMode: mode,
+        passwordCiphertext: encrypted.ciphertext,
+        encryptionAlg: encrypted.algorithm,
+        encryptionKeyId: encrypted.keyId,
+        reason: `Personel profili üzerinden ${modeLabel.toLocaleLowerCase('tr-TR')} bilgisayar/Wi-Fi şifre sıfırlama`,
+        notifyEmail,
+        notifySms,
+        notifyPhone: notifySms ? normalizedPhone : '',
+        clientIp,
+        userAgent: navigator.userAgent,
       });
-      const result = await res.json();
-      if (!result.success) throw new Error(result.error || 'İşlem kuyruğa alınamadı.');
       if (notifySms && onPhoneSaved) onPhoneSaved(person.id, normalizedPhone);
 
       onQueued?.(result);
@@ -131,10 +126,10 @@ export function AdPasswordResetModal({ person, currentUser, clientIp, onClose, o
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+      className="app-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
       style={{ zIndex: 2147483647 }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-gray-200">
+      <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-gray-200">
         <div className="flex items-center justify-between p-4 border-b border-gray-100">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-11 h-11 rounded-2xl bg-blue-50 text-[#0066b1] flex items-center justify-center border border-blue-100 shrink-0">

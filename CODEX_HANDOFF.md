@@ -2,416 +2,420 @@
 
 ## Current Goal
 
-ISTEK Zimmet uygulamasini Google Sheets agirlikli yapidan yerel SQL Server + Node API yapisina kademeli olarak tasimak.
+İSTEK Zimmet uygulamasını SQL Server + Node API mimarisinde güvenli, hızlı ve yoğun dönem kullanımına hazır hale getirmek. Google Apps Script yalnızca Drive/Gmail/Google Admin köprüsü olarak kalıyor; ana veri kaynağı SQL Server.
 
-Mevcut odak:
-- SQL API tarafina kalan islemleri tasimak.
-- GLPI senkronunu SQL API'ye almak.
-- Imza, AD sifre sifirlama ve PDF uretim gibi yan servisleri SQL kuyruk/agent modeliyle calistirmak.
-- PDF uretimini Apps Script kotasindan uzaklastirip daha hizli/asenkron hale getirmek.
-- GitHub'a ayrilan SQL repo uzerinden kontrollu commit/push akisini surdurmek.
+Son odak:
+- Delta veri senkronizasyonu ve frontend sorgu maliyetlerini azaltmak.
+- GLPI/personel senkronlarını set tabanlı SQL işlemlerine çevirmek.
+- PDF kuyruğunu tek Chrome süreci ve sınırlı paralellik ile hızlandırmak.
+- Oturum, OTP, agent ve SQL log güvenliğini sıkılaştırmak.
+- Toplu durum işlemlerinde zimmet verisinin sessizce silinmesini engellemek.
+- API isteklerini aksiyon bazlı doğrulamak ve kuyruk polling'inde hassas PDF
+  payload'larını SQL dışına taşımamak.
+- Kontrollü toplu iş testiyle 12 sentetik cihaz üzerinde grup, QR sayım, hurda/depo,
+  SMS OTP, zimmet, e-posta OTP, iade, PDF/Drive/e-posta ve otomatik temizliği doğrulamak.
 
 ## Files Changed
 
-- `backend/src/config.js`
-  - `GLPI_SYNC_SECRET` / `ZIMMET_SYNC_SECRET` destegi eklendi.
-  - `SIGNATURE_AGENT_SECRET` / `ZIMMET_SIGNATURE_AGENT_SECRET` destegi eklendi.
-  - Imza agent gecisinde mevcut secret ile test kolayligi icin `AD_AGENT_SECRET` fallback'i eklendi.
-
-- `backend/src/actionRouter.js`
-  - Oturum gerektirmeyen agent endpointleri eklendi:
-    - `syncGLPI`
-    - `fetchSignatureJobs`
-    - `completeSignatureJob`
+Başlıca dosyalar:
 
 - `backend/src/repositories/inventoryRepository.js`
-  - GLPI verisini SQL `GlpiDevices` tablosuna alan `syncGlpiDevicesFromAgent` eklendi.
-  - GLPI verisi geldikten sonra `Hardware` tablosundaki GLPI alanlarini eslestiren reconcile akisi eklendi.
-  - Imza agent kuyrugu icin `fetchSignatureAgentJobs` ve `completeSignatureAgentJob` eklendi.
+  - Delta fetch, set tabanlı personel/GLPI sync, AD kuyruk tekrar engeli.
+  - Toplu donanım seçimleri seri numarası başına SQL parametresi üretmek yerine
+    tek `OPENJSON` paketi kullanır; 2.100 parametre sınırına takılmaz ve istek başına
+    en fazla 5.000 tekil cihaz kabul edilir.
+  - Toplu grup ve depo/hurda işlemleri cihaz başına ayrı sorgu yerine tek set tabanlı
+    `UPDATE` kullanır; optimistic concurrency sayım kontrolü ve cihaz geçmişi aynı
+    transaction içinde korunur.
+  - Çoklu QR sayımı cihaz başına HTTP/transaction yerine tek batch çalışır. Aynı
+    yetkilinin aynı cihazı 30 saniye içinde yeniden göndermesi SQL uygulama kilidiyle
+    atomik olarak tekilleştirilir.
+  - `fetchData` personel/donanım sorgularını paralel çalıştırır; HQ/kampüs ve
+    full/delta sorgu dalları indeks dostudur. Kampüs dışındaki personel yalnız
+    yetkilinin görünür cihazına zimmetliyse gerçek profiliyle gönderilir.
+  - AD agent tamamlamasında lease sahipliği doğrulaması; sıfır satırlık güncelleme artık başarı sayılmaz.
+  - Toplu durum işlemlerinde transfer engeli ve açık zimmet kaldırma onayı.
+  - SHA-256 zincirli sistem logu yazımı.
+  - Personel sync uyarı detayı sınırı ve toplam uyarı metriği.
+  - İşlem kuyruğu listesi tam PDF payload'ı yerine SQL'de çıkarılan güvenli
+    personel/donanım özetini okur; imza ve OTP verisi polling sırasında taşınmaz.
+- `backend/src/requestValidation.js`, `backend/src/uploadedFileValidation.js`
+  - Bilinen aksiyon allowlist'i, JSON derinlik/karmaşıklık ve liste sınırları,
+    prototype-pollution alan reddi, kanonik Base64 ve gerçek 15 MB dosya sınırı.
+- `backend/scripts/verify-runtime.js`
+  - Gerçek API SQL hesabıyla şema nesneleri, migration kolonları, en düşük yetki
+    matrisi ve güncel 7.902 satırlık log zincirini salt-okunur doğrular.
+- `backend/src/pdfRenderer.js`
+  - Her PDF için Chrome açmak yerine `puppeteer-core` ile tek tarayıcı süreci.
+  - En fazla iki paralel sayfa, render timeout, dış ağ isteği engeli ve çökme sonrası yeniden başlatma.
+- `backend/src/pdfQueueWorker.js`
+  - Sınırlı paralel işçi havuzu, lease koruması ve kontrollü durdurma.
+- `backend/src/server.js`, `backend/src/db.js`
+  - Kontrollü servis kapanışı; PDF işçisi, Chrome ve SQL pool temizliği.
+  - Opsiyonel HttpOnly cookie oturumu, `no-store` API yanıtları ve hassas header log sansürü.
+  - HTTP header/request/keep-alive sınırları, üretim health hata sansürü ve PWA'ya uygun statik cache politikası.
+  - Erişim logu URL sorgu dizisini kaydetmez; imzalı export anahtarları ile cookie,
+    authorization, referrer ve agent HMAC başlıkları logdan sansürlenir.
+  - Başarısız SQL bağlantısından sonra pool sıfırlama ve sonraki istekte güvenli yeniden bağlanma.
+- `backend/src/sessionCookie.js`
+  - Doğrulamalı cookie ayrıştırma/serileştirme; Secure, SameSite ve `__Host-` kuralları.
+- `backend/src/server.js`, `backend/src/sessionService.js`
+  - API geneli için JSON ayrıştırmadan önce IP bazlı trafik sınırı, sınırlı bucket
+    belleği ve yalnız sistemin ürettiği Base64URL oturum anahtarı biçiminin kabulü.
+- `backend/src/actionRouter.js`, `backend/src/sessionService.js`, `backend/src/otpService.js`, `backend/src/agentAuth.js`
+  - Oturum hash'i, işlem bağlamlı tek kullanımlık OTP, HMAC agent doğrulaması ve replay engeli.
+  - OTP kodu bellekte düz metin yerine HMAC özetiyle tutulur; personel bazlı cooldown
+    cihaz listesi/kanal değiştirilerek aşılamaz ve bir personelin tek aktif kodu olur.
+  - Yetki/oturum SQL'de her istekte doğrulanırken `LastSeenAt` yazımı token başına
+    beş dakikada birleştirilerek gereksiz SQL write roundtrip'leri azaltılır.
+- `backend/src/googleAuth.js`
+  - Google token boyut/biçim sınırı, ID token issuer-subject doğrulaması ve access token
+    audience/expiry/e-posta tutarlılığı kontrolleri.
+- `backend/src/agentNonceStore.js`
+  - Ham nonce yerine SHA-256 özetiyle SQL tabanlı atomik replay rezervasyonu.
+- `src/App.jsx`, `src/components/OperationQueueIndicator.jsx`
+  - Delta merge, ortak kuyruk polling store'u, O(1) cihaz/personel map'leri.
+  - Toplu depo/hurda işlemlerinde zimmet kaldırma uyarısı.
+  - Büyük sessionStorage snapshot yazımı idle zamana ertelenir; son yazım birleştirilir,
+    logout'ta iptal edilir ve cache kota hatası ana veri çekimini başarısız yapmaz.
+- `src/services/uiMessageService.js`, `src/components/AppMessageCenter.jsx`, `src/main.tsx`
+  - Tarayıcı `alert/confirm` pencereleri yerine portal tabanlı, erişilebilir uygulama mesaj kuyruğu.
+  - Hata, uyarı, bilgi ve başarı görünümleri; aynı oturum uyarısını tekilleştirme.
+- `src/utils/safeUrls.js`, `src/App.jsx`, `src/components/OperationQueueIndicator.jsx`,
+  `src/components/SignatureCreateModal.jsx`
+  - Dinamik bağlantılarda yalnız HTTP(S), güvenli yeni sekme açma ve yalnız Google
+    Drive için iframe önizlemesi; `javascript:`/kimlik bilgili URL'ler reddedilir.
+- `src/services/apiClient.js`, `src/App.jsx`, `src/components/OperationQueueIndicator.jsx`
+  - Cookie credential gönderimi, cookie modunda localStorage için gizli olmayan oturum işareti
+    ve kullanıcı e-postasına göre ayrıştırılmış kuyruk store anahtarı.
+- `src/index.css`, `src/components/LoadingSkeletons.jsx`, `src/App.jsx`
+  - Ortak 140-320 ms hareket dili, ilk açılış/lazy/GLPI skeleton ekranları, sekme
+    geçişleri, güncellenen donanım/personel satırı ve durum çipi vurgusu.
+  - `prefers-reduced-motion` desteği tüm animasyon ve geçişleri erişilebilir biçimde kapatır.
+- `src/components/QrScanTab.jsx`, `src/components/OperationQueueIndicator.jsx`
+  - QR çerçevesi + son cihaz kartı geri bildirimi, ses kaynağı temizliği ve kuyruk
+    durumlarına bağlı bekleme/işleme/tamamlandı/hata aşama çizgileri.
+- `src/App.jsx`, modal bileşenleri
+  - Bekleyen transfer rotasında durum çizgisi; donanım/personel/AD/imza/iade/QR ve
+    uygulama mesajı modallarında ortak backdrop/panel geçişi.
+- `src/components/HardwareProfileModal.jsx`
+  - Tekil depo/hurda işleminde zimmet kaldırma uyarısı, açık onay bayrağı ve uygulama içi hata mesajları.
+- `src/components/OtpVerification.jsx`
+  - OTP doğrulama hataları tarayıcı penceresi yerine merkezi uygulama mesajını kullanır.
+- `sync-personnel.ps1`
+  - Toplam uyarı sayısını koruyup ayrıntıları 200 kayıtla sınırlar.
+- `backend/test/*.test.js`
+  - Agent HMAC/replay, telefon normalizasyonu, iki sayfalı PDF ve HTML escaping testleri.
+- `backend/scripts/smoke-api.js`, `backend/package.json`
+  - Çalışan API üzerinde veri yazmadan health/SQL, Helmet başlıkları, bozuk ve
+    tehlikeli JSON, aksiyon allowlist'i, oturum, CORS, export imzası ve 404
+  davranışını doğrulayan canlı smoke komutu (`npm run smoke:api`).
+- `backend/scripts/smoke-business-bulk.js`, `backend/src/otpService.js`
+  - Gerçek kurumsal veriye dokunmadan `CODEX-BULK-*` sentetik cihazlarla toplu iş
+    akışını sınar ve Windows kimlik doğrulamasıyla test kayıtlarını geri temizler.
+  - Gerçek SMS/e-posta teslimi sürerken OTP yalnız `NODE_ENV=test` ve
+    `OTP_TEST_CAPTURE_ALLOWED=YES` birlikteyse aynı test sürecinin belleğinde
+    yakalanabilir; HTTP yanıtına, dosyaya veya loga yazılmaz ve üretimde kapalıdır.
+- `backend/scripts/smoke-ui.js`
+  - Oturumsuz login ekranını gerçek Chrome/Edge ile 1440x900 ve 390x844
+    boyutlarında açar; beyaz ekran, React/Vite hatası, yatay taşma ve kırpılmış
+    giriş düğmesini veri yazmadan denetler (`npm run smoke:ui`).
+- `backend/scripts/smoke-ui-authenticated.js`
+  - Aktif bir yetkili için kısa ömürlü SQL test oturumu oluşturur; gerçek
+    `fetchData` ile Donanım/Personel/Transfer sekmelerini desktop ve mobilde açar,
+    ardından yalnız oluşturduğu oturumu doğrulayarak siler (`npm run smoke:ui:auth`).
+- `backend/scripts/smoke-cookie-session.js`, `backend/test/sessionCookie.test.js`
+  - Ana `8787` servisine dokunmadan boş bir portta cookie modlu backend açar;
+    body-token reddi, HttpOnly cookie okuması, cross-site engeli, logout ve SQL
+    oturum temizliğini gerçek veritabanıyla doğrular (`npm run smoke:cookie`).
+  - Cookie serileştirme, temizleme, ayrıştırma, SameSite/Secure ve `__Host-`
+    kuralları birim testleriyle korunur.
+- `backend/scripts/smoke-ui-cookie.js`
+  - Frontend'i `/api/action` hedefiyle production build eder ve boş bir portta
+    aynı-domain cookie modlu backend üzerinden gerçek Chrome/Edge ile açar.
+  - Desktop/mobil veri okuma, sayfa yenileme, ana sekmeler, localStorage'da yalnız
+    oturum işareti bulunması, HttpOnly görünmezliği ve logout sonrası frontend,
+    cookie ve SQL oturum temizliğini doğrular (`npm run smoke:ui:cookie`).
+  - İkinci geçici SQL oturumunu kontrollü biçimde sona erdirip HTTP 401 sonrası
+    login ekranına dönüşü, cookie/localStorage temizliğini ve uygulama içi uyarıyı
+    yerel browser dialogu açılmadan doğrular.
+- `.github/workflows/ci.yml`
+  - Push/PR üzerinde salt-okunur repo yetkisiyle frontend lint/build/audit ve
+    backend syntax/test/audit çalıştırır; SQL veya gerçek iş akışı tetiklemez.
+- `backend/sql/004_performance_indexes.sql` ... `011_agent_nonce_ledger.sql`
+  - Performans indeksleri, hassas veri temizliği, queue lease, session hash, delta indeksleri, AD tekrar engeli, append-only log zinciri ve kalıcı agent nonce ledger.
+- `backend/sql/012_queue_retention.sql`, `backend/src/queueRetentionWorker.js`
+  - Nihai durumdaki geçici kuyrukları küçük partilerle temizler; bekleyen/işlenen işler,
+    cihaz geçmişi ve sistem logları korunur.
+  - Filtreli indekslerin `sqlcmd` altında da güvenli kurulması için gerekli SQL
+    `SET` seçenekleri açıkça tanımlıdır.
+- `backend/src/queuePayloadSanitizer.js`, `backend/sql/013_redact_final_operation_payloads.sql`
+  - Tamamlanan veya son yeniden denemesinde kalan PDF kuyruk payload'larını güvenli
+    cihaz/personel özetine indirir; imza, OTP, e-posta gövdesi ve istemci verisi silinir.
+- `backend/sql/014_least_privilege_api_user.sql`
+  - `zimmet_api` hesabını yüksek yetkili sabit rollerden çıkarır; tablo bazlı en düşük
+    yetkileri verir ve kuyruk/geçmiş/ana veri tablolarında doğrudan silmeyi engeller.
+- `backend/.env.example`, `backend/README.md`
+  - PDF concurrency/timeout ayarları ve migration komutları.
+- `backend/windows/Backup-IstekZimmet.ps1`, `Verify-IstekZimmetBackup.ps1`,
+  `Install-SqlBackupTask.ps1`, `Remove-SqlBackupTask.ps1`
+  - SQL Express için günlük tam yedek, checksum doğrulama, güvenli saklama temizliği
+    ve sessiz Windows görevi kurulumu.
+  - Windows PowerShell 5.1 + Türkçe kültürde ASCII `I` regex hatasını önleyen
+    case-sensitive parametre doğrulaması ve başarılı sqlcmd stderr mesajlarını
+    `$LASTEXITCODE` ile değerlendiren uyumluluk düzeltmesi.
+- `backend/windows/Test-IstekZimmetRestore.ps1`
+  - En güncel yedeği benzersiz geçici veritabanına restore eder; `DBCC CHECKDB`,
+    temel tablo sayıları ve log zincirini doğrular, sonra yalnız kendi oluşturduğu
+    test veritabanını temizler. Mevcut veritabanında `REPLACE` kullanmaz.
+- `package-lock.json`, `backend/package-lock.json`
+  - Güvenlik düzeltmeli bağımlılıklar; Vite 7.3.6, PostCSS 8.5.16 ve Puppeteer Core.
 
-- `sync-glpi.ps1`
-  - Google Apps Script endpointi yerine SQL API endpointine POST edecek sekilde guncellendi.
-  - Varsayilan endpoint: `http://localhost:8787/api/action`
-  - Secret: once `GLPI_SYNC_SECRET`, yoksa `ZIMMET_SYNC_SECRET`.
-
-- `imza/windows/Run-ImzaPipeline.ps1`
-  - SQL API'den `fetchSignatureJobs` ile is cekme destegi eklendi.
-  - Klasorde hazir dataset varsa once onu isler; yoksa SQL kuyrugundan is cekip dataset, HTML ve GAM dosyalarini yerelde uretir.
-  - `completeSignatureJob` callback'i SQL API'ye donecek sekilde varsayilan URL mantigi eklendi.
-
-- `imza/windows/README.md`
-  - Yeni SQL imza agent calisma sekli ve gereken environment variable'lar dokumante edildi.
-
-- `ad/windows/Run-ADPasswordAgent.ps1`
-  - SQL API'deki `fetchADPasswordJobs` kuyruğundan is ceken Windows AD sifre ajani eklendi.
-  - RSA-OAEP-SHA256 private key ile sifreyi yerelde cozer, AD'de uygular ve `completeADPasswordJob` ile sonucu geri yazar.
-  - Opsiyonel e-posta/SMS bildirimini ajan tarafinda destekler.
-
-- `ad/windows/README.md`
-  - AD ajan kurulumu, environment variable'lar ve gorev zamanlayici ayarlari dokumante edildi.
-
-- `backend/src/googleBridge.js`
-  - `sendEmailThroughGoogleBridge` eklendi.
-
-- `backend/src/otpService.js`
-  - E-posta OTP artik Google Apps Script bridge uzerinden GmailApp ile gonderilir.
-
-- `Code.full.gs`
-  - `sendBridgeEmail` bridge aksiyonu eklendi.
+Çalışma ağacı uzun geçiş sürecinden kalan başka değişiklikler de içeriyor. İlgisiz dosyaları geri alma.
 
 ## Important Decisions Made
 
-- Uygulamanin ana veri kaynagi SQL Server olacak; Google Sheets artik kalici ana veritabani olarak dusunulmemeli.
-- Google Apps Script simdilik Drive/Gmail/Google Admin gibi Google'a bagimli islerde kopru olarak kalabilir.
-- GLPI dis internete kapali oldugu icin GLPI verisi ic agdaki PowerShell agent tarafindan SQL API'ye push edilecek.
-- GLPI eslestirme onceligi:
-  1. GLPI ID
-  2. Seri no
-  3. Bilgisayar ismi
-- Agent endpointleri normal kullanici oturumu istemiyor; paylasilan secret ile korunuyor.
-- AD private key dosyalari repoya alinmayacak; `.gitignore` icine `*.pem` ve `*.key` eklendi.
-- SQL API e-posta OTP icin Gmail yetkisini direkt backend'e tasimiyor; Apps Script bridge uzerinden kullanmaya devam ediyor.
-- SQL gecisi canliya alinmadan once localde her akis tek tek dogrulanacak.
-- Bu klasor artik ayri Git repo olarak baslatildi ve `origin` `https://github.com/comertyanar-rgb/istek-zimmet-sql.git` adresine ayarlandi.
+- SQL Server tek ana veri kaynağıdır; Sheets yalnızca geçiş/senkron köprüsüdür.
+- PDF HTML şablonları mevcut iki sayfalı zimmet/iade yönergesini korur.
+- Gmail/Drive gönderimi Apps Script bridge üzerinden devam eder.
+- PDF render Node tarafında yapılır ve aynı görünmez Chrome süreci yeniden kullanılır.
+- Agent istekleri ayrı secret + timestamp + nonce + HMAC-SHA256 kullanır.
+- Agent nonce'larının yalnızca SHA-256 özeti SQL'de kısa süreli tutulur; API yeniden başlasa bile replay kabul edilmez.
+- `zimmet_api`, nonce tablosuna doğrudan erişemez; yalnız atomik rezervasyon prosedürünü çalıştırabilir.
+- Session token SQL'de açık tutulmaz; SHA-256 hash ile aranır.
+- Sistem logları SHA-256 zincirlidir; API hesabı eski logları güncelleyemez veya silemez.
+- Zimmetli cihaz toplu olarak depoya/hurdaya alınabilir, fakat yalnızca UI açık uyarı gösterip `confirmUnassignAssigned: true` gönderirse. Eski personel bilgisi geçmişe yazılır.
+- Transferdeki cihaz bulk status ile değiştirilemez.
+- Personel/GLPI sync işlemleri satır başına sorgu yerine `OPENJSON + MERGE` batch kullanır.
+- Frontend arka plan delta sync yapar; yaklaşık 10 dakikada bir tam snapshot ile uzlaşır.
+- Aktif `src` kodunda tarayıcıya ait `alert/confirm/prompt` kullanılmaz; kullanıcı mesajları portal tabanlı merkezden gösterilir.
+- Oturum süresi uyarıları aynı anda birden fazla API isteğinden gelse bile tek mesaj olarak gösterilir.
+- Otomatik SQL yedeği üretim veritabanına restore yapmaz; her yedek aynı çalışmada
+  `RESTORE VERIFYONLY WITH CHECKSUM` ile doğrulanır. Gerçek restore tatbikatı
+  benzersiz geçici veritabanında ayrı scriptle yürütülür ve varsayılan olarak temizlenir.
+- PDF/GLPI, AD ve imza kuyrukları varsayılan 30 gün saklanır; temizlik altı saatte
+  bir ve tablo başına en fazla 500 satırlık partilerle yapılır.
+- PDF kuyruk payload'ı yalnız üretim ve yeniden deneme süresince tam tutulur. Başarıda
+  hemen, retry sınırındaki hatada ise son denemeden sonra güvenli özete çevrilir.
+- Tek-domain sunumda service worker/manifest dosyaları immutable cache almaz; yalnız
+  hash'li build asset'leri uzun süreli cache edilir.
+- Genel API trafik sınırı IP başına dakikada 600 istek olarak geniş tutulur; giriş,
+  OTP ve agent işlemlerinin daha dar aksiyon sınırları ayrıca uygulanır.
 
 ## Commands Already Run
 
-SQL kurulum/import tarafinda daha once:
+Yerel SQL'e uygulanan son migration'lar:
 
 ```powershell
-sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i backend\sql\003_auxiliary_actions.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\008_delta_sync_indexes.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\009_ad_queue_person_status_index.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\010_system_log_chain.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\011_agent_nonce_ledger.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\012_queue_retention.sql
 ```
 
-Backend ve frontend icin daha once calisan kontroller:
+Bu turda uygulanan migration ve onarım:
 
 ```powershell
-node --check src\server.js
-node --check src\actionRouter.js
-node --check src\repositories\inventoryRepository.js
-node --check src\googleBridge.js
-node --check scripts\import-sheets-xlsx.js
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\013_redact_final_operation_payloads.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\014_least_privilege_api_user.sql
+sqlcmd -S "localhost\SQLEXPRESS" -d IstekZimmet -E -b -i backend\sql\012_queue_retention.sql
+```
+
+Son doğrulama komutları:
+
+```powershell
+npm audit --json
+npm run lint
 npm run build
-```
+cd backend
+npm audit --json
+npm run check
+npm test
+npm run smoke:api
+npm run smoke:cookie
+npm run smoke:ui
+npm run smoke:ui:auth
+npm run smoke:ui:cookie
 
-Bu handoff olusturulmadan hemen once calistirilan kontroller:
-
-```powershell
-cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend
-node --check src\config.js
-node --check src\actionRouter.js
-node --check src\repositories\inventoryRepository.js
-```
-
-Son kontrol sonucu: hata yok.
-
-Son eklenen commitler:
-
-```powershell
-git log --oneline -3
-# 4a7fb16 add google bridge email otp
-# 1d3c17a add sql ad password agent
-# ed675ea document sql repo setup
-```
-
-Kodda son eklenen agent actionlarini bulmak icin:
-
-```powershell
-rg -n "syncGlpiDevicesFromAgent|fetchSignatureAgentJobs|completeSignatureAgentJob|glpiSyncSecret|signatureAgentSecret|syncGLPI|fetchSignatureJobs|completeSignatureJob" backend\src\config.js backend\src\repositories\inventoryRepository.js backend\src\actionRouter.js sync-glpi.ps1 imza\windows\Run-ImzaPipeline.ps1
+powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Install-SqlBackupTask.ps1" `
+  -SqlCmdPath "C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\SQLCMD.EXE" `
+  -RunNow
+powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Test-IstekZimmetRestore.ps1" `
+  -SqlCmdPath "C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\SQLCMD.EXE"
 ```
 
 ## Tests Passed Or Failed
 
 Passed:
-- `backend/src/config.js` syntax check
-- `backend/src/actionRouter.js` syntax check
-- `backend/src/repositories/inventoryRepository.js` syntax check
-- `imza/windows/Run-ImzaPipeline.ps1` PowerShell parse check
-- `fetchSignatureJobs` endpoint testi: kuyruk bostayken `success:true`, `leased:0` dondu.
-- `ad/windows/Run-ADPasswordAgent.ps1` PowerShell parse check
-- `npm run build`
-- `backend/src/googleBridge.js` ve `backend/src/otpService.js` node syntax check
-- PDF HTML template testi: ikinci sayfa yonerge var; `2.20299E+14` seri no HTML'de genisletilmis sekilde uretiliyor.
-- `OperationQueue` SQL kontrolu: mevcut son durumda 2 PDF isi `TAMAMLANDI`, hata yok.
-- Daha once `/health` endpointi SQL baglantisi icin `connected` donmustu.
-- Daha once Sheet import tamamlandi.
-- Daha once temel donanim islemleri, GLPI'dan donanima ekleme ve hurda/transfer denemeleri localde test edildi.
+- Frontend ESLint.
+- Vite 7.3.6 production build ve PWA üretimi.
+- Backend syntax check.
+- Frontend ve backend `npm audit`: 0 açık.
+- Backend Node testleri: 11/11.
+  - Geçerli HMAC.
+  - Replay nonce reddi.
+  - Değiştirilmiş body reddi.
+  - Süresi geçmiş agent isteği reddi.
+  - Nonce deposu kullanılamadığında güvenli biçimde 503 ile kapanma.
+  - Ham nonce yerine deterministik SHA-256 özeti üretimi.
+  - Türkiye telefon normalizasyonu.
+  - İki sayfalı zimmet PDF şablonu ve bilimsel seri no düzeltmesi.
+  - PDF HTML escaping.
+- Güncel backend Node testleri: 33/33.
+  - Bilinen aksiyon allowlist'i ve bilinmeyen aksiyon reddi.
+  - Prototype-pollution alan reddi ve JSON derinlik sınırı.
+  - Kimlik listesi/senkronizasyon şekil doğrulaması ve eski tek-personel uyumluluğu.
+  - Kanonik Base64 kabulü, gevşek Base64 reddi ve çözülmüş dosya boyutu sınırı.
+  - HttpOnly cookie yazma/temizleme/okuma ile SameSite, Secure ve `__Host-`
+    yapılandırma kuralları.
+  - OTP test gözlemcisinin normal çalışma sürecinde kapalı kalması.
+- `npm run verify:runtime`: başarılı.
+  - `zimmet_api` sabit yüksek yetkili rollerde değil.
+  - Gerekli tablo/kolon/prosedürler mevcut.
+  - Donanım silme, log güncelleme/silme ve nonce tablo okuma izni kapalı.
+  - Nonce/kuyruk bakım prosedürleri çalıştırılabilir.
+  - 9.111/9.111 log geçerli, 0 bozuk.
+- `npm run smoke:api`: 11/11 başarılı.
+  - API/SQL health, temel Helmet başlıkları ve `Cache-Control: no-store`.
+  - Bozuk JSON, bilinmeyen aksiyon, header/body aksiyon uyuşmazlığı, derin JSON
+    ve prototype-pollution alanı doğru biçimde reddedildi.
+  - Oturumsuz veri okuma, güvenilmeyen Origin, imzasız export ve bilinmeyen
+    endpoint doğru 4xx durumlarıyla reddedildi.
+- `npm run smoke:ui`: başarılı.
+  - Desktop 1440x900 ve mobil 390x844 login görünümü gerçek Chrome'da açıldı.
+  - React/Vite çalışma zamanı hatası, beyaz ekran, yatay taşma veya kırpılmış
+    Google giriş düğmesi bulunmadı.
+- `npm run smoke:ui:auth`: başarılı.
+  - HQ IT görünümünde 2.582 personel ve 1.807 donanım gerçek SQL API'den okundu.
+  - Donanım, Personel ve Transfer sekmeleri 1440x900 ile 390x844 görünümde açıldı;
+    React/Vite hatası veya yatay taşma bulunmadı.
+  - Kısa ömürlü test oturumu işlem sonunda SQL'den başarıyla silindi; iş kaydı
+    oluşturulmadı.
+- `npm run smoke:cookie`: 5/5 başarılı.
+  - Body içindeki geçiş tokenı cookie modunda ve fallback kapalıyken reddedildi.
+  - HttpOnly cookie ile gerçek `fetchData` yanıtından 2.582 personel ve 1.807
+    donanım okundu.
+  - Cross-site cookie isteği HTTP 403 ile engellendi.
+  - Logout cookie'yi sonlandırdı, SQL `Sessions` kaydını sildi ve aynı anahtarın
+    tekrar kullanımı HTTP 401 ile reddedildi.
+- `npm run smoke:ui:cookie`: başarılı.
+  - Aynı-domain production build masaüstü 1440x900 ve mobil 390x844 görünümde
+    açıldı; iki görünümde de 2.582 personel ve 1.807 donanım gerçek SQL'den okundu.
+  - Her iki görünümde sayfa yenileme ve Donanım/Personel/Transfer geçişleri geçti.
+  - Gerçek session token localStorage'a girmedi ve HttpOnly cookie
+    `document.cookie` üzerinden görünmedi.
+  - Çıkış sonrasında localStorage, tarayıcı cookie'si ve SQL session kaydı silindi.
+  - Kontrollü süresi dolmuş SQL oturumu HTTP 401 üretti; frontend login ekranına
+    döndü, cookie/localStorage temizlendi ve uygulama içi “Oturum sona erdi” mesajı
+    gösterildi. Yerel browser dialog sayısı `0`.
+  - Görsel hareket paketi sonrasında desktop 1440x900 ve mobil 390x844 tekrar geçti;
+    React/Vite hatası veya yatay taşma oluşmadı.
+  - Mobil koşuda `prefers-reduced-motion: reduce` emüle edildi ve sekme animasyon
+    süresinin erişilebilirlik kuralıyla kapandığı doğrulandı.
+- Günlük SQL backup görevi kuruldu ve ilk zamanlanmış çalışma başarılı.
+  - Görev: `ISTEK Zimmet SQL Backup`, her gün `02:00`, S4U, gizli pencere.
+  - `LastTaskResult=0`; `IstekZimmet_full_20260711_225907.bak` üretildi
+    (21.684.224 byte) ve `RESTORE VERIFYONLY WITH CHECKSUM` geçti.
+- Gerçek restore tatbikatı başarılı.
+  - Geçici DB: `IstekZimmet_RestoreDrill_20260711_225928_c60c7e`.
+  - 1.807 donanım, 2.436 personel, 7.902 sistem logu geri okundu.
+  - `DBCC CHECKDB` geçti; bozuk log zinciri `0`.
+  - Tatbikat DB'si ve fiziksel dosyaları temizlendi; kalan restore-drill DB sayısı `0`.
+- Migration `013`: 4/4 nihai PDF payload'ı redakte edildi, hassas alan kalmadı.
+- `zimmet_api` ile gerçek session oluşturma/okuma/silme round-trip testi geçti.
+- Güvenli işlem kuyruğu sorgusu gerçek SQL'de 5 kayıt için 2.645 byte özet döndürdü;
+  imza/OTP/user-agent alanı bulunmadı.
+- İki eşzamanlı Puppeteer render smoke testi: iki çıktı da `%PDF`.
+- Kontrollü paralel PDF yük testi: 5/5 iş tamamlandı, 0 hata, gözlenen tepe
+  eşzamanlılık `2`; zimmet/iade/transfer PDF'leri Drive ve e-posta teslimini geçti.
+- Kontrollü toplu iş testi: 12 sentetik cihazın grup güncellemesi, QR sayımı,
+  Hurda/Depo geçişi, gerçek SMS OTP, toplu zimmet, gerçek e-posta OTP, toplu iade,
+  iki sayfalı PDF, Drive ve e-posta teslimi geçti.
+  - Zimmet ve iade PDF işleri ilk denemede tamamlandı; her biri 9 saniye sürdü.
+  - 12 cihazın her aşamadaki durum, zimmet sahibi, grup ve Drive bağlantısı doğrulandı.
+  - Tamamlanan kuyruk payload'larında imza, OTP ve telefon kalmadı.
+  - Sentetik donanım/geçmiş kayıtları ve geçici telefon değişikliği otomatik temizlendi;
+    kalan test cihazı `0`, geçici OTP dosyası yok.
+- Log zinciri: 6.409/6.409 kayıt geçerli, 0 bozuk.
+- Log UPDATE denemesi trigger tarafından reddedildi.
+- Zincirli log insert testi transaction içinde doğrulandı ve rollback edildi.
+- Gerçek SQL verisindeki zimmetli cihaz bulk status isteği onaysızken doğru şekilde reddedildi; yazma yapılmadı.
+- SQL nonce ledger gerçek bağlantı testi: ilk rezervasyon kabul, ikinci rezervasyon ret.
+- Ayrı Node süreçlerinde aynı nonce yeniden denendi; ikinci süreçte de reddedildi.
+- Sekiz eşzamanlı aynı nonce rezervasyonundan yalnızca biri kabul edildi.
+- `zimmet_api` kullanıcısının nonce tablosuna doğrudan erişimi reddedildi.
+- `sync-personnel.ps1` PowerShell parser kontrolü.
+- `git diff --check` hata vermedi; yalnızca Windows LF/CRLF uyarıları var.
 
-Failed / Known issues:
-- `imza/windows/Run-ImzaPipeline.ps1` SQL API'den is cekmeye tasindi; uctan uca canli imza testi henuz yapilmadi.
-- `sendBridgeEmail` icin Apps Script kodunun yeni surum olarak deploy edilmesi gerekir; deploy edilmeden production e-posta OTP eski /exec'te hata alabilir.
-- AD ajani repoya eklendi ama gercek AD uzerinde uctan uca test henuz yapilmadi.
-- PDF uretiminde yeni bridge formatinin eski iki sayfalik zimmet/iade PDF formatina birebir donmesi gerekiyor.
-- Kuyruk popup/layer duzeni UI'da daha once toolbar arkasinda kalabiliyordu; son durum tekrar gorsel test edilmeli.
+Known gaps:
+- Aynı QR'ın 30 saniye içinde tekrar sayılması ve kampüs dışı personele zimmetli
+  görünür cihaz senaryosu ayrıca smoke test edilmelidir.
+- Uygulama mesaj merkezinin oturumlu ekranlardaki görsel testi son toplu test
+  aşamasına bırakıldı; genel build ile oturumsuz desktop/mobil login smoke testi geçti.
+- Yeni PDF renderer ile gerçek transfer çıkış/giriş iş kuralları uçtan uca canlı test edilmeli;
+  transfer PDF üretimi kontrollü paralel yük testinde geçti.
+- HttpOnly cookie altyapısı opsiyonel olarak hazırlandı; geçici yerel backend ve
+  gerçek SQL üzerinde cookie/logout/401/cross-site akışı doğrulandı. Aynı-domain
+  production build'in desktop/mobil açılışı ve sayfa yenilemesi de gerçek tarayıcıda
+  geçti. Canlı ortam ayarları açılana kadar varsayılan token modu çalışmaya devam
+  eder; kontrollü süre sonu davranışı geçti, pilotta gerçek Google login ve gerçek
+  altı saatlik duvar saati süresi ayrıca gözlemlenmelidir.
+- Tam `import:xlsx --reset` işlemi `014` sonrasında `zimmet_api` ile çalışmaz; import
+  ayrı yönetici bağlantısıyla yapılmalı veya en az yetki migration'ından önce bitirilmelidir.
+- Yerel backend `node --watch src/server.js` ile çalışıyor; güncel request validation
+  canlı API smoke testinde doğrulandı. Planlı görev/production süreci kullanılırken
+  yeni deploy sonrasında kontrollü yeniden başlatma yine gereklidir.
 
 ## Remaining TODOs
 
-1. Imza SQL agent akisini uctan uca test et:
-   - backend calisirken siteden imza olustur
-   - `Run-ImzaPipeline.ps1` calistir
-   - JPG, HTML upload, GAM ve SQL `Basıldı` durumunu kontrol et
-2. GLPI sync'i SQL API'ye kucuk payload ile tekrar test et.
-3. `SIGNATURE_AGENT_SECRET` ve `GLPI_SYNC_SECRET` degerlerinin backend `.env` ve ilgili Windows agent ortamlarinda ayni oldugunu dogrula.
-4. PDF worker/bridge'in eski iki sayfalik zimmet ve iade PDF HTML formatini kullandigini dogrula.
-5. Zimmet/iade PDF kuyruk islemini uctan uca test et:
-   - OTP
-   - SQL kaydi
-   - PDF worker
-   - Google Drive upload
-   - Drive linkinin SQL'e yazilmasi
-   - e-posta bildirimi
-6. AD sifre sifirlama agent akisini SQL API tarafina tamamen bagli olarak tekrar test et.
-7. QR sayim/depo/hurda islemlerinin SQL tarafinda anlik UI geri bildirimiyle calistigini tekrar test et.
-8. Canliya gecmeden once Vercel/production CORS, API URL ve secret stratejisini netlestir.
-9. GitHub repo push edildi; bundan sonraki degisiklikler normal commit/push akisiyle ilerleyecek.
-10. Apps Script `Code.full.gs` yeni surum deploy edilecek; `sendBridgeEmail` ve `uploadGeneratedPdf` ayni `GOOGLE_BRIDGE_SECRET` ile calisacak.
+1. Transfer çıkış/giriş iş kurallarını yalnız yetkili test kampüsleriyle uçtan uca yeniden test et.
+2. Aynı QR'ın 30 saniyelik tekrar sayım tekilleştirmesini ve kampüs dışı personele
+   zimmetli görünür cihaz senaryosunu kontrollü yazma testiyle doğrula.
+3. Canlı tek-domain pilotunda HttpOnly cookie ortam ayarlarını açıp gerçek Google
+   login ve gerçek altı saatlik duvar saati süresini gözlemle; kontrollü süre sonu,
+   sayfa yenileme, logout/401 ve cross-site koruması izole smoke testlerinde tamamlandı.
+4. Oturumlu yazma akışlarının tarayıcı kapsamını son toplu testte genişlet;
+   oturumsuz login ile salt-okunur Donanım/Personel/Transfer smoke testleri tamamlandı.
+5. `C:\ZimmetBackup` yedeklerini BitLocker korumalı ikinci disk veya erişimi
+   sınırlandırılmış kurum depolamasına kopyalama politikasını devreye al; yerel
+   görev ve gerçek restore tatbikatı tamamlandı.
+6. Değişiklikleri mantıksal commitlere böl; çalışma ağacındaki eski ve yeni değişiklikleri körlemesine tek commit yapma.
+7. Her canlı güncelleme öncesi `npm run verify:runtime`, `npm run smoke:api`,
+   `npm run smoke:cookie`, `npm run smoke:ui`, `npm run smoke:ui:auth` ve
+   `npm run smoke:ui:cookie` çalıştır. Bu paket 12.07.2026 tarihinde transfer
+   zamanı ve GLPI ekranı düzeltmelerinden sonra eksiksiz geçti.
+
+## 12.07.2026 Transfer ve GLPI Düzeltmeleri
+
+- Bekleyen transfer kartı artık lazy-load geçmişine bağımlı değil; `fetchData`
+  yanıtındaki son donanım hareketi, yapan kişi ve tarih alanlarını kullanıyor.
+- Transfer tarihi `Europe/Istanbul` saat diliminde okunur biçimde gösteriliyor.
+- `Karşı Taraf Onayı Bekliyor` metni `Alıcı Onayı Bekleniyor` olarak değiştirildi.
+- `GLPI'dan Donanım Ekle` açılışında eski arama/filtreler temizleniyor, tek yükleme
+  isteği çalışıyor ve masaüstü/mobil boş durumları açıklayıcı metin gösteriyor.
+- Veri önbelleği `v3` yapıldı; eski donanım nesneleri yeni tarih alanlarını gizlemiyor.
+- Cookie UI smoke testi artık GLPI ekleme ekranını da açıp listenin render edildiğini
+  doğruluyor. Testte 1.930 eksik GLPI cihazı döndü.
+- Doğrulamalar: frontend lint/build, 32 backend testi, runtime doğrulaması,
+  API 11/11, cookie 5/5, desktop/mobile UI, token auth UI ve HttpOnly cookie UI.
 
 ## Exact Next Command To Continue
 
-```powershell
-cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend; npm run dev
-```
-
-Ardindan ayri bir PowerShell penceresinde GLPI sync testine devam etmek icin:
-
-```powershell
-cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet; .\sync-glpi.ps1
-```
-
-## Latest Continuation - 2026-07-03
-
-Eklenen commitler:
-
-```powershell
-# c5a9790 show signature jobs in operation queue
-# 42c83b6 improve pdf queue result display
-# 1da7dc6 fix mobildev success response in ad agent
-```
-
-Bu devamda yapilanlar:
-- PDF kuyrugu tamamlandiginda donanim gecmisine islem tipine gore daha acik kayit yaziliyor: Zimmet/Iade/Transfer PDF Belgesi Olusturuldu.
-- PDF kuyrugu sonucuna documentStatus ve url eklendi.
-- Islem Kuyrugu panelinde tamamlanan PDF isleri icin Ac linki gosteriliyor.
-- SQL API'ye kullanici oturumuyla okunabilen fetchSignatureQueue aksiyonu eklendi.
-- Islem Kuyrugu paneli artik PDF, AD sifre ve Imza olusturma islerini tek yerde gosteriyor.
-
-Calisan kontroller:
-
-```powershell
-node --check .\backend\src\pdfQueueWorker.js
-node --check .\backend\src\repositories\inventoryRepository.js
-node --check .\backend\src\actionRouter.js
-npm run build
-```
-
-Notlar:
-- Build basarili; sadece Vite buyuk chunk uyarisi var.
-- Code.full.gs yeni Apps Script surumu olarak deploy edilmezse sendBridgeEmail / uploadGeneratedPdf koprusu production tarafinda eski kalabilir.
-
-Siradaki en mantikli test:
+Canlı/pilot güncelleme öncesi teknik doğrulama:
 
 ```powershell
 cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend
-npm run dev
+npm run verify:runtime
+npm run smoke:api
+npm run smoke:cookie
+npm run smoke:ui
+npm run smoke:ui:auth
+npm run smoke:ui:cookie
 ```
 
-Ayri pencerede imza agent testi:
-
-```powershell
-cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet
-pwsh -ExecutionPolicy Bypass -File .\imza\windows\Run-ImzaPipeline.ps1
-```
-
-## Latest Continuation - 2026-07-04
-
-Eklenen personel senkronizasyonu:
-
-- SQL API'ye oturum gerektirmeyen `syncPersonnel` agent aksiyonu eklendi.
-- Backend secret ayari: `PERSONNEL_SYNC_SECRET`.
-- Fallback sirasi: `PERSONNEL_SYNC_SECRET`, `ZIMMET_PERSONNEL_SYNC_SECRET`, `AD_AGENT_SECRET`, `ZIMMET_SYNC_SECRET`.
-- `syncPersonnel` form/Google Admin Apps Scriptlerinden gelen personel listesini `dbo.Personnel` tablosuna upsert eder.
-- Tasinarak desteklenen alanlar:
-  - Google/personel ID
-  - ad soyad
-  - e-posta
-  - unvan/departman
-  - kampus
-  - durum
-  - profil fotografi
-  - AD kullanici adi
-  - telefon
-  - imza linki
-- Sifre, TC kimlik veya gecici hesap parolasi bu endpoint ile SQL'e tasinmaz.
-- Bos gelen `SignatureUrl`, `PhotoUrl`, `Phone` gibi alanlar mevcut dolu veriyi silmez.
-- `docs/personnel-sync-appscript-snippet.gs` eklendi; mevcut Apps Scriptlere kopyalanip SQL API'ye POST etmek icin kullanilabilir.
-
-Calisan kontroller:
-
-```powershell
-node --check backend/src/repositories/inventoryRepository.js
-node --check backend/src/actionRouter.js
-node --check backend/src/config.js
-npm run build
-```
-
-DNS hatasi nedeniyle mimari karari guncellendi:
-
-- SQL API disariya acilmayacak.
-- Apps Script Google sunucularinda calistigi icin `http://sunucu:8787` / `localhost` adreslerine erisemez.
-- Form ve Google Admin scriptleri `Kullanıcılar` sheet'ini guncellemeye devam edecek.
-- Kurum icindeki `sync-personnel.ps1` agent'i Apps Script Web App'ten `exportPersonnelForSync` ile veriyi CEKECEK ve lokal SQL API'ye yazacak.
-
-Yeni personel sync akisi:
-
-1. Backend `.env` icine `PERSONNEL_SYNC_SECRET=...` ekle.
-2. Apps Script Properties icine yalnizca ayni `PERSONNEL_SYNC_SECRET` degerini ekle.
-3. `Code.full.gs` yeni surum deploy edilecek veya `docs/personnel-sync-appscript-snippet.gs` ilgili personel sheet Apps Script'ine eklenecek.
-4. Windows ortam degiskenleri:
-
-```powershell
-[Environment]::SetEnvironmentVariable("PERSONNEL_EXPORT_URL", "https://script.google.com/macros/s/.../exec", "User")
-[Environment]::SetEnvironmentVariable("PERSONNEL_SYNC_SECRET", "ayni-secret", "User")
-[Environment]::SetEnvironmentVariable("ZIMMET_API_URL", "http://localhost:8787/api/action", "User")
-```
-
-5. Test:
-
-```powershell
-.\sync-personnel.ps1 -DryRun
-.\sync-personnel.ps1
-```
-
-## Latest Continuation - 2026-07-06
-
-Personel sync agent otomasyon destegi eklendi:
-
-- `sync-personnel.ps1` zamanlayiciya uygun hale getirildi.
-  - `-LogPath` parametresi eklendi.
-  - `-LogSuccess` opsiyonel basari logu eklendi.
-  - Hata olursa loga `ERROR ...` yazar.
-- `personnel/windows/Install-PersonnelSyncTask.ps1` eklendi.
-  - Varsayilan gorev adi: `ISTEK Zimmet Personnel Sync`
-  - Varsayilan calisma araligi: 5 dakika
-  - Varsayilan log: `C:\ZimmetPersonnel\personnel-sync.log`
-- `personnel/windows/README.md` eklendi.
-  - SQL API disari acilmadan personel sync akisinin nasil calisacagini anlatir.
-- Root `README.md` agent listesine personel sync eklendi.
-
-Kontrol komutlari:
-
-```powershell
-$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\sync-personnel.ps1), [ref]$tokens, [ref]$errors)
-$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\personnel\windows\Install-PersonnelSyncTask.ps1), [ref]$tokens, [ref]$errors)
-```
-
-Siradaki pratik test:
-
-```powershell
-.\sync-personnel.ps1 -DryRun
-powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
-```
-## Latest Continuation - 2026-07-06 Silent Personnel Task
-
-Personel sync gorevi ekranda PowerShell penceresi acmasin diye guncellendi:
-
-- `personnel/windows/Install-PersonnelSyncTask.ps1` varsayilan olarak `wscript.exe` kullanir.
-- Installer `C:\ZimmetPersonnel\Run-PersonnelSyncHidden.vbs` wrapper'ini olusturur.
-- Wrapper PowerShell'i `windowStyle=0` ile gizli baslatir.
-- Gorunur calistirma gerekirse installer `-Visible` parametresiyle calistirilabilir.
-
-Mevcut gorev pencere aciyorsa tekrar calistirilacak komut:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\personnel\windows\Install-PersonnelSyncTask.ps1" -IntervalMinutes 5
-```
-
-## Latest Continuation - 2026-07-06 Silent Agent Tasks
-
-Personel disindaki Windows ajanlari icin de sessiz Task Scheduler kurulumlari eklendi:
-
-- `ad/windows/Install-ADPasswordAgentTask.ps1`
-  - Varsayilan gorev adi: `ISTEK Zimmet AD Password Agent`
-  - Varsayilan aralik: 1 dakika
-  - Varsayilan wrapper: `C:\ZimmetAD\Run-ADPasswordAgentHidden.vbs`
-- `imza/windows/Install-ImzaAgentTask.ps1`
-  - Varsayilan gorev adi: `ISTEK Zimmet Imza Agent`
-  - Varsayilan aralik: 2 dakika
-  - Varsayilan wrapper: `C:\GAMWork\scripts\Run-ImzaAgentHidden.vbs`
-- `glpi/windows/Install-GlpiSyncTask.ps1`
-  - Varsayilan gorev adi: `ISTEK Zimmet GLPI Sync`
-  - Varsayilan aralik: 30 dakika
-  - Varsayilan wrapper: `C:\ZimmetGLPI\Run-GlpiSyncHidden.vbs`
-- `glpi/windows/README.md` eklendi.
-- `ad/windows/README.md`, `imza/windows/README.md` ve root `README.md` sessiz kurulum komutlariyla guncellendi.
-
-Calisan kontroller:
-
-```powershell
-$files = @('.\ad\windows\Install-ADPasswordAgentTask.ps1','.\imza\windows\Install-ImzaAgentTask.ps1','.\glpi\windows\Install-GlpiSyncTask.ps1','.\personnel\windows\Install-PersonnelSyncTask.ps1','.\sync-glpi.ps1','.\sync-personnel.ps1'); foreach ($file in $files) { $errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null; if ($errors.Count -gt 0) { exit 1 } }
-npm run build
-```
-
-Yeni gorevleri kurmak/guncellemek icin:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1
-powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
-powershell.exe -ExecutionPolicy Bypass -File ".\glpi\windows\Install-GlpiSyncTask.ps1" -IntervalMinutes 30
-```
-
-## Latest Continuation - 2026-07-06 Backend Startup Task
-
-Backend ve PDF worker ayni Node sureci icinde calistigi icin canli kullanimda
-backend'in elle acik bir PowerShell penceresine bagli kalmamasi gerekiyor.
-
-Eklenen dosyalar:
-
-- `backend/windows/Install-BackendStartupTask.ps1`
-  - Varsayilan gorev adi: `ISTEK Zimmet SQL API`
-  - Varsayilan tetikleyici: kullanici oturum acinca
-  - `-AtStartup` ile bilgisayar acilisinda calisacak sekilde kurulabilir
-  - Varsayilan wrapper: `C:\ZimmetBackend\Run-BackendHidden.vbs`
-  - Varsayilan log: `C:\ZimmetBackend\backend.log`
-- `backend/windows/README.md`
-
-Kurulum komutu:
-
-```powershell
-cd C:\Users\comert.yanar\Documents\Codex\2026-04-27\github-plugin-github-openai-curated-zimmet\backend
-powershell.exe -ExecutionPolicy Bypass -File ".\windows\Install-BackendStartupTask.ps1"
-```
-
-Backend zaten terminalde aciksa ikinci kopya `EADDRINUSE` / port dolu hatasi
-uretebilir. Gorevi test etmeden once elle acik backend terminalini kapatmak daha temizdir.
-
-## Latest Continuation - 2026-07-06 Scheduled Task Audit
-
-Eski ve yeni Windows gorevlerini karistirmamak icin denetim script'i eklendi:
-
-- `windows/Audit-ZimmetScheduledTasks.ps1`
-  - Varsayilan mod sadece rapor verir.
-  - `YENI_SESSIZ`: yeni installer ile `wscript.exe` uzerinden sessiz calisan gorev.
-  - `YENI_AMA_GORUNUR`: yeni isimli ama dogrudan PowerShell/Node calisan gorev.
-  - `ESKI_ADAY`: eski dogrudan PowerShell/Node calisan ve kapatilmasi gereken aday.
-  - `KONTROL_ET`: ilgili gorunen ama otomatik kapatilmamasi gereken gorev.
-  - `-DisableLegacy` sadece `ESKI_ADAY` gorevleri devre disi birakir.
-  - Turkce Windows'ta `imza` / `Imza` eslesmesi icin kulturden bagimsiz kontrol kullanildi.
-
-Calisan kontroller:
-
-```powershell
-$errors=$null; $tokens=$null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\windows\Audit-ZimmetScheduledTasks.ps1), [ref]$tokens, [ref]$errors)
-powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1"
-npm run build
-```
-
-Audit sonucunda gorulen mevcut durum:
-
-- `imza`: `ESKI_ADAY` (dogrudan `powershell.exe` ile calisiyor)
-- `Zimmet AD Password Reset Agent`: `KONTROL_ET` (`wscript.exe` kullaniyor ama yeni standart isimde degil)
-- `ISTEK Zimmet Personnel Sync`: `YENI_SESSIZ`
-
-Eski imza gorevini kapatmak icin:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\windows\Audit-ZimmetScheduledTasks.ps1" -DisableLegacy
-```
+Yerel `8787` portunda çalışan `node --watch src/server.js` süreci varken ikinci kez
+`npm run dev` çalıştırma; bu `EADDRINUSE` hatası üretir. İzole HttpOnly cookie API
+ve aynı-domain tarayıcı testleri tamamlandı. Bir sonraki adım canlı tek-domain
+Google login pilotu veya kullanıcının ertelediği gerçek toplu zimmet/transfer yazma
+akışı testleridir.

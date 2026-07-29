@@ -5,11 +5,41 @@ import { VitePWA } from 'vite-plugin-pwa';
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  server: {
+    // Geliştirme arayüzünü Cloudflare Quick Tunnel üzerinden test etmeye izin verir.
+    // SQL API dışarı açılmaz; /api istekleri yerelde backend'e aktarılır.
+    allowedHosts: ['.trycloudflare.com'],
+    watch: {
+      // Frontend dışı çalışma klasörleri ve tarayıcı test profilleri sık sık
+      // değişir. Bunları izlemek Tailwind HMR üzerinden gereksiz tam sayfa
+      // yenilemelerine neden olur.
+      ignored: [
+        '**/.account-work/**',
+        '**/.artifact-work/**',
+        '**/.codex-tmp/**',
+        '**/backend/**',
+        '**/dist/**',
+        '**/imza/**',
+        '**/sql/**'
+      ]
+    },
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        headers: {
+          Origin: 'http://localhost:5173',
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     tailwindcss(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // Yeni sürüm geldiğinde kullanıcıya mevcut uygulama içi uyarıyı göster.
+      // Otomatik etkinleştirme sayfayı çalışma sırasında kendiliğinden yeniliyordu.
+      registerType: 'prompt',
       includeAssets: ['favicon.svg', 'logo.png'],
       manifest: {
         short_name: 'İSTEK Demirbaş Yönetimi',

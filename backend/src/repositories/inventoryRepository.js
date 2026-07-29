@@ -2,11 +2,15 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import xlsx from 'xlsx';
-import { sql, query } from '../db.js';
+import { sql, query, withTransaction } from '../db.js';
 import { consumeOtpApproval } from '../otpService.js';
 import { uploadFileThroughGoogleBridge } from '../googleBridge.js';
 import { config } from '../config.js';
+import {
+  createExportDownloadToken,
+  pruneExpiredExportFiles,
+} from '../exportTokens.js';
+import { decodeCanonicalBase64, MAX_UPLOADED_FILE_BYTES } from '../uploadedFileValidation.js';
 
 export const core = (value) =>
   String(value || '')
@@ -43,13 +47,88 @@ function assertCanAccessCampus(user, campus, message = 'Bu kampüsteki cihaz iç
   if (!canSeeCampus(user, campus)) throw new Error(message);
 }
 
-function normalizeIds(ids) {
+function normalizeIds(ids, options = {}) {
+  const maxItems = Number(options.maxItems || 5000);
+  const maxLength = Number(options.maxLength || 160);
+  const label = cleanText(options.label || 'Kayıt', 80) || 'Kayıt';
   const input = Array.isArray(ids) ? ids : [ids];
-  return [...new Set(input.map((id) => String(id || '').trim()).filter(Boolean))];
+  const normalized = [];
+  const seen = new Set();
+
+  for (const id of input) {
+    if (id === null || id === undefined || id === '') continue;
+    if (typeof id !== 'string' && typeof id !== 'number') {
+      throw new Error(`${label} kimliği geçersiz.`);
+    }
+
+    const value = String(id).trim();
+    if (!value) continue;
+    if (value.length > maxLength) {
+      throw new Error(`${label} kimliği en fazla ${maxLength} karakter olabilir.`);
+    }
+    if (seen.has(value)) continue;
+
+    seen.add(value);
+    normalized.push(value);
+    if (normalized.length > maxItems) {
+      throw new Error(`Tek işlemde en fazla ${maxItems} ${label.toLocaleLowerCase('tr-TR')} seçilebilir.`);
+    }
+  }
+
+  return normalized;
 }
 
 function cleanText(value, max = 1000) {
   return String(value ?? '').trim().slice(0, max);
+}
+
+const BULK_HARDWARE_MAX_ITEMS = 1000;
+const BULK_HARDWARE_TYPE_ALIASES = new Map([
+  ['laptop', 'Laptop'],
+  ['notebook', 'Laptop'],
+  ['dizustu', 'Laptop'],
+  ['masaustu', 'Masaüstü (PC)'],
+  ['masaustupc', 'Masaüstü (PC)'],
+  ['pc', 'Masaüstü (PC)'],
+  ['desktop', 'Masaüstü (PC)'],
+  ['allinone', 'All in One PC'],
+  ['allinonepc', 'All in One PC'],
+  ['aio', 'All in One PC'],
+  ['tablet', 'Tablet'],
+  ['monitor', 'Monitör'],
+  ['klavyevemouseseti', 'Klavye ve Mouse Seti'],
+  ['klavyemouseseti', 'Klavye ve Mouse Seti'],
+  ['mouse', 'Mouse'],
+  ['klavye', 'Klavye'],
+  ['webcam', 'Webcam'],
+  ['harddrive', 'Hard Drive'],
+  ['haricidisk', 'Hard Drive'],
+  ['disk', 'Hard Drive'],
+  ['diger', 'Diğer']
+]);
+
+function normalizeLookupText(value) {
+  return String(value ?? '')
+    .trim()
+    .toLocaleLowerCase('tr-TR')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/ı/g, 'i')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+function normalizeBulkHardwareType(value) {
+  const normalized = normalizeLookupText(value || 'Laptop');
+  return BULK_HARDWARE_TYPE_ALIASES.get(normalized) || '';
+}
+
+function validateBulkHardwareText(value, maxLength, label, rowNumber, required = false) {
+  const text = String(value ?? '').trim();
+  if (required && !text) throw new Error(`Excel satır ${rowNumber}: ${label} boş olamaz.`);
+  if (text.length > maxLength) {
+    throw new Error(`Excel satır ${rowNumber}: ${label} en fazla ${maxLength} karakter olabilir.`);
+  }
+  return text;
 }
 
 function pickFirst(source, names) {
@@ -70,11 +149,21 @@ function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex').toUpperCase();
 }
 
-function validateUploadedFile(base64Data, fileName) {
-  const base64Text = String(base64Data || '').trim();
-  if (!base64Text) throw new Error('Dosya verisi bulunamadı.');
-  if (base64Text.length > 15_000_000) throw new Error('Dosya çok büyük. Maksimum 15 MB yüklenebilir.');
+function isValidSharedSecret(provided, expected) {
+  if (!expected || !provided) return false;
+  const providedBuffer = Buffer.from(String(provided), 'utf8');
+  const expectedBuffer = Buffer.from(String(expected), 'utf8');
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+}
 
+function assertSharedSecret(provided, expected, message) {
+  if (!isValidSharedSecret(provided, expected)) {
+    throw new Error(message);
+  }
+}
+
+function validateUploadedFile(base64Data, fileName) {
   const safeName = safeFileName(fileName, 'belge.pdf');
   const lower = safeName.toLocaleLowerCase('tr-TR');
   const isPdf = lower.endsWith('.pdf');
@@ -82,7 +171,10 @@ function validateUploadedFile(base64Data, fileName) {
   const isJpg = lower.endsWith('.jpg') || lower.endsWith('.jpeg');
   if (!isPdf && !isPng && !isJpg) throw new Error('Sadece PDF/JPG/PNG yüklenebilir.');
 
-  const buffer = Buffer.from(base64Text, 'base64');
+  const buffer = decodeCanonicalBase64(base64Data, {
+    label: 'Dosya',
+    maxBytes: MAX_UPLOADED_FILE_BYTES
+  });
   if (buffer.length < 4) throw new Error('Dosya geçersiz.');
   if (isPdf && buffer.subarray(0, 4).toString('ascii') !== '%PDF') throw new Error('PDF dosya imzası geçersiz.');
   if (isPng && !(buffer[0] === 137 && buffer[1] === 80 && buffer[2] === 78 && buffer[3] === 71)) {
@@ -99,9 +191,13 @@ function validateUploadedFile(base64Data, fileName) {
 }
 
 function sanitizeExcelCell(value) {
-  if (value === null || value === undefined) return '-';
+  if (value === null || value === undefined) return "-";
   const text = String(value);
-  return /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return /^[=+\-@]/.test(text) ? String.fromCharCode(39) + text : text;
+}
+
+function escapeCsvCell(value) {
+  return String.fromCharCode(34) + sanitizeExcelCell(value).replace(/"/g, String.fromCharCode(34, 34)) + String.fromCharCode(34);
 }
 
 function normalizePhone(value) {
@@ -250,6 +346,50 @@ async function getCampusIdByName(name) {
   return result.recordset[0]?.CampusId || null;
 }
 
+async function getActiveCampusByName(name) {
+  const result = await query(
+    `
+      SELECT TOP 1 CampusId, Name
+      FROM dbo.Campuses
+      WHERE IsActive = 1
+        AND (CoreName = @core OR Name = @name)
+    `,
+    {
+      core: { type: sql.NVarChar(160), value: core(name) },
+      name: { type: sql.NVarChar(160), value: cleanText(name, 160) }
+    }
+  );
+  return result.recordset[0] || null;
+}
+
+async function getTransferEmailRecipients(campusId, requesterEmail) {
+  const result = campusId
+    ? await query(
+        `
+          SELECT au.Email
+          FROM dbo.AuthorizedUsers au
+          WHERE au.IsActive = 1
+            AND au.CampusId = @campusId
+          ORDER BY au.Email
+        `,
+        { campusId: { type: sql.UniqueIdentifier, value: campusId } }
+      )
+    : { recordset: [] };
+
+  const recipients = [
+    ...new Set(
+      (result.recordset || [])
+        .map((row) => normalizeEmail(row.Email))
+        .filter(Boolean)
+    )
+  ];
+  const requester = normalizeEmail(requesterEmail);
+  const to = recipients.length > 0 ? recipients.join(',') : requester;
+  const cc = requester && !recipients.includes(requester) && recipients.length > 0 ? requester : '';
+  if (!to) throw new Error('Transfer bildirimi için yetkili e-posta adresi bulunamadı.');
+  return { to, cc };
+}
+
 async function ensureCampusId(name) {
   const existing = await getCampusIdByName(name);
   if (existing) return existing;
@@ -267,7 +407,7 @@ async function ensureCampusId(name) {
 }
 
 async function findHardwareRows(user, hardwareIds, options = {}) {
-  const ids = normalizeIds(hardwareIds);
+  const ids = normalizeIds(hardwareIds, { maxItems: 5000, maxLength: 160, label: 'Cihaz' });
   if (!ids.length) throw new Error('Cihaz seçimi boş.');
 
   const result = await query(
@@ -285,12 +425,17 @@ async function findHardwareRows(user, hardwareIds, options = {}) {
         h.GroupName,
         h.Notes,
         h.CampusId,
-        c.Name AS Campus
-      FROM dbo.Hardware h
+        c.Name AS Campus,
+        assignedPerson.FullName AS AssignedPersonName
+      FROM OPENJSON(@idsJson)
+        WITH (SerialNo NVARCHAR(160) '$') requested
+      INNER JOIN dbo.Hardware h ON h.SerialNo = requested.SerialNo
       LEFT JOIN dbo.Campuses c ON c.CampusId = h.CampusId
-      WHERE h.SerialNo IN (${ids.map((_, index) => `@id${index}`).join(',')})
+      LEFT JOIN dbo.vw_EffectivePersonnel assignedPerson ON assignedPerson.PersonId = h.AssignedPersonId
     `,
-    Object.fromEntries(ids.map((id, index) => [`id${index}`, { type: sql.NVarChar(160), value: id }]))
+    {
+      idsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(ids) }
+    }
   );
 
   if (result.recordset.length !== ids.length) {
@@ -309,8 +454,8 @@ async function findHardwareRows(user, hardwareIds, options = {}) {
   return result.recordset;
 }
 
-async function appendHardwareHistory(hardwareId, eventType, options = {}) {
-  await query(
+async function appendHardwareHistory(hardwareId, eventType, options = {}, execute = query) {
+  await execute(
     `
       INSERT INTO dbo.HardwareHistory (HardwareId, EventType, PersonId, PersonName, DriveLink, EventDate, DetailsJson, CreatedBy)
       VALUES (@hardwareId, @eventType, @personId, @personName, @driveLink, ISNULL(@eventDate, SYSUTCDATETIME()), @detailsJson, @createdBy)
@@ -328,11 +473,57 @@ async function appendHardwareHistory(hardwareId, eventType, options = {}) {
   );
 }
 
-async function appendSystemLog(actionType, user, details, clientInfo = '') {
-  await query(
+export async function appendSystemLog(actionType, user, details, clientInfo = '', execute = query) {
+  if (execute.isTransaction !== true) {
+    return withTransaction((transactionExecute) =>
+      appendSystemLog(actionType, user, details, clientInfo, transactionExecute)
+    );
+  }
+
+  await execute(
     `
-      INSERT INTO dbo.SystemLogs (ExecutedBy, ActionType, Details, ClientInfo)
-      VALUES (@executedBy, @actionType, @details, @clientInfo)
+      DECLARE @lockResult INT;
+      EXEC @lockResult = sys.sp_getapplock
+        @Resource = N'IstekZimmet.SystemLogs.Chain',
+        @LockMode = N'Exclusive',
+        @LockOwner = N'Transaction',
+        @LockTimeout = 10000;
+
+      IF @lockResult < 0
+        THROW 51000, N'Sistem log zinciri kilidi alınamadı.', 1;
+
+      BEGIN TRY
+        DECLARE @createdAt DATETIME2(0) = SYSUTCDATETIME();
+        DECLARE @createdAtText NVARCHAR(33) = CONVERT(NVARCHAR(33), @createdAt, 126);
+        DECLARE @previousHash NVARCHAR(128) = COALESCE(
+          (SELECT TOP (1) NULLIF(ChainHash, N'') FROM dbo.SystemLogs ORDER BY LogId DESC),
+          N'GENESIS'
+        );
+        DECLARE @fileHash NVARCHAR(128) = NULL;
+        DECLARE @driveLink NVARCHAR(1000) = NULL;
+        DECLARE @canonical NVARCHAR(MAX) = CONCAT(
+          N'v1',
+          N'|prev=', DATALENGTH(@previousHash), N':', @previousHash,
+          N'|time=', DATALENGTH(@createdAtText), N':', @createdAtText,
+          N'|by=', CASE WHEN @executedBy IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@executedBy), N':', @executedBy) END,
+          N'|action=', CASE WHEN @actionType IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@actionType), N':', @actionType) END,
+          N'|details=', CASE WHEN @details IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@details), N':', @details) END,
+          N'|file=', CASE WHEN @fileHash IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@fileHash), N':', @fileHash) END,
+          N'|drive=', CASE WHEN @driveLink IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@driveLink), N':', @driveLink) END,
+          N'|client=', CASE WHEN @clientInfo IS NULL THEN N'-1:' ELSE CONCAT(DATALENGTH(@clientInfo), N':', @clientInfo) END
+        );
+        DECLARE @chainHash NVARCHAR(128) = UPPER(CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @canonical), 2));
+
+        INSERT INTO dbo.SystemLogs (
+          CreatedAt, ExecutedBy, ActionType, Details, FileHash, DriveLink, ChainHash, ClientInfo
+        )
+        VALUES (
+          @createdAt, @executedBy, @actionType, @details, @fileHash, @driveLink, @chainHash, @clientInfo
+        );
+      END TRY
+      BEGIN CATCH
+        THROW;
+      END CATCH
     `,
     {
       executedBy: { type: sql.NVarChar(320), value: user?.email || null },
@@ -354,7 +545,7 @@ export async function getAuthorizedUser(email) {
         p.PhotoUrl
       FROM dbo.AuthorizedUsers au
       LEFT JOIN dbo.Campuses c ON c.CampusId = au.CampusId
-      LEFT JOIN dbo.Personnel p ON LOWER(p.Email) = LOWER(au.Email)
+      LEFT JOIN dbo.vw_EffectivePersonnel p ON LOWER(p.Email) = LOWER(au.Email)
       WHERE au.Email = @email AND au.IsActive = 1
     `,
     { email: { type: sql.NVarChar(320), value: email } }
@@ -403,134 +594,179 @@ function normalizePersonnelSyncItem(rawItem) {
 }
 
 export async function syncPersonnelFromAgent(secret, data = {}) {
-  if (!config.personnelSyncSecret || secret !== config.personnelSyncSecret) {
-    throw new Error('Yetkisiz personel sync isteği.');
-  }
+  assertSharedSecret(secret, config.personnelSyncSecret, 'Yetkisiz personel sync isteği.');
 
   const items = Array.isArray(data.items) ? data.items : data.person ? [data.person] : [];
-  if (!items.length) return { count: 0, inserted: 0, updated: 0, skipped: 0, warnings: [] };
+  if (!items.length) {
+    return {
+      count: 0,
+      inserted: 0,
+      updated: 0,
+      skipped: 0,
+      warningCount: 0,
+      warningsTruncated: false,
+      warnings: []
+    };
+  }
   if (items.length > 5000) throw new Error('Tek seferde en fazla 5000 personel kaydı senkronlanabilir.');
 
   let inserted = 0;
   let updated = 0;
   let skipped = 0;
+  let warningCount = 0;
   const warnings = [];
+  const addWarning = (message) => {
+    warningCount += 1;
+    if (warnings.length < 100) warnings.push(message);
+  };
+  const normalizedPeople = [];
 
   for (let index = 0; index < items.length; index += 1) {
     const person = normalizePersonnelSyncItem(items[index]);
     if (!person.personId) {
       skipped += 1;
-      warnings.push(`${index + 1}. kayıt atlandı: Personel ID/e-posta/AD kullanıcı adı yok.`);
+      addWarning(`${index + 1}. kayıt atlandı: Personel ID/e-posta/AD kullanıcı adı yok.`);
       continue;
     }
-
-    const campusId = person.campus ? await ensureCampusId(person.campus) : null;
-    const existing = await query(
-      `
-        SELECT TOP 1 PersonId
-        FROM dbo.Personnel
-        WHERE PersonId = @personId
-           OR (@email <> N'' AND LOWER(Email) = LOWER(@email))
-        ORDER BY CASE WHEN PersonId = @personId THEN 0 ELSE 1 END
-      `,
-      {
-        personId: { type: sql.NVarChar(160), value: person.personId },
-        email: { type: sql.NVarChar(320), value: person.email || '' }
-      }
-    );
-
-    const targetPersonId = existing.recordset[0]?.PersonId || person.personId;
-    if (targetPersonId !== person.personId) {
-      warnings.push(`${person.email || person.personId}: mevcut kayıt e-posta ile bulundu, PersonId korunarak güncellendi.`);
-    }
-
-    if (person.email) {
-      const emailOwner = await query(
-        `
-          SELECT TOP 1 PersonId
-          FROM dbo.Personnel
-          WHERE LOWER(Email) = LOWER(@email)
-            AND PersonId <> @targetPersonId
-        `,
-        {
-          email: { type: sql.NVarChar(320), value: person.email },
-          targetPersonId: { type: sql.NVarChar(160), value: targetPersonId }
-        }
-      );
-
-      if (emailOwner.recordset[0]) {
-        warnings.push(`${person.email}: e-posta başka bir personel kaydında olduğu için güncellenmedi.`);
-        if (person.adUsername === deriveAdUsernameFromEmail(person.email)) person.adUsername = '';
-        person.email = '';
-      }
-    }
-
-    const result = await query(
-      `
-        MERGE dbo.Personnel AS target
-        USING (SELECT @targetPersonId AS PersonId) AS source
-          ON target.PersonId = source.PersonId
-        WHEN MATCHED THEN
-          UPDATE SET
-            FullName = COALESCE(NULLIF(@fullName, N''), target.FullName),
-            Email = COALESCE(NULLIF(@email, N''), target.Email),
-            Department = COALESCE(NULLIF(@department, N''), target.Department),
-            CampusId = COALESCE(@campusId, target.CampusId),
-            Status = COALESCE(NULLIF(@status, N''), target.Status),
-            PhotoUrl = COALESCE(NULLIF(@photoUrl, N''), target.PhotoUrl),
-            AdUsername = COALESCE(NULLIF(@adUsername, N''), target.AdUsername),
-            Phone = COALESCE(NULLIF(@phone, N''), target.Phone),
-            SignatureUrl = COALESCE(NULLIF(@signatureUrl, N''), target.SignatureUrl),
-            UpdatedAt = SYSUTCDATETIME()
-        WHEN NOT MATCHED THEN
-          INSERT (
-            PersonId, FullName, Email, Department, CampusId, Status,
-            PhotoUrl, AdUsername, Phone, SignatureUrl
-          )
-          VALUES (
-            @targetPersonId,
-            COALESCE(NULLIF(@fullName, N''), NULLIF(@email, N''), NULLIF(@adUsername, N''), @targetPersonId),
-            NULLIF(@email, N''),
-            NULLIF(@department, N''),
-            @campusId,
-            COALESCE(NULLIF(@status, N''), N'Aktif'),
-            NULLIF(@photoUrl, N''),
-            NULLIF(@adUsername, N''),
-            NULLIF(@phone, N''),
-            NULLIF(@signatureUrl, N'')
-          )
-        OUTPUT $action AS MergeAction;
-      `,
-      {
-        targetPersonId: { type: sql.NVarChar(160), value: targetPersonId },
-        fullName: { type: sql.NVarChar(240), value: person.fullName },
-        email: { type: sql.NVarChar(320), value: person.email },
-        department: { type: sql.NVarChar(240), value: person.department },
-        campusId: { type: sql.UniqueIdentifier, value: campusId },
-        status: { type: sql.NVarChar(40), value: person.status },
-        photoUrl: { type: sql.NVarChar(1000), value: person.photoUrl },
-        adUsername: { type: sql.NVarChar(160), value: person.adUsername },
-        phone: { type: sql.NVarChar(20), value: person.phone },
-        signatureUrl: { type: sql.NVarChar(1000), value: person.signatureUrl }
-      }
-    );
-
-    if (result.recordset[0]?.MergeAction === 'INSERT') inserted += 1;
-    else updated += 1;
+    normalizedPeople.push(person);
   }
 
-  await appendSystemLog(
-    'PERSONEL SYNC',
-    { email: 'Personnel Sync Agent' },
-    `${inserted} yeni, ${updated} güncel, ${skipped} atlandı.`,
-    data.clientIp || data.machine || ''
-  );
+  const campusIdByCore = new Map();
+  const campusNames = new Set(normalizedPeople.map((person) => person.campus).filter(Boolean));
+  for (const campus of campusNames) {
+    campusIdByCore.set(core(campus), await ensureCampusId(campus));
+  }
+
+  const existingResult = await query(`SELECT PersonId, Email FROM dbo.Personnel`);
+  const existingById = new Map();
+  const emailOwners = new Map();
+  for (const row of existingResult.recordset) {
+    const existingPersonId = String(row.PersonId);
+    existingById.set(existingPersonId, row);
+    const emailKey = normalizeEmail(row.Email);
+    if (emailKey) emailOwners.set(emailKey, existingPersonId);
+  }
+
+  const rowsByTargetId = new Map();
+  for (const person of normalizedPeople) {
+    const emailKey = normalizeEmail(person.email);
+    const targetPersonId = existingById.has(person.personId)
+      ? person.personId
+      : emailOwners.get(emailKey) || person.personId;
+    if (targetPersonId !== person.personId) {
+      addWarning(`${person.email || person.personId}: mevcut kayıt e-posta ile bulundu, PersonId korunarak güncellendi.`);
+    }
+
+    if (emailKey) {
+      const emailOwnerId = emailOwners.get(emailKey);
+      if (emailOwnerId && emailOwnerId !== targetPersonId) {
+        addWarning(`${person.email}: e-posta başka bir personel kaydında olduğu için güncellenmedi.`);
+        if (person.adUsername === deriveAdUsernameFromEmail(person.email)) person.adUsername = '';
+        person.email = '';
+      } else {
+        emailOwners.set(emailKey, targetPersonId);
+      }
+    }
+
+    if (rowsByTargetId.has(targetPersonId)) {
+      addWarning(`${targetPersonId}: aynı personel pakette birden fazla kez bulundu; son kayıt kullanıldı.`);
+    }
+    rowsByTargetId.set(targetPersonId, {
+      targetPersonId,
+      fullName: person.fullName,
+      email: person.email,
+      department: person.department,
+      campusId: person.campus ? campusIdByCore.get(core(person.campus)) || null : null,
+      status: person.status,
+      photoUrl: person.photoUrl,
+      adUsername: person.adUsername,
+      phone: person.phone,
+      signatureUrl: person.signatureUrl
+    });
+  }
+
+  const mergeRows = Array.from(rowsByTargetId.values());
+  const batchSize = 500;
+  await withTransaction(async (execute) => {
+    for (let offset = 0; offset < mergeRows.length; offset += batchSize) {
+      const batch = mergeRows.slice(offset, offset + batchSize);
+      const result = await execute(
+        `
+          ;WITH SourceRows AS (
+            SELECT *
+            FROM OPENJSON(@itemsJson)
+            WITH (
+              PersonId NVARCHAR(160) '$.targetPersonId',
+              FullName NVARCHAR(240) '$.fullName',
+              Email NVARCHAR(320) '$.email',
+              Department NVARCHAR(240) '$.department',
+              CampusId UNIQUEIDENTIFIER '$.campusId',
+              Status NVARCHAR(40) '$.status',
+              PhotoUrl NVARCHAR(1000) '$.photoUrl',
+              AdUsername NVARCHAR(160) '$.adUsername',
+              Phone NVARCHAR(20) '$.phone',
+              SignatureUrl NVARCHAR(1000) '$.signatureUrl'
+            )
+          )
+          MERGE dbo.Personnel AS target
+          USING SourceRows AS source
+            ON target.PersonId = source.PersonId
+          WHEN MATCHED THEN
+            UPDATE SET
+              FullName = COALESCE(NULLIF(source.FullName, N''), target.FullName),
+              Email = COALESCE(NULLIF(source.Email, N''), target.Email),
+              Department = COALESCE(NULLIF(source.Department, N''), target.Department),
+              CampusId = COALESCE(source.CampusId, target.CampusId),
+              Status = COALESCE(NULLIF(source.Status, N''), target.Status),
+              PhotoUrl = COALESCE(NULLIF(source.PhotoUrl, N''), target.PhotoUrl),
+              AdUsername = COALESCE(NULLIF(source.AdUsername, N''), target.AdUsername),
+              Phone = COALESCE(NULLIF(source.Phone, N''), target.Phone),
+              SignatureUrl = COALESCE(NULLIF(source.SignatureUrl, N''), target.SignatureUrl),
+              UpdatedAt = SYSUTCDATETIME()
+          WHEN NOT MATCHED THEN
+            INSERT (
+              PersonId, FullName, Email, Department, CampusId, Status,
+              PhotoUrl, AdUsername, Phone, SignatureUrl
+            )
+            VALUES (
+              source.PersonId,
+              COALESCE(NULLIF(source.FullName, N''), NULLIF(source.Email, N''), NULLIF(source.AdUsername, N''), source.PersonId),
+              NULLIF(source.Email, N''),
+              NULLIF(source.Department, N''),
+              source.CampusId,
+              COALESCE(NULLIF(source.Status, N''), N'Aktif'),
+              NULLIF(source.PhotoUrl, N''),
+              NULLIF(source.AdUsername, N''),
+              NULLIF(source.Phone, N''),
+              NULLIF(source.SignatureUrl, N'')
+            )
+          OUTPUT $action AS MergeAction;
+        `,
+        { itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(batch) } }
+      );
+
+      for (const row of result.recordset) {
+        if (row.MergeAction === 'INSERT') inserted += 1;
+        else updated += 1;
+      }
+    }
+
+    await appendSystemLog(
+      'PERSONEL SYNC',
+      { email: 'Personnel Sync Agent' },
+      `${inserted} yeni, ${updated} güncel, ${skipped} atlandı, ${warningCount} uyarı.`,
+      data.clientIp || data.machine || '',
+      execute
+    );
+  });
 
   return {
     count: inserted + updated,
     inserted,
     updated,
     skipped,
+    warningCount,
+    warningsTruncated: warningCount > warnings.length,
     warnings
   };
 }
@@ -543,7 +779,7 @@ export async function updatePersonnelPhoneForUser(user, personId, phone) {
   const result = await query(
     `
       SELECT TOP 1 p.PersonId, p.FullName, c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
       WHERE p.PersonId = @personId
     `,
@@ -562,12 +798,78 @@ export async function updatePersonnelPhoneForUser(user, personId, phone) {
     }
   );
 
-  await appendSystemLog('PERSONEL TELEFON GUNCELLE', user, `${row.FullName || cleanPersonId} için telefon güncellendi.`, '');
+  await appendSystemLog('PERSONEL TELEFON GÜNCELLE', user, `${row.FullName || cleanPersonId} için telefon güncellendi.`, '');
   return { phone: cleanPhone };
 }
-export async function fetchDataForUser(user) {
-  const personnelResult = await query(
-    `
+export async function fetchDataForUser(user, options = {}) {
+  const requestedSince = options?.since ? new Date(options.since) : null;
+  const deltaSince =
+    requestedSince &&
+    !Number.isNaN(requestedSince.getTime()) &&
+    requestedSince.getTime() <= Date.now() + 60_000
+      ? requestedSince
+      : null;
+  const isDelta = Boolean(deltaSince);
+  const isHq = user.role === 'HQ IT';
+  // SQL columns currently use second precision. A small overlap avoids missing an
+  // update at the watermark boundary; duplicate delta rows are harmless on merge.
+  const serverTime = new Date(Date.now() - 5_000);
+  const syncParameters = {};
+  if (!isHq) {
+    syncParameters.userCore = { type: sql.NVarChar(160), value: core(user.campus) };
+  }
+  if (isDelta) {
+    syncParameters.since = { type: sql.DateTime2, value: deltaSince };
+  }
+
+  const visibleAssignedPersonExists = `
+    EXISTS (
+      SELECT 1
+      FROM dbo.Hardware visibleHardware
+      INNER JOIN dbo.Campuses visibleHardwareCampus
+        ON visibleHardwareCampus.CampusId = visibleHardware.CampusId
+      WHERE visibleHardware.AssignedPersonId = p.PersonId
+        AND visibleHardwareCampus.CoreName = @userCore
+    )
+  `;
+  const recentlyVisibleAssignmentExists = `
+    EXISTS (
+      SELECT 1
+      FROM dbo.Hardware recentHardware
+      INNER JOIN dbo.Campuses recentHardwareCampus
+        ON recentHardwareCampus.CampusId = recentHardware.CampusId
+      WHERE recentHardware.AssignedPersonId = p.PersonId
+        AND recentHardwareCampus.CoreName = @userCore
+        AND recentHardware.UpdatedAt > @since
+    )
+  `;
+  const personnelVisibilityClause = isHq
+    ? '1 = 1'
+    : `(c.CoreName = @userCore OR ${visibleAssignedPersonExists})`;
+  const personnelDeltaClause = !isDelta
+    ? '1 = 1'
+    : isHq
+      ? 'p.UpdatedAt > @since'
+      : `(p.UpdatedAt > @since OR ${recentlyVisibleAssignmentExists})`;
+  const hardwareVisibilityClause = isHq
+    ? '1 = 1'
+    : `
+      (
+        c.CoreName = @userCore
+        OR (
+          h.HardwareStatus = N'TRANSFER'
+          AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+            ISNULL(h.AssignedPersonId, N''),
+            N'GÖNDEREN:', N''), N'GONDEREN:', N''), N' Kampüsü', N''),
+            N' Kampusu', N''), N' Kampüs', N''), N' Kampus', N'')) = @userCore
+        )
+      )
+    `;
+  const hardwareDeltaClause = isDelta ? 'h.UpdatedAt > @since' : '1 = 1';
+
+  const [personnelResult, hardwareResult] = await Promise.all([
+    query(
+      `
       SELECT
         p.PersonId,
         p.FullName,
@@ -584,19 +886,16 @@ export async function fetchDataForUser(user) {
         p.SignatureTitleEn,
         p.SignatureTemplateKey,
         c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
-      WHERE @isHq = 1 OR c.CoreName = @userCore
+      WHERE ${personnelVisibilityClause}
+        AND ${personnelDeltaClause}
       ORDER BY p.FullName
-    `,
-    {
-      isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
-      userCore: { type: sql.NVarChar(160), value: core(user.campus) }
-    }
-  );
-
-  const hardwareResult = await query(
-    `
+      `,
+      syncParameters
+    ),
+    query(
+      `
       SELECT
         h.HardwareId,
         h.SerialNo,
@@ -618,29 +917,32 @@ export async function fetchDataForUser(user) {
         h.GlpiMatchType,
         h.GlpiMismatch,
         h.GlpiLastSync,
+        h.UpdatedAt,
+        latestHistory.EventDate AS LastEventDate,
+        latestHistory.PersonName AS LastEventPersonName,
+        latestHistory.EventType AS LastEventType,
         c.Name AS Campus,
         CASE WHEN EXISTS (SELECT 1 FROM dbo.HardwareHistory hh WHERE hh.HardwareId = h.HardwareId) THEN 1 ELSE 0 END AS HasHistory
       FROM dbo.Hardware h
       LEFT JOIN dbo.Campuses c ON c.CampusId = h.CampusId
-      WHERE @isHq = 1
-         OR c.CoreName = @userCore
-         OR (
-              h.HardwareStatus = N'TRANSFER'
-              AND LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(h.AssignedPersonId, N''), N'GÖNDEREN:', N''), N'GONDEREN:', N''), N' Kampüsü', N''), N' Kampusu', N''), N' Kampüs', N''), N' Kampus', N'')) = @userCore
-            )
+      OUTER APPLY (
+        SELECT TOP (1) hh.EventDate, hh.PersonName, hh.EventType
+        FROM dbo.HardwareHistory hh
+        WHERE hh.HardwareId = h.HardwareId
+        ORDER BY hh.EventDate DESC, hh.HistoryId DESC
+      ) latestHistory
+      WHERE ${hardwareVisibilityClause}
+        AND ${hardwareDeltaClause}
       ORDER BY h.SerialNo
-    `,
-    {
-      isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
-      userCore: { type: sql.NVarChar(160), value: core(user.campus) }
-    }
-  );
+      `,
+      syncParameters
+    )
+  ]);
 
   const uniqueUsers = {};
 
   for (const row of personnelResult.recordset) {
     const campus = row.Campus || 'Bilinmiyor';
-    if (!canSeeCampus(user, campus)) continue;
 
     uniqueUsers[row.PersonId] = {
       id: row.PersonId,
@@ -666,7 +968,12 @@ export async function fetchDataForUser(user) {
     const status = toUiStatus(row.HardwareStatus);
     const assignedTo = status === 'Assigned' || status === 'Transfer' ? row.AssignedPersonId || null : null;
 
-    if (assignedTo && !uniqueUsers[assignedTo] && !String(assignedTo).toUpperCase().includes('GÖNDEREN:')) {
+    if (
+      !isDelta &&
+      assignedTo &&
+      !uniqueUsers[assignedTo] &&
+      !String(assignedTo).toUpperCase().includes('GÖNDEREN:')
+    ) {
       uniqueUsers[assignedTo] = {
         id: assignedTo,
         name: assignedTo,
@@ -702,13 +1009,21 @@ export async function fetchDataForUser(user) {
       glpiDeviceType: row.GlpiDeviceType || '',
       glpiMatchType: row.GlpiMatchType || '',
       glpiMismatch: row.GlpiMismatch || '',
-      glpiLastSync: row.GlpiLastSync || ''
+      glpiLastSync: row.GlpiLastSync || '',
+      updatedAt: row.UpdatedAt || '',
+      lastEventDate: row.LastEventDate || '',
+      lastEventPersonName: row.LastEventPersonName || '',
+      lastEventType: row.LastEventType || ''
     };
   });
 
   return {
     personnel: Object.values(uniqueUsers),
-    hardware
+    hardware,
+    sync: {
+      mode: isDelta ? 'delta' : 'full',
+      serverTime: serverTime.toISOString()
+    }
   };
 }
 
@@ -754,26 +1069,205 @@ export async function addHardwareForUser(user, data) {
   const campus = user.role === 'HQ IT' && hardware.campus ? hardware.campus : user.campus;
   const campusId = await ensureCampusId(campus);
 
-  await query(
-    `
-      INSERT INTO dbo.Hardware (SerialNo, Model, CampusId, HardwareStatus, ComputerName, DeviceType, Brand, Notes)
-      VALUES (@serial, @model, @campusId, N'DEPODA', @computerName, @deviceType, @brand, @notes)
-    `,
-    {
-      serial: { type: sql.NVarChar(160), value: serial },
-      model: { type: sql.NVarChar(240), value: cleanText(hardware.model, 240) || null },
-      campusId: { type: sql.UniqueIdentifier, value: campusId },
-      computerName: { type: sql.NVarChar(160), value: cleanText(hardware.deviceName, 160) || null },
-      deviceType: { type: sql.NVarChar(80), value: cleanText(hardware.type || 'Laptop', 80) },
-      brand: { type: sql.NVarChar(120), value: cleanText(hardware.brand, 120) || null },
-      notes: { type: sql.NVarChar(sql.MAX), value: '' }
-    }
-  );
+  await withTransaction(async (execute) => {
+    const insertResult = await execute(
+      `
+        INSERT INTO dbo.Hardware (SerialNo, Model, CampusId, HardwareStatus, ComputerName, DeviceType, Brand, Notes)
+        OUTPUT INSERTED.HardwareId
+        VALUES (@serial, @model, @campusId, N'DEPODA', @computerName, @deviceType, @brand, @notes)
+      `,
+      {
+        serial: { type: sql.NVarChar(160), value: serial },
+        model: { type: sql.NVarChar(240), value: cleanText(hardware.model, 240) || null },
+        campusId: { type: sql.UniqueIdentifier, value: campusId },
+        computerName: { type: sql.NVarChar(160), value: cleanText(hardware.deviceName, 160) || null },
+        deviceType: { type: sql.NVarChar(80), value: cleanText(hardware.type || 'Laptop', 80) },
+        brand: { type: sql.NVarChar(120), value: cleanText(hardware.brand, 120) || null },
+        notes: { type: sql.NVarChar(sql.MAX), value: '' }
+      }
+    );
 
-  const rows = await findHardwareRows(user, [serial], { skipCampusCheck: user.role === 'HQ IT' });
-  await appendHardwareHistory(rows[0].HardwareId, 'Yeni Donanım', { personName: user.email, createdBy: user.email });
-  await appendSystemLog('DONANIM EKLE', user, `S/N: ${serial}`, data.clientIp || '');
+    const hardwareId = insertResult.recordset[0]?.HardwareId;
+    if (!hardwareId) throw new Error('Donanım kaydı oluşturulamadı.');
+    await appendHardwareHistory(
+      hardwareId,
+      'Yeni Donanım',
+      { personName: user.email, createdBy: user.email },
+      execute
+    );
+    await appendSystemLog('DONANIM EKLE', user, `S/N: ${serial}`, data.clientIp || '', execute);
+  });
   return { id: serial };
+}
+
+export async function bulkAddHardwareForUser(user, data) {
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (items.length === 0) throw new Error('İçe aktarılacak donanım bulunamadı.');
+  if (items.length > BULK_HARDWARE_MAX_ITEMS) {
+    throw new Error(`Tek işlemde en fazla ${BULK_HARDWARE_MAX_ITEMS} donanım eklenebilir.`);
+  }
+
+  const campusResult = await query(
+    `
+      SELECT CampusId, Name, CoreName
+      FROM dbo.Campuses
+      WHERE IsActive = 1
+    `
+  );
+  const campusesByCore = new Map(
+    (campusResult.recordset || []).map((campus) => [core(campus.Name || campus.CoreName), campus])
+  );
+  const seenSerials = new Map();
+  const prepared = [];
+
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Excel satır ${index + 2}: Kayıt biçimi geçersiz.`);
+    }
+
+    const rowNumber = Number.isInteger(Number(item.rowNumber))
+      ? Math.max(2, Number(item.rowNumber))
+      : index + 2;
+    const serial = validateBulkHardwareText(item.serial, 160, 'Seri no', rowNumber, true);
+    const serialKey = serial.toLocaleLowerCase('tr-TR');
+    if (seenSerials.has(serialKey)) {
+      throw new Error(
+        `Excel satır ${rowNumber}: "${serial}" seri numarası satır ${seenSerials.get(serialKey)} ile tekrar ediyor.`
+      );
+    }
+    seenSerials.set(serialKey, rowNumber);
+
+    const brand = validateBulkHardwareText(item.brand, 120, 'Marka', rowNumber, true);
+    const model = validateBulkHardwareText(item.model, 240, 'Model', rowNumber, true);
+    const deviceType = normalizeBulkHardwareType(item.type);
+    if (!deviceType) {
+      throw new Error(`Excel satır ${rowNumber}: "${cleanText(item.type, 80)}" cihaz tipi desteklenmiyor.`);
+    }
+
+    const requestedCampus =
+      user.role === 'HQ IT' && String(item.campus || '').trim()
+        ? String(item.campus).trim()
+        : user.campus;
+    const campus = campusesByCore.get(core(requestedCampus));
+    if (!campus) {
+      throw new Error(`Excel satır ${rowNumber}: "${requestedCampus}" aktif bir kampüs değil.`);
+    }
+
+    prepared.push({
+      rowNumber,
+      serial,
+      model,
+      campusId: campus.CampusId,
+      campus: campus.Name,
+      computerName:
+        validateBulkHardwareText(item.deviceName, 160, 'Bilgisayar ismi', rowNumber) || null,
+      deviceType,
+      brand,
+      notes: validateBulkHardwareText(item.notes, 4000, 'Notlar', rowNumber) || null
+    });
+  }
+
+  const insertedRows = await withTransaction(async (execute) => {
+    const result = await execute(
+      `
+        DECLARE @Inserted TABLE (
+          HardwareId INT NOT NULL,
+          SerialNo NVARCHAR(160) NOT NULL
+        );
+
+        INSERT INTO dbo.Hardware (
+          SerialNo,
+          Model,
+          CampusId,
+          HardwareStatus,
+          ComputerName,
+          DeviceType,
+          Brand,
+          Notes
+        )
+        OUTPUT INSERTED.HardwareId, INSERTED.SerialNo
+          INTO @Inserted (HardwareId, SerialNo)
+        SELECT
+          source.SerialNo,
+          source.Model,
+          source.CampusId,
+          N'DEPODA',
+          NULLIF(source.ComputerName, N''),
+          source.DeviceType,
+          source.Brand,
+          NULLIF(source.Notes, N'')
+        FROM OPENJSON(@itemsJson)
+          WITH (
+            SerialNo NVARCHAR(160) '$.serial',
+            Model NVARCHAR(240) '$.model',
+            CampusId UNIQUEIDENTIFIER '$.campusId',
+            ComputerName NVARCHAR(160) '$.computerName',
+            DeviceType NVARCHAR(80) '$.deviceType',
+            Brand NVARCHAR(120) '$.brand',
+            Notes NVARCHAR(4000) '$.notes'
+          ) source
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM dbo.Hardware existing WITH (UPDLOCK, HOLDLOCK)
+          WHERE existing.SerialNo = source.SerialNo
+        );
+
+        INSERT INTO dbo.HardwareHistory (
+          HardwareId,
+          EventType,
+          PersonId,
+          PersonName,
+          DriveLink,
+          EventDate,
+          DetailsJson,
+          CreatedBy
+        )
+        SELECT
+          inserted.HardwareId,
+          N'Toplu Donanım Girişi',
+          NULL,
+          @createdBy,
+          NULL,
+          SYSUTCDATETIME(),
+          N'{"source":"excel"}',
+          @createdBy
+        FROM @Inserted inserted;
+
+        SELECT HardwareId, SerialNo
+        FROM @Inserted
+        ORDER BY HardwareId;
+      `,
+      {
+        itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(prepared) },
+        createdBy: { type: sql.NVarChar(320), value: cleanText(user.email, 320) || null }
+      }
+    );
+
+    const inserted = result.recordset || [];
+    await appendSystemLog(
+      'TOPLU DONANIM EKLE',
+      user,
+      `${inserted.length} donanım Excel ile depoya eklendi; ${prepared.length - inserted.length} tekrar atlandı.`,
+      data.clientIp || '',
+      execute
+    );
+    return inserted;
+  });
+
+  const insertedSerialKeys = new Set(
+    insertedRows.map((row) => String(row.SerialNo || '').toLocaleLowerCase('tr-TR'))
+  );
+  const duplicateSerials = prepared
+    .filter((item) => !insertedSerialKeys.has(item.serial.toLocaleLowerCase('tr-TR')))
+    .map((item) => item.serial);
+
+  return {
+    imported: insertedRows.length,
+    skipped: duplicateSerials.length,
+    importedSerials: insertedRows.map((row) => row.SerialNo),
+    duplicateSerials
+  };
 }
 
 export async function updateHardwareForUser(user, data) {
@@ -793,29 +1287,69 @@ export async function updateHardwareForUser(user, data) {
 
   if (!sets.length) return {};
 
-  await query(
-    `UPDATE dbo.Hardware SET ${sets.join(', ')}, UpdatedAt = SYSUTCDATETIME() WHERE SerialNo = @serial`,
-    bind
-  );
-  await appendSystemLog('DONANIM GUNCELLE', user, `${rows[0].SerialNo}: ${Object.keys(updates).join(', ')}`, data.clientIp || '');
+  await withTransaction(async (execute) => {
+    const updateResult = await execute(
+      `UPDATE dbo.Hardware SET ${sets.join(', ')}, UpdatedAt = SYSUTCDATETIME() WHERE SerialNo = @serial`,
+      bind
+    );
+    await assertSingleHardwareUpdate(updateResult, 'Donanım güncellenemedi. Lütfen veriyi yenileyip tekrar deneyin.');
+    await appendSystemLog(
+      'DONANIM GÜNCELLE',
+      user,
+      `${rows[0].SerialNo}: ${Object.keys(updates).join(', ')}`,
+      data.clientIp || '',
+      execute
+    );
+  });
   return {};
 }
 
 export async function bulkUpdateGroupForUser(user, data) {
   const rows = await findHardwareRows(user, data.hardwareIds);
   const groupName = cleanText(data.groupName, 160) || null;
+  const changesJson = JSON.stringify(
+    rows.map((row) => ({
+      hardwareId: row.HardwareId,
+      expectedGroupName: row.GroupName || null
+    }))
+  );
 
-  for (const row of rows) {
-    await query(
-      `UPDATE dbo.Hardware SET GroupName = @groupName, UpdatedAt = SYSUTCDATETIME() WHERE HardwareId = @hardwareId`,
+  await withTransaction(async (execute) => {
+    const updateResult = await execute(
+      `
+        DECLARE @updated TABLE (HardwareId INT NOT NULL PRIMARY KEY);
+
+        ;WITH requested AS (
+          SELECT HardwareId, ExpectedGroupName
+          FROM OPENJSON(@changesJson)
+          WITH (
+            HardwareId INT '$.hardwareId',
+            ExpectedGroupName NVARCHAR(160) '$.expectedGroupName'
+          )
+        )
+        UPDATE hardware
+        SET GroupName = @groupName,
+            UpdatedAt = SYSUTCDATETIME()
+        OUTPUT INSERTED.HardwareId INTO @updated (HardwareId)
+        FROM dbo.Hardware hardware
+        INNER JOIN requested ON requested.HardwareId = hardware.HardwareId
+        WHERE ISNULL(hardware.GroupName, N'') = ISNULL(requested.ExpectedGroupName, N'');
+
+        SELECT COUNT(*) AS UpdatedCount FROM @updated;
+      `,
       {
-        groupName: { type: sql.NVarChar(160), value: groupName },
-        hardwareId: { type: sql.Int, value: row.HardwareId }
+        changesJson: { type: sql.NVarChar(sql.MAX), value: changesJson },
+        groupName: { type: sql.NVarChar(160), value: groupName }
       }
     );
-  }
 
-  await appendSystemLog('GRUP GUNCELLE', user, `${rows.length} cihaz -> ${groupName || '-'}`, data.clientIp || '');
+    const updatedCount = Number(updateResult.recordset?.[0]?.UpdatedCount || 0);
+    if (updatedCount !== rows.length) {
+      throw new Error('Bazı cihazların grubu işlem sırasında değişti. Lütfen veriyi yenileyip tekrar deneyin.');
+    }
+
+    await appendSystemLog('GRUP GÜNCELLE', user, `${rows.length} cihaz -> ${groupName || '-'}`, data.clientIp || '', execute);
+  });
   return { count: rows.length };
 }
 
@@ -824,78 +1358,293 @@ export async function bulkStatusUpdateForUser(user, data) {
   const dbStatus = toDbStatus(data.newStatus);
   if (!['DEPODA', 'HURDA'].includes(dbStatus)) throw new Error('Bu toplu işlem sadece Depo veya Hurda için kullanılabilir.');
 
-  for (const row of rows) {
-    await query(
+  const transferRows = rows.filter(
+    (row) => String(row.HardwareStatus || '').trim().toUpperCase().replace(/İ/g, 'I') === 'TRANSFER'
+  );
+  if (transferRows.length > 0) {
+    throw new Error(`Transferdeki cihazların durumu değiştirilemez: ${transferRows.map((row) => row.SerialNo).join(', ')}`);
+  }
+
+  const assignedRows = rows.filter((row) => cleanText(row.AssignedPersonId, 160));
+  if (assignedRows.length > 0 && data.confirmUnassignAssigned !== true) {
+    const preview = assignedRows
+      .slice(0, 3)
+      .map((row) => `${row.SerialNo}${row.AssignedPersonName ? ` (${row.AssignedPersonName})` : ''}`)
+      .join(', ');
+    const remaining = assignedRows.length > 3 ? ` ve ${assignedRows.length - 3} cihaz daha` : '';
+    throw new Error(
+      `${assignedRows.length} cihaz halen personele zimmetli: ${preview}${remaining}. ` +
+      'Zimmeti kaldırarak devam etmek için işlemi açıkça onaylayın.'
+    );
+  }
+
+  const changesJson = JSON.stringify(
+    rows.map((row) => {
+      const previousStatus = String(row.HardwareStatus || '').toUpperCase().replace(/İ/g, 'I');
+      const previousAssignedPersonId = cleanText(row.AssignedPersonId, 160) || null;
+      const previousAssignedPersonName = cleanText(row.AssignedPersonName, 240) || user.email;
+      return {
+        hardwareId: row.HardwareId,
+        expectedStatus: previousStatus,
+        expectedAssignedPersonId: previousAssignedPersonId,
+        previousAssignedPersonName,
+        detailsJson: JSON.stringify({
+          previousStatus: row.HardwareStatus,
+          newStatus: dbStatus,
+          previousAssignedPersonId,
+          previousAssignedPersonName: row.AssignedPersonName || null,
+          forcedUnassign: Boolean(previousAssignedPersonId)
+        })
+      };
+    })
+  );
+
+  await withTransaction(async (execute) => {
+    const updateResult = await execute(
       `
-        UPDATE dbo.Hardware
+        DECLARE @updated TABLE (HardwareId INT NOT NULL PRIMARY KEY);
+
+        ;WITH requested AS (
+          SELECT
+            HardwareId,
+            ExpectedStatus,
+            ExpectedAssignedPersonId
+          FROM OPENJSON(@changesJson)
+          WITH (
+            HardwareId INT '$.hardwareId',
+            ExpectedStatus NVARCHAR(40) '$.expectedStatus',
+            ExpectedAssignedPersonId NVARCHAR(160) '$.expectedAssignedPersonId'
+          )
+        )
+        UPDATE hardware
         SET HardwareStatus = @status,
             AssignedPersonId = NULL,
             UpdatedAt = SYSUTCDATETIME()
-        WHERE HardwareId = @hardwareId
+        OUTPUT INSERTED.HardwareId INTO @updated (HardwareId)
+        FROM dbo.Hardware hardware
+        INNER JOIN requested ON requested.HardwareId = hardware.HardwareId
+        WHERE REPLACE(UPPER(ISNULL(hardware.HardwareStatus, N'')), N'İ', N'I') = requested.ExpectedStatus
+          AND ISNULL(hardware.AssignedPersonId, N'') = ISNULL(requested.ExpectedAssignedPersonId, N'');
+
+        INSERT INTO dbo.HardwareHistory (
+          HardwareId,
+          EventType,
+          PersonId,
+          PersonName,
+          EventDate,
+          DetailsJson,
+          CreatedBy
+        )
+        SELECT
+          updated.HardwareId,
+          @eventType,
+          requested.ExpectedAssignedPersonId,
+          requested.PreviousAssignedPersonName,
+          SYSUTCDATETIME(),
+          requested.DetailsJson,
+          @createdBy
+        FROM @updated updated
+        INNER JOIN OPENJSON(@changesJson)
+        WITH (
+          HardwareId INT '$.hardwareId',
+          ExpectedAssignedPersonId NVARCHAR(160) '$.expectedAssignedPersonId',
+          PreviousAssignedPersonName NVARCHAR(240) '$.previousAssignedPersonName',
+          DetailsJson NVARCHAR(MAX) '$.detailsJson'
+        ) requested ON requested.HardwareId = updated.HardwareId;
+
+        SELECT COUNT(*) AS UpdatedCount FROM @updated;
       `,
       {
+        changesJson: { type: sql.NVarChar(sql.MAX), value: changesJson },
         status: { type: sql.NVarChar(40), value: dbStatus },
-        hardwareId: { type: sql.Int, value: row.HardwareId }
+        eventType: { type: sql.NVarChar(120), value: `Toplu İşlem: ${dbStatus}` },
+        createdBy: { type: sql.NVarChar(320), value: user.email }
       }
     );
-    await appendHardwareHistory(row.HardwareId, `Toplu İşlem: ${dbStatus}`, {
-      personName: user.email,
-      createdBy: user.email,
-      detailsJson: { previousStatus: row.HardwareStatus, newStatus: dbStatus }
-    });
-  }
 
-  await appendSystemLog('TOPLU DURUM', user, `${rows.length} cihaz -> ${dbStatus}`, data.clientIp || '');
-  return { count: rows.length };
+    const updatedCount = Number(updateResult.recordset?.[0]?.UpdatedCount || 0);
+    if (updatedCount !== rows.length) {
+      throw new Error('Bazı cihazların durumu işlem sırasında değişti. Lütfen veriyi yenileyip tekrar deneyin.');
+    }
+
+    await appendSystemLog(
+      'TOPLU DURUM',
+      user,
+      `${rows.length} cihaz -> ${dbStatus}; zimmeti kaldırılan: ${assignedRows.length}`,
+      data.clientIp || '',
+      execute
+    );
+  });
+  return { count: rows.length, unassignedCount: assignedRows.length };
 }
 
 export async function recordInventoryScanForUser(user, data) {
-  const rows = await findHardwareRows(user, [data.hardwareId]);
-  const row = rows[0];
-  const scannedAt = new Date();
+  const rawScans = Array.isArray(data.scans) && data.scans.length > 0
+    ? data.scans
+    : [{ hardwareId: data.hardwareId, qrPayload: data.qrPayload }];
+  const qrPayloadByHardwareId = new Map();
+  for (const scan of rawScans) {
+    if (!scan || typeof scan !== 'object') throw new Error('QR sayım verisi geçersiz.');
+    const hardwareId = String(scan.hardwareId ?? '').trim();
+    if (!hardwareId) continue;
+    if (hardwareId.length > 160) throw new Error('Cihaz kimliği en fazla 160 karakter olabilir.');
+    qrPayloadByHardwareId.set(hardwareId, cleanText(scan.qrPayload, 500));
+  }
 
-  await appendHardwareHistory(row.HardwareId, 'Sayımda görüldü', {
-    personName: user.email,
-    createdBy: user.email,
-    eventDate: scannedAt,
-    detailsJson: {
-      qrPayload: data.qrPayload || '',
-      clientIp: data.clientIp || '',
-      serial: row.SerialNo
+  const rows = await findHardwareRows(user, Array.from(qrPayloadByHardwareId.keys()));
+  const scannedAt = new Date();
+  const serialByInternalId = new Map(rows.map((row) => [Number(row.HardwareId), row.SerialNo]));
+  const scanRowsJson = JSON.stringify(
+    rows.map((row) => ({
+      hardwareId: row.HardwareId,
+      detailsJson: JSON.stringify({
+        qrPayload: qrPayloadByHardwareId.get(row.SerialNo) || '',
+        clientIp: cleanText(data.clientIp, 120),
+        serial: row.SerialNo
+      })
+    }))
+  );
+
+  const insertedInternalIds = await withTransaction(async (execute) => {
+    const insertResult = await execute(
+      `
+        DECLARE @lockResult INT;
+        DECLARE @lockResource NVARCHAR(255) = CONCAT(
+          N'IstekZimmet.InventoryScan.',
+          CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', @createdBy), 2)
+        );
+        EXEC @lockResult = sys.sp_getapplock
+          @Resource = @lockResource,
+          @LockMode = N'Exclusive',
+          @LockOwner = N'Transaction',
+          @LockTimeout = 10000;
+
+        IF @lockResult < 0
+          THROW 51000, N'QR sayım kilidi alınamadı.', 1;
+
+        DECLARE @inserted TABLE (HardwareId INT NOT NULL PRIMARY KEY);
+
+        ;WITH requested AS (
+          SELECT HardwareId, DetailsJson
+          FROM OPENJSON(@scanRowsJson)
+          WITH (
+            HardwareId INT '$.hardwareId',
+            DetailsJson NVARCHAR(MAX) '$.detailsJson'
+          )
+        )
+        INSERT INTO dbo.HardwareHistory (
+          HardwareId,
+          EventType,
+          PersonName,
+          EventDate,
+          DetailsJson,
+          CreatedBy
+        )
+        OUTPUT INSERTED.HardwareId INTO @inserted (HardwareId)
+        SELECT
+          requested.HardwareId,
+          @eventType,
+          @createdBy,
+          @scannedAt,
+          requested.DetailsJson,
+          @createdBy
+        FROM requested
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM dbo.HardwareHistory history WITH (UPDLOCK, HOLDLOCK)
+          WHERE history.HardwareId = requested.HardwareId
+            AND history.EventType = @eventType
+            AND history.CreatedBy = @createdBy
+            AND history.EventDate >= DATEADD(SECOND, -1 * @dedupeSeconds, @scannedAt)
+        );
+
+        SELECT HardwareId FROM @inserted ORDER BY HardwareId;
+      `,
+      {
+        scanRowsJson: { type: sql.NVarChar(sql.MAX), value: scanRowsJson },
+        eventType: { type: sql.NVarChar(120), value: 'Sayımda görüldü' },
+        createdBy: { type: sql.NVarChar(320), value: user.email },
+        scannedAt: { type: sql.DateTime2, value: scannedAt },
+        dedupeSeconds: { type: sql.Int, value: 30 }
+      }
+    );
+
+    const insertedIds = (insertResult.recordset || []).map((row) => Number(row.HardwareId));
+    if (insertedIds.length > 0) {
+      const insertedSerials = insertedIds.map((hardwareId) => serialByInternalId.get(hardwareId)).filter(Boolean);
+      const preview = insertedSerials.slice(0, 10).join(', ');
+      const remaining = insertedSerials.length > 10 ? ` ve ${insertedSerials.length - 10} cihaz daha` : '';
+      await appendSystemLog(
+        'SAYIM QR',
+        user,
+        `${insertedSerials.length} cihaz: ${preview}${remaining}`,
+        data.clientIp || '',
+        execute
+      );
     }
+
+    return insertedIds;
   });
 
-  await appendSystemLog('SAYIM QR', user, `S/N: ${row.SerialNo}`, data.clientIp || '');
-  return { scannedAt: scannedAt.toLocaleString('tr-TR') };
+  const insertedIdSet = new Set(insertedInternalIds);
+  const hardwareIds = rows
+    .filter((row) => insertedIdSet.has(Number(row.HardwareId)))
+    .map((row) => row.SerialNo);
+  const duplicateHardwareIds = rows
+    .filter((row) => !insertedIdSet.has(Number(row.HardwareId)))
+    .map((row) => row.SerialNo);
+
+  return {
+    scannedAt: scannedAt.toLocaleString('tr-TR'),
+    count: hardwareIds.length,
+    duplicateCount: duplicateHardwareIds.length,
+    hardwareIds,
+    duplicateHardwareIds
+  };
 }
 
 export async function createSheetForUser(user, data) {
   const exportData = Array.isArray(data.data) ? data.data : [];
   if (!exportData.length) throw new Error('Aktarılacak veri bulunamadı.');
+  if (exportData.length > 10000) throw new Error('Tek seferde en fazla 10.000 kayıt dışa aktarılabilir.');
 
-  const headers = Object.keys(exportData[0]).map((header) => sanitizeExcelCell(header));
+  const rawHeaders = Object.keys(exportData[0] || {});
+  if (!rawHeaders.length) throw new Error('Dışa aktarılacak sütun bulunamadı.');
+  if (rawHeaders.length > 100) throw new Error('Tek seferde en fazla 100 sütun dışa aktarılabilir.');
+  if (Buffer.byteLength(JSON.stringify(exportData), 'utf8') > 8 * 1024 * 1024) {
+    throw new Error('Dışa aktarım verisi 8 MB sınırını aşıyor. Filtreleyip tekrar deneyin.');
+  }
+
+  const headers = rawHeaders.map((header) => sanitizeExcelCell(header));
   const rows = exportData.map((item) =>
-    Object.keys(exportData[0]).map((header) => sanitizeExcelCell(item?.[header]))
+    rawHeaders.map((header) => sanitizeExcelCell(item?.[header]))
   );
 
-  const workbook = xlsx.utils.book_new();
-  const worksheet = xlsx.utils.aoa_to_sheet([headers, ...rows]);
-  xlsx.utils.book_append_sheet(workbook, worksheet, 'Liste');
+  const csv = String.fromCharCode(0xfeff) + [headers, ...rows]
+    .map((row) => row.map((cell) => escapeCsvCell(cell)).join(";"))
+    .join(String.fromCharCode(10));
 
   const baseDir =
     config.exports.dir ||
     path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'generated-exports');
   await fs.mkdir(baseDir, { recursive: true });
+  await pruneExpiredExportFiles(baseDir);
 
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
-  const fileName = safeFileName(`${data.sheetName || 'Disa Aktarim'}-${stamp}.xlsx`, `disa-aktarim-${stamp}.xlsx`);
+  const randomPart = crypto.randomBytes(8).toString('hex');
+  const fileName = safeFileName(
+    `${data.sheetName || 'Dışa Aktarım'}-${stamp}-${randomPart}.csv`,
+    `disa-aktarim-${stamp}-${randomPart}.csv`
+  );
   const filePath = path.join(baseDir, fileName);
-  const buffer = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
-  await fs.writeFile(filePath, buffer);
+  await fs.writeFile(filePath, csv, "utf8");
 
   const publicBase = String(config.publicBaseUrl || `http://localhost:${config.port}`).replace(/\/+$/, '');
-  const url = `${publicBase}/exports/${encodeURIComponent(fileName)}`;
-  await appendSystemLog('EXPORT XLSX', user, `${rows.length} kayıt aktarıldı: ${fileName}`, data.clientIp || '');
+  const downloadToken = createExportDownloadToken(fileName);
+  const url =
+    `${publicBase}/exports/${encodeURIComponent(fileName)}` +
+    `?expires=${downloadToken.expiresAt}&signature=${downloadToken.signature}`;
+  await appendSystemLog('EXPORT CSV', user, `${rows.length} kayıt aktarıldı: ${fileName}`, data.clientIp || '');
 
   return { url, fileName, count: rows.length };
 }
@@ -938,55 +1687,61 @@ export async function manualAssignOrUploadMissingDocumentForUser(user, data) {
     }
   });
 
-  if (isManualAssign) {
-    await query(
-      `
-        UPDATE dbo.Hardware
-        SET HardwareStatus = N'AKTIF',
-            AssignedPersonId = @personId,
-            DriveLink = @driveLink,
-            UpdatedAt = SYSUTCDATETIME()
-        WHERE HardwareId = @hardwareId
-      `,
+  await withTransaction(async (execute) => {
+    const expectedStatus = String(row.HardwareStatus || '').toUpperCase().replace(/İ/g, 'I');
+    const updateResult = await execute(
+      isManualAssign
+        ? `
+            UPDATE dbo.Hardware
+            SET HardwareStatus = N'AKTIF',
+                AssignedPersonId = @personId,
+                DriveLink = @driveLink,
+                UpdatedAt = SYSUTCDATETIME()
+            WHERE HardwareId = @hardwareId
+              AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = @expectedStatus
+              AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
+          `
+        : `
+            UPDATE dbo.Hardware
+            SET DriveLink = @driveLink,
+                UpdatedAt = SYSUTCDATETIME()
+            WHERE HardwareId = @hardwareId
+              AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = @expectedStatus
+              AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
+          `,
       {
-        personId: { type: sql.NVarChar(160), value: person.id },
+        personId: { type: sql.NVarChar(160), value: isManualAssign ? person.id : null },
         driveLink: { type: sql.NVarChar(1000), value: upload.url || null },
+        expectedStatus: { type: sql.NVarChar(40), value: expectedStatus },
+        expectedAssignedPersonId: { type: sql.NVarChar(160), value: row.AssignedPersonId || null },
         hardwareId: { type: sql.Int, value: row.HardwareId }
       }
     );
-  } else {
-    await query(
-      `
-        UPDATE dbo.Hardware
-        SET DriveLink = @driveLink,
-            UpdatedAt = SYSUTCDATETIME()
-        WHERE HardwareId = @hardwareId
-      `,
-      {
-        driveLink: { type: sql.NVarChar(1000), value: upload.url || null },
-        hardwareId: { type: sql.Int, value: row.HardwareId }
-      }
+    await assertSingleHardwareUpdate(
+      updateResult,
+      `Cihaz belge yüklenirken değişti: ${row.SerialNo}. Veriyi yenileyip tekrar deneyin.`
     );
-  }
 
-  await appendHardwareHistory(row.HardwareId, isManualAssign ? 'Manuel Zimmet' : 'Eksik Belge', {
-    personId: isManualAssign ? person.id : null,
-    personName: person.name,
-    driveLink: upload.url || '',
-    createdBy: user.email,
-    detailsJson: {
-      fileName: fileInfo.fileName,
-      fileHash: fileInfo.fileHash,
-      previousStatus: row.HardwareStatus
-    }
+    await appendHardwareHistory(row.HardwareId, isManualAssign ? 'Manuel Zimmet' : 'Eksik Belge', {
+      personId: isManualAssign ? person.id : null,
+      personName: person.name,
+      driveLink: upload.url || '',
+      createdBy: user.email,
+      detailsJson: {
+        fileName: fileInfo.fileName,
+        fileHash: fileInfo.fileHash,
+        previousStatus: row.HardwareStatus
+      }
+    }, execute);
+
+    await appendSystemLog(
+      isManualAssign ? 'MANUEL ZİMMET' : 'EKSİK BELGE',
+      user,
+      `${row.SerialNo} -> ${person.name} / ${fileInfo.fileName} / ${fileInfo.fileHash}`,
+      data.clientIp || '',
+      execute
+    );
   });
-
-  await appendSystemLog(
-    isManualAssign ? 'MANUEL ZIMMET' : 'EKSIK BELGE',
-    user,
-    `${row.SerialNo} -> ${person.name} / ${fileInfo.fileName} / ${fileInfo.fileHash}`,
-    data.clientIp || ''
-  );
 
   return { url: upload.url || '', fileHash: fileInfo.fileHash };
 }
@@ -1022,10 +1777,17 @@ BEGIN
     ErrorMessage NVARCHAR(MAX) NULL,
     AttemptCount INT NOT NULL CONSTRAINT DF_ADPasswordQueue_AttemptCount DEFAULT 0,
     UpdatedAt DATETIME2 NOT NULL CONSTRAINT DF_ADPasswordQueue_UpdatedAt DEFAULT SYSUTCDATETIME(),
+    LeaseToken UNIQUEIDENTIFIER NULL,
+    LeaseExpiresAt DATETIME2 NULL,
     ClientIp NVARCHAR(120) NULL,
     UserAgent NVARCHAR(500) NULL
   );
 END
+
+IF COL_LENGTH('dbo.ADPasswordQueue', 'LeaseToken') IS NULL
+  ALTER TABLE dbo.ADPasswordQueue ADD LeaseToken UNIQUEIDENTIFIER NULL;
+IF COL_LENGTH('dbo.ADPasswordQueue', 'LeaseExpiresAt') IS NULL
+  ALTER TABLE dbo.ADPasswordQueue ADD LeaseExpiresAt DATETIME2 NULL;
 `);
 }
 
@@ -1043,7 +1805,7 @@ async function getPersonDetailsForAd(personId) {
         p.Phone,
         p.CampusId,
         c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
       WHERE p.PersonId = @personId
     `,
@@ -1087,44 +1849,73 @@ export async function enqueueAdPasswordResetForUser(user, data) {
   }
 
   const publicId = `AD-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-  await query(
-    `
-      INSERT INTO dbo.ADPasswordQueue (
-        PublicId, Status, Priority, PersonId, PersonName, PersonEmail, AdUsername,
-        PasswordMode, PasswordCiphertext, EncryptionAlg, EncryptionKeyId, Reason,
-        NotifyEmail, NotifySms, NotifyPhone, RequestedBy, CampusId, CampusName,
-        ClientIp, UserAgent
-      )
-      VALUES (
-        @publicId, N'BEKLIYOR', 3, @personId, @personName, @personEmail, @adUsername,
-        @mode, @ciphertext, @encryptionAlg, @encryptionKeyId, @reason,
-        @notifyEmail, @notifySms, @notifyPhone, @requestedBy, @campusId, @campusName,
-        @clientIp, @userAgent
-      )
-    `,
-    {
-      publicId: { type: sql.NVarChar(80), value: publicId },
-      personId: { type: sql.NVarChar(160), value: person.id },
-      personName: { type: sql.NVarChar(240), value: person.name },
-      personEmail: { type: sql.NVarChar(320), value: person.email || null },
-      adUsername: { type: sql.NVarChar(160), value: person.adUsername },
-      mode: { type: sql.NVarChar(40), value: mode },
-      ciphertext: { type: sql.NVarChar(sql.MAX), value: ciphertext },
-      encryptionAlg: { type: sql.NVarChar(80), value: data.encryptionAlg },
-      encryptionKeyId: { type: sql.NVarChar(120), value: cleanText(data.encryptionKeyId, 120) || null },
-      reason: { type: sql.NVarChar(1000), value: cleanText(data.reason, 1000) || null },
-      notifyEmail: { type: sql.Bit, value: notifyEmail },
-      notifySms: { type: sql.Bit, value: notifySms },
-      notifyPhone: { type: sql.NVarChar(20), value: notifySms ? notifyPhone : null },
-      requestedBy: { type: sql.NVarChar(320), value: user.email },
-      campusId: { type: sql.UniqueIdentifier, value: person.campusId || null },
-      campusName: { type: sql.NVarChar(160), value: person.campus },
-      clientIp: { type: sql.NVarChar(120), value: cleanText(data.clientIp, 120) || null },
-      userAgent: { type: sql.NVarChar(500), value: cleanText(data.userAgent, 500) || null }
-    }
+  const queueParameters = {
+    publicId: { type: sql.NVarChar(80), value: publicId },
+    personId: { type: sql.NVarChar(160), value: person.id },
+    personName: { type: sql.NVarChar(240), value: person.name },
+    personEmail: { type: sql.NVarChar(320), value: person.email || null },
+    adUsername: { type: sql.NVarChar(160), value: person.adUsername },
+    mode: { type: sql.NVarChar(40), value: mode },
+    ciphertext: { type: sql.NVarChar(sql.MAX), value: ciphertext },
+    encryptionAlg: { type: sql.NVarChar(80), value: data.encryptionAlg },
+    encryptionKeyId: { type: sql.NVarChar(120), value: cleanText(data.encryptionKeyId, 120) || null },
+    reason: { type: sql.NVarChar(1000), value: cleanText(data.reason, 1000) || null },
+    notifyEmail: { type: sql.Bit, value: notifyEmail },
+    notifySms: { type: sql.Bit, value: notifySms },
+    notifyPhone: { type: sql.NVarChar(20), value: notifySms ? notifyPhone : null },
+    requestedBy: { type: sql.NVarChar(320), value: user.email },
+    campusId: { type: sql.UniqueIdentifier, value: person.campusId || null },
+    campusName: { type: sql.NVarChar(160), value: person.campus },
+    clientIp: { type: sql.NVarChar(120), value: cleanText(data.clientIp, 120) || null },
+    userAgent: { type: sql.NVarChar(500), value: cleanText(data.userAgent, 500) || null }
+  };
+
+  await withTransaction(
+    async (execute) => {
+      const activeJob = await execute(
+        `
+          SELECT TOP (1) PublicId
+          FROM dbo.ADPasswordQueue WITH (UPDLOCK, HOLDLOCK)
+          WHERE PersonId = @personId
+            AND Status IN (N'BEKLIYOR', N'ISLENIYOR')
+          ORDER BY CreatedAt DESC
+        `,
+        { personId: queueParameters.personId }
+      );
+      if (activeJob.recordset[0]) {
+        throw new Error(
+          `Bu personel için zaten bekleyen bir şifre değiştirme işlemi var: ${activeJob.recordset[0].PublicId}`
+        );
+      }
+
+      await execute(
+        `
+          INSERT INTO dbo.ADPasswordQueue (
+            PublicId, Status, Priority, PersonId, PersonName, PersonEmail, AdUsername,
+            PasswordMode, PasswordCiphertext, EncryptionAlg, EncryptionKeyId, Reason,
+            NotifyEmail, NotifySms, NotifyPhone, RequestedBy, CampusId, CampusName,
+            ClientIp, UserAgent
+          )
+          VALUES (
+            @publicId, N'BEKLIYOR', 3, @personId, @personName, @personEmail, @adUsername,
+            @mode, @ciphertext, @encryptionAlg, @encryptionKeyId, @reason,
+            @notifyEmail, @notifySms, @notifyPhone, @requestedBy, @campusId, @campusName,
+            @clientIp, @userAgent
+          )
+        `,
+        queueParameters
+      );
+      await appendSystemLog(
+        'AD ŞİFRE RESET KUYRUK',
+        user,
+        `${person.name} / ${person.adUsername} / ${mode}`,
+        data.clientIp || '',
+        execute
+      );
+    },
+    sql.ISOLATION_LEVEL.SERIALIZABLE
   );
 
-  await appendSystemLog('AD SIFRE RESET KUYRUK', user, `${person.name} / ${person.adUsername} / ${mode}`, data.clientIp || '');
   return { queued: true, queueId: publicId, status: 'BEKLIYOR' };
 }
 
@@ -1178,19 +1969,29 @@ export async function fetchAdPasswordQueueForUser(user, data = {}) {
 }
 
 export async function fetchAdPasswordAgentJobs(secret, data = {}) {
-  if (!config.adAgentSecret || secret !== config.adAgentSecret) {
-    throw new Error('Yetkisiz AD agent isteği.');
-  }
+  assertSharedSecret(secret, config.adAgentSecret, 'Yetkisiz AD agent isteği.');
   await ensureAdPasswordQueueTable();
   const limit = Math.min(Math.max(Number(data.limit || 5), 1), 20);
 
   const leaseResult = await query(
     `
-      UPDATE TOP (@limit) dbo.ADPasswordQueue
+      ;WITH NextJobs AS (
+        SELECT TOP (@limit) QueueId
+        FROM dbo.ADPasswordQueue WITH (READPAST, UPDLOCK, ROWLOCK)
+        WHERE (
+                Status = N'BEKLIYOR'
+                OR (Status = N'ISLENIYOR' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= SYSUTCDATETIME()))
+              )
+          AND AttemptCount < @maxAttempts
+        ORDER BY Priority DESC, CreatedAt, QueueId
+      )
+      UPDATE q
       SET Status = N'ISLENIYOR',
           StartedAt = COALESCE(StartedAt, SYSUTCDATETIME()),
           AttemptCount = AttemptCount + 1,
-          UpdatedAt = SYSUTCDATETIME()
+          UpdatedAt = SYSUTCDATETIME(),
+          LeaseToken = NEWID(),
+          LeaseExpiresAt = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME())
       OUTPUT
         INSERTED.PublicId,
         INSERTED.PersonId,
@@ -1205,16 +2006,23 @@ export async function fetchAdPasswordAgentJobs(secret, data = {}) {
         INSERTED.NotifyEmail,
         INSERTED.NotifySms,
         INSERTED.NotifyPhone,
-        INSERTED.RequestedBy
-      WHERE Status = N'BEKLIYOR'
+        INSERTED.RequestedBy,
+        INSERTED.LeaseToken
+      FROM dbo.ADPasswordQueue q
+      INNER JOIN NextJobs n ON n.QueueId = q.QueueId
     `,
-    { limit: { type: sql.Int, value: limit } }
+    {
+      limit: { type: sql.Int, value: limit },
+      maxAttempts: { type: sql.Int, value: Math.max(1, Number(config.queue.maxAttempts || 5)) },
+      leaseSeconds: { type: sql.Int, value: Math.max(60, Number(config.queue.leaseSeconds || 1800)) }
+    }
   );
 
   return {
     leased: leaseResult.recordset.length,
     jobs: leaseResult.recordset.map((row) => ({
       queueId: row.PublicId,
+      leaseToken: row.LeaseToken,
       personId: row.PersonId,
       personName: row.PersonName,
       adUser: row.AdUsername,
@@ -1233,30 +2041,41 @@ export async function fetchAdPasswordAgentJobs(secret, data = {}) {
 }
 
 export async function completeAdPasswordAgentJob(secret, data = {}) {
-  if (!config.adAgentSecret || secret !== config.adAgentSecret) {
-    throw new Error('Yetkisiz AD agent isteği.');
-  }
+  assertSharedSecret(secret, config.adAgentSecret, 'Yetkisiz AD agent isteği.');
   await ensureAdPasswordQueueTable();
   const queueId = cleanText(data.queueId, 80);
+  const leaseToken = cleanText(data.leaseToken, 80);
   if (!queueId) throw new Error('Queue ID boş.');
+  if (!leaseToken) throw new Error('AD iş lease tokenı boş.');
 
-  await query(
+  const result = await query(
     `
       UPDATE dbo.ADPasswordQueue
       SET Status = @status,
           FinishedAt = SYSUTCDATETIME(),
           ResultMessage = @resultMessage,
           ErrorMessage = @errorMessage,
+          PasswordCiphertext = N'',
+          EncryptionKeyId = NULL,
+          LeaseToken = NULL,
+          LeaseExpiresAt = NULL,
           UpdatedAt = SYSUTCDATETIME()
       WHERE PublicId = @queueId
+        AND Status = N'ISLENIYOR'
+        AND LeaseToken = @leaseToken
     `,
     {
       status: { type: sql.NVarChar(40), value: data.success === true ? 'TAMAMLANDI' : 'HATA' },
       resultMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? cleanText(data.result || 'AD şifresi uygulandı.', 4000) : null },
       errorMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? null : cleanText(data.error || 'Bilinmeyen hata', 4000) },
-      queueId: { type: sql.NVarChar(80), value: queueId }
+      queueId: { type: sql.NVarChar(80), value: queueId },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken }
     }
   );
+
+  if (Number(result.rowsAffected?.[0] || 0) !== 1) {
+    throw new Error('AD işi tamamlanamadı: lease süresi dolmuş veya iş başka bir ajan tarafından alınmış.');
+  }
 
   return {};
 }
@@ -1299,7 +2118,7 @@ export async function fetchSignatureMetaForUser(user) {
     }),
     query(`
       SELECT COUNT(1) AS MissingCount
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
       WHERE (@isHq = 1 OR c.CoreName = @userCore)
         AND ISNULL(p.SignatureUrl, N'') = N''
@@ -1437,18 +2256,22 @@ export async function createPersonnelSignatureForUser(user, data) {
   const title = await getSignatureTitle(data.titleTr);
   const campusInfo = await getSignatureCampusInfo(user, data.signatureCampus, person.campus);
   const templateVariant = getSignatureTemplateVariant(title.titleTr, title.titleEn, title.templateKey);
+  const signatureEmail = normalizeEmail(person.email);
+  if (!/^[a-z0-9._%+-]+@istek\.k12\.tr$/i.test(signatureEmail)) {
+    throw new Error('İmza oluşturmak için geçerli bir @istek.k12.tr e-posta adresi gereklidir.');
+  }
 
   const signatureId = await makeSignatureId();
   const cacheKey = crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase();
   const imageUrl = `https://istek.site/imza/${signatureId}/${signatureId}.jpg?v=${cacheKey}`;
-  const gamCommand = `gam user "${person.email}" signature file "signature/${signatureId}.html" html`;
+  const gamCommand = `gam user "${signatureEmail}" signature file "signature/${signatureId}.html" html`;
   const publicId = `SIG-${new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
   const dataset = {
     id: signatureId,
     name: person.name,
     titleTr: title.titleTr,
     titleEn: title.titleEn,
-    email: person.email,
+    email: signatureEmail,
     address: campusInfo.address,
     campusImage: campusInfo.image,
     imageUrl,
@@ -1474,7 +2297,7 @@ export async function createPersonnelSignatureForUser(user, data) {
       signatureId: { type: sql.NVarChar(80), value: signatureId },
       personId: { type: sql.NVarChar(160), value: person.id },
       personName: { type: sql.NVarChar(240), value: person.name },
-      personEmail: { type: sql.NVarChar(320), value: person.email },
+      personEmail: { type: sql.NVarChar(320), value: signatureEmail },
       titleTr: { type: sql.NVarChar(240), value: title.titleTr },
       titleEn: { type: sql.NVarChar(240), value: title.titleEn || null },
       signatureCampus: { type: sql.NVarChar(160), value: campusInfo.campus },
@@ -1511,7 +2334,7 @@ export async function createPersonnelSignatureForUser(user, data) {
     }
   );
 
-  await appendSystemLog('IMZA OLUSTUR KUYRUK', user, `${person.name} -> ${title.titleTr} / ${publicId}`, data.clientIp || '');
+  await appendSystemLog('İMZA OLUŞTUR KUYRUK', user, `${person.name} -> ${title.titleTr} / ${publicId}`, data.clientIp || '');
   return {
     personId: person.id,
     titleTr: title.titleTr,
@@ -1527,9 +2350,7 @@ export async function createPersonnelSignatureForUser(user, data) {
 }
 
 function requireSignatureAgentSecret(secret) {
-  if (!config.signatureAgentSecret || secret !== config.signatureAgentSecret) {
-    throw new Error('Yetkisiz imza agent isteği.');
-  }
+  assertSharedSecret(secret, config.signatureAgentSecret, 'Yetkisiz imza agent isteği.');
 }
 
 function parseSignatureDataset(raw) {
@@ -1548,7 +2369,13 @@ export async function fetchSignatureAgentJobs(secret, data = {}) {
 
   const leaseResult = await query(
     `
-      UPDATE TOP (@limit) dbo.SignatureJobs
+      ;WITH NextJobs AS (
+        SELECT TOP (@limit) JobId
+        FROM dbo.SignatureJobs WITH (READPAST, UPDLOCK, ROWLOCK)
+        WHERE Status IN (N'BEKLIYOR', N'HATA')
+        ORDER BY CASE WHEN Status = N'BEKLIYOR' THEN 0 ELSE 1 END, CreatedAt, JobId
+      )
+      UPDATE j
       SET Status = N'ISLENIYOR',
           UpdatedAt = SYSUTCDATETIME()
       OUTPUT
@@ -1567,7 +2394,8 @@ export async function fetchSignatureAgentJobs(secret, data = {}) {
         INSERTED.GamCommand,
         INSERTED.DatasetJson,
         INSERTED.RequestedBy
-      WHERE Status IN (N'BEKLIYOR', N'HATA')
+      FROM dbo.SignatureJobs j
+      INNER JOIN NextJobs n ON n.JobId = j.JobId
     `,
     { limit: { type: sql.Int, value: limit } }
   );
@@ -1680,7 +2508,7 @@ export async function fetchSignatureQueueForUser(user, data = {}) {
         c.Name AS PersonCampus,
         c.CoreName AS PersonCampusCore
       FROM dbo.SignatureJobs j
-      LEFT JOIN dbo.Personnel p ON p.PersonId = j.PersonId
+      LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
       WHERE @isHq = 1
          OR j.RequestedBy = @email
@@ -1725,12 +2553,20 @@ export async function fetchSignatureQueueForUser(user, data = {}) {
   };
 }
 export async function startTransferForUser(user, data) {
-  const targetCampus = cleanText(data.targetCampus, 160);
-  if (!targetCampus) throw new Error('Hedef kampüs boş.');
-  const targetCampusId = await ensureCampusId(targetCampus);
+  const requestedTargetCampus = cleanText(data.targetCampus, 160);
+  if (!requestedTargetCampus) throw new Error('Hedef kampüs boş.');
+  const targetCampusRecord = await getActiveCampusByName(requestedTargetCampus);
+  if (!targetCampusRecord) throw new Error('Hedef kampüs bulunamadı veya aktif değil.');
+  const targetCampus = targetCampusRecord.Name;
+  const targetCampusId = targetCampusRecord.CampusId;
+  const transferRecipients = await getTransferEmailRecipients(targetCampusId, user.email);
   const rows = await findHardwareRows(user, data.hardwareIds, { requireStatus: 'DEPODA' });
   const senderLabel = `GÖNDEREN:${user.campus}`;
-  const transferSignature = validateSignatureData(data.transferSignature, 'Transfer');
+  const transferStatement = validateHandwrittenStatementData(
+    data.transferStatement || data.transferSignature,
+    'Teslim eden',
+    'Eksiksiz teslim ettim.'
+  );
   const pdfName = safePdfName(data.pdfName, 'transfer-cikis.pdf');
   const hardware = rows.map((row) => ({
     hardwareId: row.HardwareId,
@@ -1741,35 +2577,36 @@ export async function startTransferForUser(user, data) {
     computerName: row.ComputerName || '',
     campus: row.Campus || ''
   }));
-  const queue = await enqueuePdfJob({
-    actionType: 'GENERATE_TRANSFER_PDF',
-    requestedBy: user.email,
-    campusId: rows[0]?.CampusId || null,
-    payload: {
-      documentType: 'transfer',
-      transferDirection: 'out',
-      pdfName,
-      campus: user.campus,
-      senderCampus: user.campus,
-      receiverCampus: targetCampus,
+  const queue = await withTransaction(async (execute) => {
+    const queuedJob = await enqueuePdfJob({
+      actionType: 'GENERATE_TRANSFER_PDF',
       requestedBy: user.email,
-      itName: cleanText(data.itName || user.name || user.email, 240),
-      hardware,
-      signatures: { transfer: transferSignature },
-      clientIp: cleanText(data.clientIp, 120),
-      email: {
-        to: cleanText(data.targetItEmail, 320) || user.email,
-        cc: cleanText(data.targetItEmail, 320) ? user.email : '',
-        replyTo: user.email,
-        subject: 'Kampüsler Arası Cihaz Transferi (Çıkış)',
-        body: `${user.campus} kampüsünden ${targetCampus} kampüsüne cihaz transferi başlatılmıştır. Tutanak ektedir.`
+      campusId: rows[0]?.CampusId || null,
+      payload: {
+        documentType: 'transfer',
+        transferDirection: 'out',
+        pdfName,
+        campus: user.campus,
+        senderCampus: user.campus,
+        receiverCampus: targetCampus,
+        requestedBy: user.email,
+        itName: cleanText(data.itName || user.name || user.email, 240),
+        hardware,
+        statements: { transfer: transferStatement },
+        clientIp: cleanText(data.clientIp, 120),
+        email: {
+          to: transferRecipients.to,
+          cc: transferRecipients.cc,
+          replyTo: user.email,
+          subject: 'Kampüsler Arası Cihaz Transferi (Çıkış)',
+          body: `${user.campus} kampüsünden ${targetCampus} kampüsüne cihaz transferi başlatılmıştır. Tutanak ektedir.`
+        }
       }
-    }
-  });
-  const queueDetails = { queueId: queue.PublicId, documentStatus: 'PDF hazırlanıyor', pdfName };
+    }, execute);
+    const queueDetails = { queueId: queuedJob.PublicId, documentStatus: 'PDF hazırlanıyor', pdfName };
 
-  for (const row of rows) {
-    await query(
+    for (const row of rows) {
+      const updateResult = await execute(
       `
         UPDATE dbo.Hardware
         SET HardwareStatus = N'TRANSFER',
@@ -1778,21 +2615,29 @@ export async function startTransferForUser(user, data) {
             DriveLink = NULL,
             UpdatedAt = SYSUTCDATETIME()
         WHERE HardwareId = @hardwareId
+          AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = N'DEPODA'
+          AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
+          AND CampusId = @expectedCampusId
       `,
       {
         senderLabel: { type: sql.NVarChar(160), value: senderLabel },
         targetCampusId: { type: sql.UniqueIdentifier, value: targetCampusId },
+        expectedAssignedPersonId: { type: sql.NVarChar(160), value: row.AssignedPersonId || null },
+        expectedCampusId: { type: sql.UniqueIdentifier, value: row.CampusId },
         hardwareId: { type: sql.Int, value: row.HardwareId }
       }
     );
-    await appendHardwareHistory(row.HardwareId, `Kampüs Çıkış (${user.campus}) (PDF hazırlanıyor)`, {
-      personName: data.itName || user.email,
-      createdBy: user.email,
-      detailsJson: { targetCampus, previousCampus: row.Campus, ...queueDetails }
-    });
-  }
+      await assertSingleHardwareUpdate(updateResult, 'Cihaz transfer çıkışı sırasında değişti: ' + row.SerialNo + '. Lütfen veriyi yenileyip tekrar deneyin.');
+      await appendHardwareHistory(row.HardwareId, `Kampüs Çıkış (${user.campus}) (PDF hazırlanıyor)`, {
+        personName: data.itName || user.email,
+        createdBy: user.email,
+        detailsJson: { targetCampus, previousCampus: row.Campus, ...queueDetails }
+      }, execute);
+    }
 
-  await appendSystemLog('TRANSFER CIKIS KUYRUK', user, `${rows.length} cihaz -> ${targetCampus}, PDF kuyruğu: ${queue.PublicId}`, data.clientIp || '');
+    await appendSystemLog('TRANSFER ÇIKIŞ KUYRUK', user, `${rows.length} cihaz -> ${targetCampus}, PDF kuyruğu: ${queuedJob.PublicId}`, data.clientIp || '', execute);
+    return queuedJob;
+  });
   return {
     queued: true,
     queueId: queue.PublicId,
@@ -1805,9 +2650,24 @@ export async function startTransferForUser(user, data) {
 export async function completeTransferForUser(user, data) {
   const rows = await findHardwareRows(user, data.hardwareIds, { skipCampusCheck: true, requireStatus: 'TRANSFER' });
   const targetCampusId = await ensureCampusId(user.campus);
-  const transferSignature = validateSignatureData(data.transferSignature, 'Transfer');
+  const transferStatement = validateHandwrittenStatementData(
+    data.transferStatement || data.transferSignature,
+    'Teslim alan',
+    'Eksiksiz teslim aldım.'
+  );
   const pdfName = safePdfName(data.pdfName, 'transfer-giris.pdf');
-  const senderCampus = cleanText(data.senderCampus, 160) || rows[0]?.AssignedPersonId?.replace(/^GÖNDEREN:/i, '').replace(/^GONDEREN:/i, '').trim() || '';
+  const senderCampuses = [
+    ...new Set(
+      rows
+        .map((row) => String(row.AssignedPersonId || '').replace(/^GÖNDEREN:/i, '').replace(/^GONDEREN:/i, '').trim())
+        .filter(Boolean)
+    )
+  ];
+  if (senderCampuses.length !== 1) throw new Error('Transferin gönderen kampüsü doğrulanamadı.');
+  const senderCampusRecord = await getActiveCampusByName(senderCampuses[0]);
+  if (!senderCampusRecord) throw new Error('Gönderen kampüs bulunamadı veya aktif değil.');
+  const senderCampus = senderCampusRecord.Name;
+  const transferRecipients = await getTransferEmailRecipients(senderCampusRecord.CampusId, user.email);
   const hardware = rows.map((row) => ({
     hardwareId: row.HardwareId,
     serial: row.SerialNo,
@@ -1824,35 +2684,36 @@ export async function completeTransferForUser(user, data) {
     }
   }
 
-  const queue = await enqueuePdfJob({
-    actionType: 'GENERATE_TRANSFER_PDF',
-    requestedBy: user.email,
-    campusId: targetCampusId,
-    payload: {
-      documentType: 'transfer',
-      transferDirection: 'in',
-      pdfName,
-      campus: user.campus,
-      senderCampus,
-      receiverCampus: user.campus,
+  const queue = await withTransaction(async (execute) => {
+    const queuedJob = await enqueuePdfJob({
+      actionType: 'GENERATE_TRANSFER_PDF',
       requestedBy: user.email,
-      itName: cleanText(data.itName || user.name || user.email, 240),
-      hardware,
-      signatures: { transfer: transferSignature },
-      clientIp: cleanText(data.clientIp, 120),
-      email: {
-        to: cleanText(data.targetItEmail, 320) || user.email,
-        cc: cleanText(data.targetItEmail, 320) ? user.email : '',
-        replyTo: user.email,
-        subject: 'Kampüsler Arası Cihaz Transferi (Teslim Alındı)',
-        body: `${senderCampus || 'Gönderen kampüs'} tarafından gönderilen cihazlar ${user.campus} kampüsünde teslim alınmıştır. Tutanak ektedir.`
+      campusId: targetCampusId,
+      payload: {
+        documentType: 'transfer',
+        transferDirection: 'in',
+        pdfName,
+        campus: user.campus,
+        senderCampus,
+        receiverCampus: user.campus,
+        requestedBy: user.email,
+        itName: cleanText(data.itName || user.name || user.email, 240),
+        hardware,
+        statements: { transfer: transferStatement },
+        clientIp: cleanText(data.clientIp, 120),
+        email: {
+          to: transferRecipients.to,
+          cc: transferRecipients.cc,
+          replyTo: user.email,
+          subject: 'Kampüsler Arası Cihaz Transferi (Teslim Alındı)',
+          body: `${senderCampus || 'Gönderen kampüs'} tarafından gönderilen cihazlar ${user.campus} kampüsünde teslim alınmıştır. Tutanak ektedir.`
+        }
       }
-    }
-  });
-  const queueDetails = { queueId: queue.PublicId, documentStatus: 'PDF hazırlanıyor', pdfName };
+    }, execute);
+    const queueDetails = { queueId: queuedJob.PublicId, documentStatus: 'PDF hazırlanıyor', pdfName };
 
-  for (const row of rows) {
-    await query(
+    for (const row of rows) {
+      const updateResult = await execute(
       `
         UPDATE dbo.Hardware
         SET HardwareStatus = N'DEPODA',
@@ -1861,20 +2722,28 @@ export async function completeTransferForUser(user, data) {
             DriveLink = NULL,
             UpdatedAt = SYSUTCDATETIME()
         WHERE HardwareId = @hardwareId
+          AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = N'TRANSFER'
+          AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
+          AND CampusId = @expectedCampusId
       `,
       {
         targetCampusId: { type: sql.UniqueIdentifier, value: targetCampusId },
+        expectedAssignedPersonId: { type: sql.NVarChar(160), value: row.AssignedPersonId || null },
+        expectedCampusId: { type: sql.UniqueIdentifier, value: row.CampusId },
         hardwareId: { type: sql.Int, value: row.HardwareId }
       }
     );
-    await appendHardwareHistory(row.HardwareId, `Kampüs Giriş (${user.campus}) (PDF hazırlanıyor)`, {
-      personName: data.itName || user.email,
-      createdBy: user.email,
-      detailsJson: { receiverCampus: user.campus, senderCampus, ...queueDetails }
-    });
-  }
+      await assertSingleHardwareUpdate(updateResult, 'Cihaz transfer teslimi sırasında değişti: ' + row.SerialNo + '. Lütfen veriyi yenileyip tekrar deneyin.');
+      await appendHardwareHistory(row.HardwareId, `Kampüs Giriş (${user.campus}) (PDF hazırlanıyor)`, {
+        personName: data.itName || user.email,
+        createdBy: user.email,
+        detailsJson: { receiverCampus: user.campus, senderCampus, ...queueDetails }
+      }, execute);
+    }
 
-  await appendSystemLog('TRANSFER GIRIS KUYRUK', user, `${rows.length} cihaz -> ${user.campus}, PDF kuyruğu: ${queue.PublicId}`, data.clientIp || '');
+    await appendSystemLog('TRANSFER GİRİŞ KUYRUK', user, `${rows.length} cihaz -> ${user.campus}, PDF kuyruğu: ${queuedJob.PublicId}`, data.clientIp || '', execute);
+    return queuedJob;
+  });
   return {
     queued: true,
     queueId: queue.PublicId,
@@ -1894,8 +2763,11 @@ export async function cancelTransferForUser(user, data) {
     if (user.role !== 'HQ IT' && core(senderRaw) !== core(user.campus)) {
       throw new Error('Sadece kendi gönderdiğiniz transferi iptal edebilirsiniz.');
     }
+  }
 
-    await query(
+  await withTransaction(async (execute) => {
+    for (const row of rows) {
+      const updateResult = await execute(
       `
         UPDATE dbo.Hardware
         SET HardwareStatus = N'DEPODA',
@@ -1903,20 +2775,25 @@ export async function cancelTransferForUser(user, data) {
             CampusId = @senderCampusId,
             UpdatedAt = SYSUTCDATETIME()
         WHERE HardwareId = @hardwareId
+          AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = N'TRANSFER'
+          AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
       `,
       {
         senderCampusId: { type: sql.UniqueIdentifier, value: senderCampusId },
+        expectedAssignedPersonId: { type: sql.NVarChar(160), value: row.AssignedPersonId || null },
         hardwareId: { type: sql.Int, value: row.HardwareId }
       }
     );
-    await appendHardwareHistory(row.HardwareId, 'Transfer İptal Edildi', {
-      personName: data.currentUserName || user.email,
-      createdBy: user.email,
-      detailsJson: { senderCampus }
-    });
-  }
+      await assertSingleHardwareUpdate(updateResult, 'Cihaz transfer iptali sırasında değişti: ' + row.SerialNo + '. Lütfen veriyi yenileyip tekrar deneyin.');
+      await appendHardwareHistory(row.HardwareId, 'Transfer İptal Edildi', {
+        personName: data.currentUserName || user.email,
+        createdBy: user.email,
+        detailsJson: { senderCampus }
+      }, execute);
+    }
 
-  await appendSystemLog('TRANSFER IPTAL', user, `${rows.length} cihaz -> ${senderCampus}`, data.clientIp || '');
+    await appendSystemLog('TRANSFER İPTAL', user, `${rows.length} cihaz -> ${senderCampus}`, data.clientIp || '', execute);
+  });
   return { count: rows.length };
 }
 async function getCampusCodeMap() {
@@ -1944,7 +2821,7 @@ async function getGlpiMatchingContext() {
     query(`SELECT SerialNo, ComputerName, GlpiId FROM dbo.Hardware`),
     query(`
       SELECT p.PersonId, p.FullName, p.Email, p.AdUsername, c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
     `),
     query(`
@@ -2062,7 +2939,7 @@ async function reconcileHardwareWithGlpi() {
     `),
     query(`
       SELECT p.PersonId, p.FullName, p.Email, p.AdUsername, c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
     `),
     query(`
@@ -2202,13 +3079,18 @@ async function enqueueGlpiReconcileJob() {
   return { ...result.recordset[0], reused: false };
 }
 
-async function claimGlpiReconcileJobs(maxJobs, { includeFailed = false } = {}) {
+async function claimGlpiReconcileJobs(maxJobs, leaseToken, { includeFailed = false } = {}) {
   const result = await query(
     `
       ;WITH NextJobs AS (
         SELECT TOP (@maxJobs) QueueId
         FROM dbo.OperationQueue WITH (READPAST, UPDLOCK, ROWLOCK)
-        WHERE (Status = N'BEKLIYOR' OR (@includeFailed = 1 AND Status = N'HATA'))
+        WHERE (
+                Status = N'BEKLIYOR'
+                OR (@includeFailed = 1 AND Status = N'HATA')
+                OR (Status = N'ISLENIYOR' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= SYSUTCDATETIME()))
+              )
+          AND AttemptCount < @maxAttempts
           AND ActionType = N'RECONCILE_GLPI'
         ORDER BY CreatedAt
       )
@@ -2217,60 +3099,103 @@ async function claimGlpiReconcileJobs(maxJobs, { includeFailed = false } = {}) {
           StartedAt = COALESCE(StartedAt, SYSUTCDATETIME()),
           FinishedAt = NULL,
           ErrorMessage = NULL,
-          AttemptCount = AttemptCount + 1
+          AttemptCount = AttemptCount + 1,
+          LeaseToken = @leaseToken,
+          LeaseExpiresAt = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME())
       OUTPUT INSERTED.QueueId, INSERTED.PublicId, INSERTED.ActionType
       FROM dbo.OperationQueue q
       INNER JOIN NextJobs n ON n.QueueId = q.QueueId;
     `,
     {
       maxJobs: { type: sql.Int, value: Math.max(1, Math.min(Number(maxJobs || 1), 5)) },
-      includeFailed: { type: sql.Bit, value: includeFailed ? 1 : 0 }
+      includeFailed: { type: sql.Bit, value: includeFailed ? 1 : 0 },
+      maxAttempts: { type: sql.Int, value: Math.max(1, Number(config.queue.maxAttempts || 5)) },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
+      leaseSeconds: { type: sql.Int, value: Math.max(60, Number(config.queue.leaseSeconds || 1800)) }
     }
   );
 
   return result.recordset || [];
 }
 
-async function markOperationQueueDone(queueId, resultPayload) {
-  await query(
+async function renewOperationQueueLease(queueId, leaseToken) {
+  const result = await query(
+    `
+      UPDATE dbo.OperationQueue
+      SET LeaseExpiresAt = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME())
+      WHERE QueueId = @queueId
+        AND Status = N'ISLENIYOR'
+        AND LeaseToken = @leaseToken
+    `,
+    {
+      queueId: { type: sql.BigInt, value: queueId },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
+      leaseSeconds: { type: sql.Int, value: Math.max(60, Number(config.queue.leaseSeconds || 1800)) }
+    }
+  );
+  if (Number(result.rowsAffected?.[0] || 0) !== 1) throw new Error('İşlem kuyruğu lease sahipliği kaybedildi.');
+}
+
+async function markOperationQueueDone(queueId, leaseToken, resultPayload) {
+  const result = await query(
     `
       UPDATE dbo.OperationQueue
       SET Status = N'TAMAMLANDI',
           ResultJson = @resultJson,
           ErrorMessage = NULL,
-          FinishedAt = SYSUTCDATETIME()
+          FinishedAt = SYSUTCDATETIME(),
+          LeaseToken = NULL,
+          LeaseExpiresAt = NULL
       WHERE QueueId = @queueId
+        AND Status = N'ISLENIYOR'
+        AND LeaseToken = @leaseToken
     `,
     {
       queueId: { type: sql.BigInt, value: queueId },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
       resultJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(resultPayload) }
     }
   );
+  if (Number(result.rowsAffected?.[0] || 0) !== 1) throw new Error('İşlem kuyruğu tamamlanırken lease sahipliği kaybedildi.');
 }
 
-async function markOperationQueueFailed(queueId, error) {
-  await query(
+async function markOperationQueueFailed(queueId, leaseToken, error) {
+  const result = await query(
     `
       UPDATE dbo.OperationQueue
       SET Status = N'HATA',
           ErrorMessage = @errorMessage,
-          FinishedAt = SYSUTCDATETIME()
+          FinishedAt = SYSUTCDATETIME(),
+          LeaseToken = NULL,
+          LeaseExpiresAt = NULL
       WHERE QueueId = @queueId
+        AND Status = N'ISLENIYOR'
+        AND LeaseToken = @leaseToken
     `,
     {
       queueId: { type: sql.BigInt, value: queueId },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
       errorMessage: { type: sql.NVarChar(sql.MAX), value: String(error?.message || error || 'İşlem kuyruğu hatası').slice(0, 4000) }
     }
   );
+  return Number(result.rowsAffected?.[0] || 0) === 1;
+}
+
+async function assertSingleHardwareUpdate(result, message) {
+  const affected = Array.isArray(result?.rowsAffected) ? Number(result.rowsAffected[0] || 0) : 0;
+  if (affected === 1) return;
+  throw new Error(message);
 }
 
 export async function processGlpiReconcileQueue({ maxJobs = 1, logger, includeFailed = false } = {}) {
-  const jobs = await claimGlpiReconcileJobs(maxJobs, { includeFailed });
+  const leaseToken = crypto.randomUUID();
+  const jobs = await claimGlpiReconcileJobs(maxJobs, leaseToken, { includeFailed });
   const results = [];
 
   for (const job of jobs) {
     try {
       const startedAt = new Date();
+      await renewOperationQueueLease(job.QueueId, leaseToken);
       const reconcile = await reconcileHardwareWithGlpi();
       const result = {
         queueId: job.PublicId,
@@ -2281,11 +3206,11 @@ export async function processGlpiReconcileQueue({ maxJobs = 1, logger, includeFa
         startedAt: startedAt.toISOString(),
         finishedAt: new Date().toISOString()
       };
-      await markOperationQueueDone(job.QueueId, result);
+      await markOperationQueueDone(job.QueueId, leaseToken, result);
       results.push({ queueId: job.PublicId, status: 'TAMAMLANDI', result });
       logger?.info?.({ queueId: job.PublicId, ...reconcile }, 'GLPI eşleştirme kuyruğu tamamlandı');
     } catch (error) {
-      await markOperationQueueFailed(job.QueueId, error);
+      await markOperationQueueFailed(job.QueueId, leaseToken, error);
       results.push({ queueId: job.PublicId, status: 'HATA', error: error.message });
       logger?.error?.({ err: error, queueId: job.PublicId }, 'GLPI eşleştirme kuyruğu hata verdi');
     }
@@ -2297,17 +3222,26 @@ export async function processGlpiReconcileQueue({ maxJobs = 1, logger, includeFa
   };
 }
 
-export async function syncGlpiDevicesFromAgent(secret, data = {}) {
-  if (!config.glpiSyncSecret || secret !== config.glpiSyncSecret) {
-    throw new Error('Yetkisiz GLPI sync isteği.');
+export async function getOtpRecipientForUser(user, personId) {
+  const person = await getPersonDetailsForDocument(personId);
+  if (user.role !== 'HQ IT') {
+    assertCanAccessCampus(user, person.campus, 'Farklı kampüs personeli için doğrulama kodu gönderemezsiniz.');
   }
+  return person;
+}
+
+export async function syncGlpiDevicesFromAgent(secret, data = {}) {
+  assertSharedSecret(secret, config.glpiSyncSecret, 'Yetkisiz GLPI sync isteği.');
 
   const items = Array.isArray(data.items) ? data.items : [];
   if (items.length > 20000) throw new Error('Tek seferde çok fazla GLPI kaydı geldi.');
+  if (items.length === 0) {
+    throw new Error('GLPI cihaz listesi boş geldi; mevcut kayıtlar güvenlik amacıyla korunuyor.');
+  }
 
   const syncStartedAt = new Date();
-  let count = 0;
   let warnings = 0;
+  const normalizedByGlpiId = new Map();
 
   for (const item of items) {
     const glpiId = Number.parseInt(cleanText(item.glpiId ?? item.id, 40), 10);
@@ -2323,44 +3257,86 @@ export async function syncGlpiDevicesFromAgent(secret, data = {}) {
     const adUsername = normalizeAdLogin(item.adUser ?? item.adUsername ?? item.users_id);
     const locationName = cleanText(item.location ?? item.locationName ?? item.locations_id, 240);
     const lastInventory = parseDateOrNull(item.lastInventory ?? item.date_mod);
-
-    await query(
-      `
-        MERGE dbo.GlpiDevices AS target
-        USING (SELECT @glpiId AS GlpiId) AS source
-        ON target.GlpiId = source.GlpiId
-        WHEN MATCHED THEN UPDATE SET
-          SerialNo = @serialNo,
-          ComputerName = @computerName,
-          Manufacturer = @manufacturer,
-          Model = @model,
-          AdUsername = @adUsername,
-          LocationName = @locationName,
-          LastInventory = @lastInventory,
-          LastSync = @lastSync,
-          RawJson = @rawJson
-        WHEN NOT MATCHED THEN
-          INSERT (GlpiId, SerialNo, ComputerName, Manufacturer, Model, AdUsername, LocationName, LastInventory, LastSync, RawJson)
-          VALUES (@glpiId, @serialNo, @computerName, @manufacturer, @model, @adUsername, @locationName, @lastInventory, @lastSync, @rawJson);
-      `,
-      {
-        glpiId: { type: sql.Int, value: glpiId },
-        serialNo: { type: sql.NVarChar(160), value: serialNo || null },
-        computerName: { type: sql.NVarChar(160), value: computerName || null },
-        manufacturer: { type: sql.NVarChar(160), value: manufacturer || null },
-        model: { type: sql.NVarChar(240), value: model || null },
-        adUsername: { type: sql.NVarChar(160), value: adUsername || null },
-        locationName: { type: sql.NVarChar(240), value: locationName || null },
-        lastInventory: { type: sql.DateTime2, value: lastInventory },
-        lastSync: { type: sql.DateTime2, value: syncStartedAt },
-        rawJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(item) }
-      }
-    );
-    count += 1;
+    if (normalizedByGlpiId.has(glpiId)) warnings += 1;
+    normalizedByGlpiId.set(glpiId, {
+      glpiId,
+      serialNo: serialNo || null,
+      computerName: computerName || null,
+      manufacturer: manufacturer || null,
+      model: model || null,
+      adUsername: adUsername || null,
+      locationName: locationName || null,
+      lastInventory: lastInventory?.toISOString() || null,
+      rawJson: JSON.stringify(item)
+    });
   }
 
-  await query(`DELETE FROM dbo.GlpiDevices WHERE LastSync < @lastSync`, {
-    lastSync: { type: sql.DateTime2, value: syncStartedAt }
+  const normalizedItems = Array.from(normalizedByGlpiId.values());
+  const count = normalizedItems.length;
+  const batchSize = 500;
+  await withTransaction(async (execute) => {
+    for (let offset = 0; offset < normalizedItems.length; offset += batchSize) {
+      const batch = normalizedItems.slice(offset, offset + batchSize);
+      await execute(
+        `
+          ;WITH SourceRows AS (
+            SELECT
+              GlpiId,
+              NULLIF(SerialNo, N'') AS SerialNo,
+              NULLIF(ComputerName, N'') AS ComputerName,
+              NULLIF(Manufacturer, N'') AS Manufacturer,
+              NULLIF(Model, N'') AS Model,
+              NULLIF(AdUsername, N'') AS AdUsername,
+              NULLIF(LocationName, N'') AS LocationName,
+              TRY_CONVERT(DATETIME2(0), LastInventory, 127) AS LastInventory,
+              RawJson
+            FROM OPENJSON(@itemsJson)
+            WITH (
+              GlpiId INT '$.glpiId',
+              SerialNo NVARCHAR(160) '$.serialNo',
+              ComputerName NVARCHAR(160) '$.computerName',
+              Manufacturer NVARCHAR(160) '$.manufacturer',
+              Model NVARCHAR(240) '$.model',
+              AdUsername NVARCHAR(160) '$.adUsername',
+              LocationName NVARCHAR(240) '$.locationName',
+              LastInventory NVARCHAR(40) '$.lastInventory',
+              RawJson NVARCHAR(MAX) '$.rawJson'
+            )
+          )
+          MERGE dbo.GlpiDevices AS target
+          USING SourceRows AS source
+            ON target.GlpiId = source.GlpiId
+          WHEN MATCHED THEN UPDATE SET
+            SerialNo = source.SerialNo,
+            ComputerName = source.ComputerName,
+            Manufacturer = source.Manufacturer,
+            Model = source.Model,
+            AdUsername = source.AdUsername,
+            LocationName = source.LocationName,
+            LastInventory = source.LastInventory,
+            LastSync = @lastSync,
+            RawJson = source.RawJson
+          WHEN NOT MATCHED THEN
+            INSERT (
+              GlpiId, SerialNo, ComputerName, Manufacturer, Model, AdUsername,
+              LocationName, LastInventory, LastSync, RawJson
+            )
+            VALUES (
+              source.GlpiId, source.SerialNo, source.ComputerName, source.Manufacturer,
+              source.Model, source.AdUsername, source.LocationName, source.LastInventory,
+              @lastSync, source.RawJson
+            );
+        `,
+        {
+          itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(batch) },
+          lastSync: { type: sql.DateTime2, value: syncStartedAt }
+        }
+      );
+    }
+
+    await execute(`DELETE FROM dbo.GlpiDevices WHERE LastSync < @lastSync`, {
+      lastSync: { type: sql.DateTime2, value: syncStartedAt }
+    });
   });
 
   const reconcileMode = typeof data.reconcile === 'string' ? data.reconcile.trim().toLowerCase() : data.reconcile;
@@ -2444,7 +3420,7 @@ export async function importMissingGlpiDevicesForUser(user, data) {
     throw new Error('Seçili cihazlardan bazıları bulunamadı, zaten eklenmiş olabilir veya kampüs yetkiniz dışında.');
   }
 
-  let imported = 0;
+  const prepared = [];
   for (const item of selected) {
     const campus = item.inferredCampus || user.campus || 'Bilinmiyor';
     const campusId = await ensureCampusId(campus);
@@ -2453,49 +3429,69 @@ export async function importMissingGlpiDevicesForUser(user, data) {
     const mismatch = item.adUser ? 'ZIMMET_YOK_GLPI_KULLANICI_VAR' : 'OK';
     const notes = `GLPI'den eklendi. AD Kullanıcı: ${item.adUser || '-'}`;
 
-    await query(
-      `
-        INSERT INTO dbo.Hardware (
-          SerialNo, Model, CampusId, HardwareStatus, ComputerName, DeviceType, Brand, Notes,
-          GlpiId, GlpiComputerName, GlpiAdUsername, GlpiPersonnelName, GlpiCampusGuess,
-          GlpiDeviceType, GlpiMatchType, GlpiMismatch, GlpiLastSync
-        )
-        VALUES (
-          @serial, @model, @campusId, N'DEPODA', @computerName, @deviceType, @brand, @notes,
-          @glpiId, @glpiComputerName, @glpiAdUsername, @glpiPersonnelName, @glpiCampusGuess,
-          @glpiDeviceType, N'GLPI_IMPORT', @glpiMismatch, @glpiLastSync
-        )
-      `,
-      {
-        serial: { type: sql.NVarChar(160), value: serial },
-        model: { type: sql.NVarChar(240), value: item.model || item.computerName || 'GLPI Cihazı' },
-        campusId: { type: sql.UniqueIdentifier, value: campusId },
-        computerName: { type: sql.NVarChar(160), value: item.computerName || null },
-        deviceType: { type: sql.NVarChar(80), value: deviceType },
-        brand: { type: sql.NVarChar(120), value: item.brand || null },
-        notes: { type: sql.NVarChar(sql.MAX), value: notes },
-        glpiId: { type: sql.Int, value: Number(item.glpiId) },
-        glpiComputerName: { type: sql.NVarChar(160), value: item.computerName || null },
-        glpiAdUsername: { type: sql.NVarChar(160), value: item.adUser || null },
-        glpiPersonnelName: { type: sql.NVarChar(240), value: item.matchedPersonName || null },
-        glpiCampusGuess: { type: sql.NVarChar(160), value: item.inferredCampus || null },
-        glpiDeviceType: { type: sql.NVarChar(80), value: item.deviceType || null },
-        glpiMismatch: { type: sql.NVarChar(240), value: mismatch },
-        glpiLastSync: { type: sql.DateTime2, value: item.lastSync || null }
-      }
-    );
-
-    const rows = await findHardwareRows(user, [serial], { skipCampusCheck: true });
-    await appendHardwareHistory(rows[0].HardwareId, 'GLPI Import', {
-      personName: user.email,
-      createdBy: user.email,
-      detailsJson: { glpiId: item.glpiId, adUser: item.adUser, importedFrom: 'GLPI_Cihazlar' }
-    });
-    imported += 1;
+    prepared.push({ item, campusId, serial, deviceType, mismatch, notes });
   }
 
-  await appendSystemLog('GLPI IMPORT', user, `${imported} cihaz SQL Hardware tablosuna eklendi`, data.clientIp || '');
-  return { imported };
+  await withTransaction(async (execute) => {
+    for (const entry of prepared) {
+      const { item, campusId, serial, deviceType, mismatch, notes } = entry;
+      const insertResult = await execute(
+        `
+          INSERT INTO dbo.Hardware (
+            SerialNo, Model, CampusId, HardwareStatus, ComputerName, DeviceType, Brand, Notes,
+            GlpiId, GlpiComputerName, GlpiAdUsername, GlpiPersonnelName, GlpiCampusGuess,
+            GlpiDeviceType, GlpiMatchType, GlpiMismatch, GlpiLastSync
+          )
+          OUTPUT INSERTED.HardwareId
+          SELECT
+            @serial, @model, @campusId, N'DEPODA', @computerName, @deviceType, @brand, @notes,
+            @glpiId, @glpiComputerName, @glpiAdUsername, @glpiPersonnelName, @glpiCampusGuess,
+            @glpiDeviceType, N'GLPI_IMPORT', @glpiMismatch, @glpiLastSync
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM dbo.Hardware WITH (UPDLOCK, HOLDLOCK)
+            WHERE SerialNo = @serial OR GlpiId = @glpiId
+          )
+        `,
+        {
+          serial: { type: sql.NVarChar(160), value: serial },
+          model: { type: sql.NVarChar(240), value: item.model || item.computerName || 'GLPI Cihazı' },
+          campusId: { type: sql.UniqueIdentifier, value: campusId },
+          computerName: { type: sql.NVarChar(160), value: item.computerName || null },
+          deviceType: { type: sql.NVarChar(80), value: deviceType },
+          brand: { type: sql.NVarChar(120), value: item.brand || null },
+          notes: { type: sql.NVarChar(sql.MAX), value: notes },
+          glpiId: { type: sql.Int, value: Number(item.glpiId) },
+          glpiComputerName: { type: sql.NVarChar(160), value: item.computerName || null },
+          glpiAdUsername: { type: sql.NVarChar(160), value: item.adUser || null },
+          glpiPersonnelName: { type: sql.NVarChar(240), value: item.matchedPersonName || null },
+          glpiCampusGuess: { type: sql.NVarChar(160), value: item.inferredCampus || null },
+          glpiDeviceType: { type: sql.NVarChar(80), value: item.deviceType || null },
+          glpiMismatch: { type: sql.NVarChar(240), value: mismatch },
+          glpiLastSync: { type: sql.DateTime2, value: item.lastSync || null }
+        }
+      );
+
+      const hardwareId = insertResult.recordset[0]?.HardwareId;
+      if (!hardwareId) {
+        throw new Error(`GLPI cihazı işlem sırasında başka bir kullanıcı tarafından eklendi: ${serial}`);
+      }
+      await appendHardwareHistory(hardwareId, 'GLPI Import', {
+        personName: user.email,
+        createdBy: user.email,
+        detailsJson: { glpiId: item.glpiId, adUser: item.adUser, importedFrom: 'GLPI_Cihazlar' }
+      }, execute);
+    }
+
+    await appendSystemLog(
+      'GLPI IMPORT',
+      user,
+      `${prepared.length} cihaz SQL Hardware tablosuna eklendi`,
+      data.clientIp || '',
+      execute
+    );
+  });
+  return { imported: prepared.length };
 }
 
 function safePdfName(name, fallback = 'belge.pdf') {
@@ -2503,12 +3499,34 @@ function safePdfName(name, fallback = 'belge.pdf') {
   return safe.toLocaleLowerCase('tr-TR').endsWith('.pdf') ? safe : `${safe}.pdf`;
 }
 
-function validateSignatureData(value, label) {
-  const text = String(value || '');
-  if (!text.startsWith('data:image/png;base64,') || text.length > 300000) {
-    throw new Error(`${label} imza formatı geçersiz.`);
+function validateHandwrittenStatementData(value, label, statementText) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value.image : value;
+  const text = String(source || '');
+  if (text.length > 300000) {
+    throw new Error(`${label} el yazısı beyanı çok büyük.`);
   }
-  return text;
+
+  const match = /^data:image\/png;base64,([a-zA-Z0-9+/]+={0,2})$/.exec(text);
+  if (!match || match[1].length % 4 !== 0) {
+    throw new Error(`${label} el yazısı beyanı formatı geçersiz.`);
+  }
+
+  const buffer = decodeCanonicalBase64(match[1], {
+    label: `${label} el yazısı beyanı`,
+    maxBytes: 225_000
+  });
+  const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (buffer.length < pngMagic.length || pngMagic.some((byte, index) => buffer[index] !== byte)) {
+    throw new Error(`${label} el yazısı beyanı geçerli bir PNG değil.`);
+  }
+
+  const digest = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16).toUpperCase();
+  return {
+    image: `data:image/png;base64,${buffer.toString('base64')}`,
+    text: statementText,
+    hash: `BEYAN-${digest}`,
+    confirmedAt: new Date().toISOString()
+  };
 }
 
 async function getPersonDetailsForDocument(personId) {
@@ -2521,11 +3539,12 @@ async function getPersonDetailsForDocument(personId) {
         p.PersonId,
         p.FullName,
         p.Email,
+        p.Phone,
         p.Department,
         p.Status,
         p.CampusId,
         c.Name AS Campus
-      FROM dbo.Personnel p
+      FROM dbo.vw_EffectivePersonnel p
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
       WHERE p.PersonId = @personId
     `,
@@ -2540,6 +3559,7 @@ async function getPersonDetailsForDocument(personId) {
     id: row.PersonId,
     name: row.FullName || row.PersonId,
     email: String(row.Email || '').toLowerCase(),
+    phone: String(row.Phone || ''),
     department: row.Department || 'Personel',
     status: row.Status || 'Aktif',
     campusId: row.CampusId || null,
@@ -2547,10 +3567,10 @@ async function getPersonDetailsForDocument(personId) {
   };
 }
 
-async function enqueuePdfJob({ actionType, payload, requestedBy, campusId }) {
+async function enqueuePdfJob({ actionType, payload, requestedBy, campusId }, execute = query) {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
   const publicId = `PDF-${stamp}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-  const result = await query(
+  const result = await execute(
     `
       INSERT INTO dbo.OperationQueue (PublicId, ActionType, Status, PayloadJson, RequestedBy, CampusId)
       OUTPUT INSERTED.QueueId, INSERTED.PublicId, INSERTED.Status
@@ -2566,6 +3586,49 @@ async function enqueuePdfJob({ actionType, payload, requestedBy, campusId }) {
   );
 
   return result.recordset[0];
+}
+
+function parseQueueJson(value) {
+  if (!value || typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseQueueArray(value) {
+  if (!value || typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeQueueHardware(items) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => ({
+    hardwareId: Number.isFinite(Number(item?.hardwareId)) ? Number(item.hardwareId) : null,
+    serial: cleanText(item?.serial, 160),
+    type: cleanText(item?.type, 80),
+    brand: cleanText(item?.brand, 120),
+    model: cleanText(item?.model, 240),
+    computerName: cleanText(item?.computerName, 160),
+    campus: cleanText(item?.campus, 160)
+  }));
+}
+
+function numberOrUndefined(value) {
+  if (value === null || value === undefined || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function compactObject(value) {
+  return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
 }
 
 function buildAccessoryList(items = []) {
@@ -2618,9 +3681,25 @@ export async function saveZimmetOrReturnForUser(user, data) {
     }
   }
 
-  const itSignature = validateSignatureData(data.itSignature, 'IT');
-  const personSignature = validateSignatureData(data.personSignature, 'Personel');
-  consumeOtpApproval(data.personOtpHash, person.email);
+  const itStatement = validateHandwrittenStatementData(
+    data.itStatement || data.itSignature,
+    isReturn ? 'Teslim alan IT' : 'Teslim eden IT',
+    isReturn ? 'Donanımı belirtilen durumda teslim aldım.' : 'Eksiksiz teslim ettim.'
+  );
+  const personStatement = validateHandwrittenStatementData(
+    data.personStatement || data.personSignature,
+    isReturn ? 'Teslim eden personel' : 'Teslim alan personel',
+    isReturn
+      ? 'Donanımı belirtilen durumda teslim ettim.'
+      : 'Okudum, eksiksiz teslim aldım ve onaylıyorum.'
+  );
+  consumeOtpApproval(data.personOtpHash, {
+    requesterEmail: user.email,
+    personId: person.id,
+    personEmail: person.email,
+    action: isReturn ? 'return' : 'zimmet',
+    hardwareIds: data.hardwareIds
+  });
 
   const pdfName = safePdfName(data.pdfName, isReturn ? 'iade.pdf' : 'zimmet.pdf');
   const payload = {
@@ -2633,9 +3712,9 @@ export async function saveZimmetOrReturnForUser(user, data) {
     person,
     hardware,
     accessories: buildAccessoryList(data.hardwareList),
-    signatures: {
-      it: itSignature,
-      person: personSignature,
+    statements: {
+      it: itStatement,
+      person: personStatement,
       otpHash: cleanText(data.personOtpHash, 120)
     },
     zimmetExplanation: cleanText(data.zimmetExplanation, 2000),
@@ -2654,21 +3733,24 @@ export async function saveZimmetOrReturnForUser(user, data) {
     }
   };
 
-  const queue = await enqueuePdfJob({
-    actionType,
-    payload,
-    requestedBy: user.email,
-    campusId: rows[0]?.CampusId || person.campusId || null
-  });
+  const queue = await withTransaction(async (execute) => {
+    const queuedJob = await enqueuePdfJob({
+      actionType,
+      payload,
+      requestedBy: user.email,
+      campusId: rows[0]?.CampusId || person.campusId || null
+    }, execute);
 
-  const queueDetails = {
-    queueId: queue.PublicId,
-    documentStatus: 'PDF hazırlanıyor',
-    pdfName
-  };
+    const queueDetails = {
+      queueId: queuedJob.PublicId,
+      documentStatus: 'PDF hazırlanıyor',
+      pdfName
+    };
 
-  for (const row of rows) {
-    await query(
+    for (const row of rows) {
+      const previousAssignedPersonId = row.AssignedPersonId || null;
+      const previousStatusForUpdate = String(row.HardwareStatus || '').toUpperCase().replace(/İ/g, 'I');
+      const updateResult = await execute(
       `
         UPDATE dbo.Hardware
         SET HardwareStatus = @status,
@@ -2676,36 +3758,44 @@ export async function saveZimmetOrReturnForUser(user, data) {
             DriveLink = NULL,
             UpdatedAt = SYSUTCDATETIME()
         WHERE HardwareId = @hardwareId
+          AND REPLACE(UPPER(ISNULL(HardwareStatus, N'')), N'İ', N'I') = @expectedStatus
+          AND ISNULL(AssignedPersonId, N'') = ISNULL(@expectedAssignedPersonId, N'')
       `,
       {
         status: { type: sql.NVarChar(40), value: isReturn ? 'DEPODA' : 'AKTIF' },
         assignedPersonId: { type: sql.NVarChar(160), value: isReturn ? null : person.id },
+        expectedStatus: { type: sql.NVarChar(40), value: previousStatusForUpdate },
+        expectedAssignedPersonId: { type: sql.NVarChar(160), value: previousAssignedPersonId },
         hardwareId: { type: sql.Int, value: row.HardwareId }
       }
     );
+      await assertSingleHardwareUpdate(updateResult, 'Cihaz durumu işlem sırasında değişti: ' + row.SerialNo + '. Lütfen veriyi yenileyip tekrar deneyin.');
 
-    const previousStatus = String(row.HardwareStatus || '').toUpperCase().replace(/İ/g, 'I');
-    const historyType = isReturn
-      ? 'İade (PDF hazırlanıyor)'
-      : previousStatus === 'AKTIF'
-        ? 'Zimmet (Üzerine Yazıldı, PDF hazırlanıyor)'
-        : 'Zimmet (PDF hazırlanıyor)';
+      const previousStatus = String(row.HardwareStatus || '').toUpperCase().replace(/İ/g, 'I');
+      const historyType = isReturn
+        ? 'İade (PDF hazırlanıyor)'
+        : previousStatus === 'AKTIF'
+          ? 'Zimmet (Üzerine Yazıldı, PDF hazırlanıyor)'
+          : 'Zimmet (PDF hazırlanıyor)';
 
-    await appendHardwareHistory(row.HardwareId, historyType, {
-      personId: person.id,
-      personName: person.name,
-      eventDate: today,
-      createdBy: user.email,
-      detailsJson: queueDetails
-    });
-  }
+      await appendHardwareHistory(row.HardwareId, historyType, {
+        personId: person.id,
+        personName: person.name,
+        eventDate: today,
+        createdBy: user.email,
+        detailsJson: queueDetails
+      }, execute);
+    }
 
-  await appendSystemLog(
-    isReturn ? 'IADE KUYRUK' : 'ZIMMET KUYRUK',
-    user,
-    `${person.name} -> ${rows.length} cihaz, PDF kuyruğu: ${queue.PublicId}`,
-    data.clientIp || ''
-  );
+    await appendSystemLog(
+      isReturn ? 'İADE KUYRUK' : 'ZİMMET KUYRUK',
+      user,
+      `${person.name} -> ${rows.length} cihaz, PDF kuyruğu: ${queuedJob.PublicId}`,
+      data.clientIp || '',
+      execute
+    );
+    return queuedJob;
+  });
 
   return {
     queued: true,
@@ -2720,24 +3810,62 @@ export async function fetchOperationQueueForUser(user, data = {}) {
   const limit = Math.min(Math.max(Number(data.limit || 20), 1), 100);
   const result = await query(
     `
-      SELECT TOP (@limit)
-        q.QueueId,
-        q.PublicId,
-        q.ActionType,
-        q.Status,
-        q.PayloadJson,
-        q.ResultJson,
-        q.ErrorMessage,
-        q.RequestedBy,
-        q.AttemptCount,
-        q.CreatedAt,
-        q.StartedAt,
-        q.FinishedAt,
-        c.Name AS Campus
-      FROM dbo.OperationQueue q
-      LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
-      WHERE @isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore
-      ORDER BY q.CreatedAt DESC
+      ;WITH QueueRows AS (
+        SELECT TOP (@limit)
+          q.QueueId,
+          q.PublicId,
+          q.ActionType,
+          q.Status,
+          CASE WHEN ISJSON(q.PayloadJson) = 1 THEN q.PayloadJson ELSE N'{}' END AS SafePayloadJson,
+          CASE WHEN ISJSON(q.ResultJson) = 1 THEN q.ResultJson ELSE N'{}' END AS SafeResultJson,
+          q.ErrorMessage,
+          q.RequestedBy,
+          q.AttemptCount,
+          q.CreatedAt,
+          q.StartedAt,
+          q.FinishedAt,
+          c.Name AS Campus
+        FROM dbo.OperationQueue q
+        LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
+        WHERE @isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore
+        ORDER BY q.CreatedAt DESC
+      )
+      SELECT
+        QueueId,
+        PublicId,
+        ActionType,
+        Status,
+        ErrorMessage,
+        RequestedBy,
+        AttemptCount,
+        CreatedAt,
+        StartedAt,
+        FinishedAt,
+        Campus,
+        JSON_VALUE(SafePayloadJson, N'$.documentType') AS PayloadDocumentType,
+        JSON_VALUE(SafePayloadJson, N'$.pdfName') AS PayloadPdfName,
+        JSON_VALUE(SafePayloadJson, N'$.campus') AS PayloadCampus,
+        JSON_VALUE(SafePayloadJson, N'$.senderCampus') AS PayloadSenderCampus,
+        JSON_VALUE(SafePayloadJson, N'$.receiverCampus') AS PayloadReceiverCampus,
+        JSON_VALUE(SafePayloadJson, N'$.transferDirection') AS PayloadTransferDirection,
+        JSON_VALUE(SafePayloadJson, N'$.requestedBy') AS PayloadRequestedBy,
+        JSON_VALUE(SafePayloadJson, N'$.itName') AS PayloadItName,
+        JSON_VALUE(SafePayloadJson, N'$.person.id') AS PayloadPersonId,
+        JSON_VALUE(SafePayloadJson, N'$.person.name') AS PayloadPersonName,
+        JSON_VALUE(SafePayloadJson, N'$.person.campus') AS PayloadPersonCampus,
+        JSON_VALUE(SafePayloadJson, N'$.person.department') AS PayloadPersonDepartment,
+        JSON_QUERY(SafePayloadJson, N'$.hardware') AS PayloadHardwareJson,
+        JSON_VALUE(SafeResultJson, N'$.url') AS ResultUrl,
+        JSON_VALUE(SafeResultJson, N'$.resultLabel') AS ResultLabel,
+        JSON_VALUE(SafeResultJson, N'$.matched') AS ResultMatched,
+        JSON_VALUE(SafeResultJson, N'$.reconciled') AS ResultReconciled,
+        JSON_VALUE(SafeResultJson, N'$.warnings') AS ResultWarnings,
+        JSON_VALUE(SafeResultJson, N'$.count') AS ResultCount,
+        JSON_VALUE(SafeResultJson, N'$.hardwareCount') AS ResultHardwareCount,
+        JSON_VALUE(SafeResultJson, N'$.actionType') AS ResultActionType,
+        JSON_VALUE(SafeResultJson, N'$.delivery') AS ResultDelivery
+      FROM QueueRows
+      ORDER BY CreatedAt DESC
     `,
     {
       limit: { type: sql.Int, value: limit },
@@ -2748,30 +3876,72 @@ export async function fetchOperationQueueForUser(user, data = {}) {
   );
 
   return {
-    jobs: result.recordset.map((row) => ({
-      queueId: row.PublicId,
-      internalQueueId: row.QueueId,
-      publicId: row.PublicId,
-      actionType: row.ActionType,
-      action: row.ActionType,
-      status: row.Status,
-      payloadJson: row.PayloadJson,
-      resultJson: row.ResultJson,
-      result: row.ResultJson,
-      errorMessage: row.ErrorMessage,
-      error: row.ErrorMessage,
-      requestedBy: row.RequestedBy,
-      attemptCount: row.AttemptCount,
-      createdAt: row.CreatedAt,
-      startedAt: row.StartedAt,
-      finishedAt: row.FinishedAt,
-      updatedAt: row.FinishedAt || row.StartedAt || row.CreatedAt,
-      campus: row.Campus || ''
-    }))
+    jobs: result.recordset.map((row) => {
+      const hardware = safeQueueHardware(parseQueueArray(row.PayloadHardwareJson));
+      const hasPerson = Boolean(
+        row.PayloadPersonId ||
+        row.PayloadPersonName ||
+        row.PayloadPersonCampus ||
+        row.PayloadPersonDepartment
+      );
+      const payloadJson = JSON.stringify(compactObject({
+        actionType: cleanText(row.ActionType, 120),
+        documentType: cleanText(row.PayloadDocumentType, 40),
+        pdfName: cleanText(row.PayloadPdfName, 260),
+        campus: cleanText(row.PayloadCampus, 160),
+        senderCampus: cleanText(row.PayloadSenderCampus, 160),
+        receiverCampus: cleanText(row.PayloadReceiverCampus, 160),
+        transferDirection: cleanText(row.PayloadTransferDirection, 20),
+        requestedBy: cleanText(row.PayloadRequestedBy, 320),
+        itName: cleanText(row.PayloadItName, 240),
+        person: hasPerson
+          ? {
+              id: cleanText(row.PayloadPersonId, 160),
+              name: cleanText(row.PayloadPersonName, 240),
+              campus: cleanText(row.PayloadPersonCampus, 160),
+              department: cleanText(row.PayloadPersonDepartment, 240)
+            }
+          : undefined,
+        hardware,
+        hardwareCount: hardware.length
+      }));
+      const resultJson = JSON.stringify(compactObject({
+        url: cleanText(row.ResultUrl, 1000),
+        resultLabel: cleanText(row.ResultLabel, 160),
+        matched: numberOrUndefined(row.ResultMatched),
+        reconciled: numberOrUndefined(row.ResultReconciled),
+        warnings: numberOrUndefined(row.ResultWarnings),
+        count: numberOrUndefined(row.ResultCount),
+        hardwareCount: numberOrUndefined(row.ResultHardwareCount),
+        actionType: cleanText(row.ResultActionType, 120),
+        delivery: cleanText(row.ResultDelivery, 40)
+      }));
+
+      return {
+        queueId: row.PublicId,
+        internalQueueId: row.QueueId,
+        publicId: row.PublicId,
+        actionType: row.ActionType,
+        action: row.ActionType,
+        status: row.Status,
+        payloadJson,
+        resultJson,
+        result: resultJson,
+        errorMessage: row.ErrorMessage,
+        error: row.ErrorMessage,
+        requestedBy: row.RequestedBy,
+        attemptCount: row.AttemptCount,
+        createdAt: row.CreatedAt,
+        startedAt: row.StartedAt,
+        finishedAt: row.FinishedAt,
+        updatedAt: row.FinishedAt || row.StartedAt || row.CreatedAt,
+        campus: row.Campus || ''
+      };
+    })
   };
 }
 
 export async function runOperationQueueForUser(user) {
-  await appendSystemLog('ISLEM KUYRUGU KONTROL', user, 'SQL API uzerinden kuyruk kontrol edildi.', '');
+  await appendSystemLog('İŞLEM KUYRUĞU KONTROL', user, 'SQL API üzerinden kuyruk kontrol edildi.', '');
   return { processed: 0, message: 'SQL API kuyruk okuyucu hazır; otomatik belge işleyici bir sonraki adımda bağlanacak.' };
 }

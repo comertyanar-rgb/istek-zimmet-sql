@@ -1,7 +1,7 @@
 import React from 'react';
-import { CheckCircle2, FileSignature, Loader2, X, FileText } from 'lucide-react';
+import { CheckCircle2, ClipboardCheck, Loader2, X, FileText } from 'lucide-react';
 import { OtpVerification } from './OtpVerification.jsx';
-import { SignaturePad } from './SignaturePad.jsx';
+import { HandwrittenStatementPad } from './HandwrittenStatementPad.jsx';
 
 function formatSerial(value) {
   const text = String(value ?? '').trim();
@@ -52,14 +52,14 @@ export function ReturnZimmetModal({ deps }) {
       {/* RETURN HARDWARE MODAL & PDF */}
       {returningData && (
         <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm overflow-y-auto"
+          className="app-modal-backdrop fixed inset-0 bg-black/80 backdrop-blur-sm overflow-y-auto"
           style={{ zIndex: 999999 }}
         >
           <div className="min-h-full flex items-start md:items-center justify-center p-2 sm:p-4 py-8">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden">
+            <div className="app-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden">
               <div className="flex justify-between items-center p-4 border-b bg-[#0066b1] text-white shrink-0">
                 <h3 className="font-bold text-base md:text-lg flex items-center gap-2">
-                  <FileSignature className="w-5 h-5" /> Donanım İade
+                  <ClipboardCheck className="w-5 h-5" /> Donanım İade
                   İşlemi
                 </h3>
                 <button
@@ -90,7 +90,7 @@ export function ReturnZimmetModal({ deps }) {
                     fontSize: '11px',
                     lineHeight: '1.4',
                   }}
-                  className="shadow-lg transition-all duration-300"
+                  className="theme-paper shadow-lg transition-all duration-300"
                 >
                   <h3 className="text-center font-bold text-[16px] mb-6 underline">
                     DONANIM İADE TUTANAĞI
@@ -282,7 +282,7 @@ export function ReturnZimmetModal({ deps }) {
                     <strong>
                       {new Date().toLocaleDateString('tr-TR')}
                     </strong>{' '}
-                    tarihinde aşağıda imzası bulunan personel tarafından
+                    tarihinde aşağıda beyanı bulunan personel tarafından
                     Bilgi İşlem (IT) departmanına iade edilmiştir.
                   </p>
 
@@ -406,26 +406,32 @@ export function ReturnZimmetModal({ deps }) {
 
                   <div style={{ display: 'flex', flexDirection: isGenerating ? 'row' : 'column', justifyContent: 'space-between', gap: isGenerating ? '0px' : '30px' }}>
                     
-                    {/* --- 1. ADIM: IT IMZASI --- */}
+                    {/* --- 1. ADIM: IT TESLİM ALMA BEYANI --- */}
                     <div style={{ width: isGenerating ? '50%' : '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <p style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>{currentUser.name}</p>
                       <p style={{ fontSize: '11px', marginBottom: '8px' }}>Teslim Alan Yetkili (IT)</p>
                       
-                      {!isGenerating && !returnItSignature && (
-                        <SignaturePad onSign={setReturnItSignature} label="1. Önce Siz (IT) İmzalayın" />
+                      {!isGenerating && (
+                        <HandwrittenStatementPad
+                          value={returnItSignature}
+                          onChange={setReturnItSignature}
+                          label="IT Teslim Alma Beyanı"
+                          statement="Donanımı belirtilen durumda teslim aldım."
+                        />
                       )}
                       
-                      <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className={(!isGenerating && !returnItSignature) ? 'hidden' : 'flex'}>
-                        {returnItSignature && (
+                      {isGenerating && returnItSignature && (
+                        <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                            <img src={returnItSignature.image} alt="İmza IT" style={{ maxHeight: '60px', maxWidth: '100%' }} />
-                            <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>ID: {returnItSignature.hash}</span>
+                            <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Donanımı belirtilen durumda teslim aldım.”</div>
+                            <img src={returnItSignature.image} alt="IT teslim alma beyanı" style={{ maxHeight: '60px', maxWidth: '100%' }} />
+                            <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>Beyan ID: {returnItSignature.hash}</span>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
 
-                    {/* --- 2. ADIM: PERSONEL KODU VE IMZASI --- */}
+                    {/* --- 2. ADIM: PERSONEL KODU VE TESLİM BEYANI --- */}
                     <div style={{ width: isGenerating ? '50%' : '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <p style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>{returningData.person.name}</p>
                       <p style={{ fontSize: '11px', marginBottom: '8px' }}>Teslim Eden (İade Eden) Personel</p>
@@ -433,31 +439,47 @@ export function ReturnZimmetModal({ deps }) {
                       {!isGenerating && (
                         <div className="w-full">
                           {returnItSignature && !returnPersonOtpData && (
-                            <OtpVerification personId={returningData.person.id} personName={returningData.person.name} personEmail={returningData.person.email} personPhone={returningData.person.phone} currentUser={currentUser} onPhoneSaved={handlePersonPhoneSaved} onVerified={setReturnPersonOtpData} />
+                            <OtpVerification
+                              personId={returningData.person.id}
+                              personEmail={returningData.person.email}
+                              personPhone={returningData.person.phone}
+                              otpAction="return"
+                              hardwareIds={returningData.hardwareArray.map((item) => item.id)}
+                              currentUser={currentUser}
+                              onPhoneSaved={handlePersonPhoneSaved}
+                              onVerified={setReturnPersonOtpData}
+                            />
                           )}
-                          {returnPersonOtpData && !returnPersonSignature && (
+                          {returnPersonOtpData && (
                             <div className="animate-in slide-in-from-bottom-2 mt-4">
-                              <div className="bg-amber-50 text-amber-700 text-[10px] font-bold py-1.5 px-3 rounded-t-xl border border-amber-200 flex items-center justify-center gap-1.5 w-full max-w-[320px] mx-auto border-b-0">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Kod Doğrulandı! Lütfen İmza Çizin.
+                              <div className="bg-amber-50 text-amber-700 text-[10px] font-bold py-1.5 px-3 rounded-t-xl border border-amber-200 flex items-center justify-center gap-1.5 w-full max-w-md mx-auto border-b-0">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Kod doğrulandı. Personel teslim beyanını yazabilir.
                               </div>
-                              <SignaturePad onSign={setReturnPersonSignature} label="2. Personel İmzası" />
+                              <HandwrittenStatementPad
+                                value={returnPersonSignature}
+                                onChange={setReturnPersonSignature}
+                                label="Personel İade Beyanı"
+                                statement="Donanımı belirtilen durumda teslim ettim."
+                              />
                             </div>
                           )}
                         </div>
                       )}
                       
-                      <div style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }} className={(!isGenerating && !returnPersonSignature) ? 'hidden' : 'flex'}>
-                        {returnPersonSignature && (
-                          <img src={returnPersonSignature.image} alt="İmza Personel" style={{ maxHeight: '45px', maxWidth: '100%', marginBottom: '2px' }} />
-                        )}
-                        {returnPersonOtpData && returnPersonSignature && (
+                      {isGenerating && returnPersonSignature && (
+                        <div style={{ minHeight: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                          <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Donanımı belirtilen durumda teslim ettim.”</div>
+                          <img src={returnPersonSignature.image} alt="Personel iade beyanı" style={{ maxHeight: '45px', maxWidth: '100%', marginBottom: '2px' }} />
+                          <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginBottom: '3px' }}>Beyan ID: {returnPersonSignature.hash}</span>
+                          {returnPersonOtpData && (
                           <div style={{ border: '1px solid #0066b1', padding: '2px 8px', borderRadius: '4px', textAlign: 'center', backgroundColor: '#f0f7ff' }}>
-                            <p style={{ fontSize: '7px', color: '#0066b1', fontWeight: 'bold', margin: '0' }}>✓ E-POSTA İLE ONAYLANDI</p>
+                            <p style={{ fontSize: '7px', color: '#0066b1', fontWeight: 'bold', margin: '0' }}>✓ {returnPersonOtpData.channel === 'sms' ? 'SMS' : 'E-POSTA'} İLE ONAYLANDI</p>
                             <p style={{ fontSize: '6px', color: '#666', margin: '0' }}>{returnPersonOtpData.email}</p>
                             <p style={{ fontSize: '6px', color: '#999', margin: '0', fontFamily: 'monospace' }}>Onay ID: {returnPersonOtpData.hash}</p>
                           </div>
-                        )}
-                      </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -500,7 +522,7 @@ export function ReturnZimmetModal({ deps }) {
                       </button>
                       <button
                         onClick={handleFinalizeReturn}
-                        // Hem imzalar hem de onay sart!
+                        // Her iki el yazısı beyanı, OTP ve hukuki onay birlikte tamamlanır.
                         disabled={!returnPersonSignature || !returnItSignature || !returnPersonOtpData || !isReturnAccepted}
                         className={`px-6 py-3 font-bold rounded-lg shadow-md transition-all flex items-center justify-center w-full sm:w-auto order-1 sm:order-2 ${
                           (!returnPersonSignature || !returnItSignature || !returnPersonOtpData || !isReturnAccepted)

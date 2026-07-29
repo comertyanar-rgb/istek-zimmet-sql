@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Mail, MessageSquare, X } from 'lucide-react';
 import { GAS_URL } from '../config/appConfig.js';
+import { postApiAction } from '../services/apiClient.js';
+import { showAppAlert } from '../services/uiMessageService.js';
 
 function normalizePhone(value) {
   const digits = String(value || '').replace(/\D/g, '');
@@ -17,9 +19,10 @@ function isValidTrMobile(value) {
 export const OtpVerification = ({
   apiUrl = GAS_URL,
   personId,
-  personName,
   personEmail,
   personPhone,
+  otpAction,
+  hardwareIds,
   onPhoneSaved,
   onVerified,
   currentUser,
@@ -31,10 +34,22 @@ export const OtpVerification = ({
   const [channel, setChannel] = useState('email');
   const [phone, setPhone] = useState(personPhone || '');
   const [phoneConfirmed, setPhoneConfirmed] = useState(false);
+  const [challengeId, setChallengeId] = useState('');
+  const hardwareContextKey = useMemo(
+    () => [...new Set((hardwareIds || []).map((value) => String(value || '').trim()).filter(Boolean))].sort().join('|'),
+    [hardwareIds]
+  );
 
   useEffect(() => {
     setPhone(personPhone || '');
   }, [personPhone]);
+
+  useEffect(() => {
+    setStep(1);
+    setCode('');
+    setChallengeId('');
+    setTimeLeft(120);
+  }, [personId, otpAction, hardwareContextKey]);
 
   useEffect(() => {
     if (step !== 2 || timeLeft <= 0) return undefined;
@@ -57,39 +72,36 @@ export const OtpVerification = ({
 
   const sendCode = async (e) => {
     if (e) e.preventDefault();
-    if (!personEmail) return alert('Hata: Personelin e-posta adresi sistemde yok.');
+    if (!personEmail) return showAppAlert('Hata: Personelin e-posta adresi sistemde yok.');
     if (channel === 'sms' && !isValidTrMobile(phone)) {
-      return alert('SMS için 5 ile başlayan 10 haneli geçerli telefon numarası girin.');
+      return showAppAlert('SMS için 5 ile başlayan 10 haneli geçerli telefon numarası girin.');
     }
     if (channel === 'sms' && !phoneConfirmed) {
-      return alert('Lütfen telefon numarasının personele ait olduğunu onaylayın.');
+      return showAppAlert('Lütfen telefon numarasının personele ait olduğunu onaylayın.');
     }
 
     setLoading(true);
     try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: JSON.stringify({
+      const data = await postApiAction(
+        {
           action: 'sendOTP',
           personId,
-          personEmail,
-          personName,
           personPhone: normalizePhone(phone),
           otpChannel: channel,
+          otpAction,
+          hardwareIds,
           authToken: currentUser.token,
-        }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        if (data.phone && onPhoneSaved) onPhoneSaved(personId, data.phone);
-        setStep(2);
-        setTimeLeft(120);
-        setCode('');
-      } else {
-        throw new Error(data.error);
-      }
+        },
+        { url: apiUrl, timeoutMs: 30000 }
+      );
+      if (!data.challengeId) throw new Error('Sunucu doğrulama isteği oluşturmadı.');
+      setChallengeId(data.challengeId);
+      if (data.phone && onPhoneSaved) onPhoneSaved(personId, data.phone);
+      setStep(2);
+      setTimeLeft(120);
+      setCode('');
     } catch (error) {
-      alert('Kod gönderilemedi: ' + error.message);
+      showAppAlert('Kod gönderilemedi: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -101,18 +113,26 @@ export const OtpVerification = ({
     if (code.length !== 6 || timeLeft <= 0) return;
     setLoading(true);
     try {
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'verifyOTP', personEmail, otpCode: code, authToken: currentUser.token }),
+      const data = await postApiAction(
+        {
+          action: 'verifyOTP',
+          personId,
+          challengeId,
+          otpCode: code,
+          otpAction,
+          hardwareIds,
+          authToken: currentUser.token,
+        },
+        { url: apiUrl, timeoutMs: 30000 }
+      );
+      onVerified({
+        email: personEmail,
+        time: new Date().toLocaleString('tr-TR'),
+        hash: data.hash,
+        channel: data.channel || channel,
       });
-      const data = await response.json();
-      if (data.success) {
-        onVerified({ email: personEmail, time: new Date().toLocaleString('tr-TR'), hash: data.hash });
-      } else {
-        throw new Error(data.error);
-      }
     } catch (error) {
-      alert('Doğrulama başarısız: ' + error.message);
+      showAppAlert('Doğrulama başarısız: ' + error.message);
       setCode('');
     } finally {
       setLoading(false);
@@ -206,7 +226,7 @@ export const OtpVerification = ({
                 Kalan süre: <span className="font-black">{formatTime(timeLeft)}</span>
               </p>
               <button onClick={verifyCode} disabled={loading || code.length !== 6} className="w-full py-2.5 bg-green-600 text-white text-xs font-bold rounded-lg shadow-md hover:bg-green-700 transition-colors flex justify-center items-center h-10 disabled:opacity-50">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Kodu Onayla ve İmzaya Geç'}
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Kodu Onayla ve Beyana Geç'}
               </button>
             </>
           ) : (

@@ -1,9 +1,18 @@
 import { sendOtpChallenge, verifyOtpCode } from './otpService.js';
 import { processPdfQueue } from './pdfQueueWorker.js';
 import { verifyGoogleIdentity } from './googleAuth.js';
-import { createSession, getSessionUser } from './sessionService.js';
+import { createSession, getSessionUser, revokeSession } from './sessionService.js';
+import { config } from './config.js';
+import {
+  clearPersonnelOverrideForAdmin,
+  fetchAdminOverviewForUser,
+  saveAuthorizedUserForAdmin,
+  savePersonnelOverrideForAdmin
+} from './repositories/adminRepository.js';
+import { isSuperAdminEmail, requireSuperAdmin } from './superAdmin.js';
 import {
   addHardwareForUser,
+  bulkAddHardwareForUser,
   bulkStatusUpdateForUser,
   bulkUpdateGroupForUser,
   cancelTransferForUser,
@@ -23,6 +32,7 @@ import {
   fetchSignatureMetaForUser,
   fetchSignatureQueueForUser,
   getAuthorizedUser,
+  getOtpRecipientForUser,
   importMissingGlpiDevicesForUser,
   manualAssignOrUploadMissingDocumentForUser,
   processGlpiReconcileQueue,
@@ -48,7 +58,13 @@ function notImplemented(action) {
   };
 }
 
-export async function handleAction(data) {
+function agentSecretForRequest(data, context, action) {
+  const agentAuth = context?.agentAuth;
+  if (agentAuth?.verified && agentAuth.action === action) return agentAuth.secret;
+  return data.secret;
+}
+
+export async function handleAction(data, context = {}) {
   const action = data?.action;
   if (!action) return { success: false, error: 'Action bulunamadı.' };
 
@@ -67,58 +83,118 @@ export async function handleAction(data) {
       role: authorizedUser.role,
       campus: authorizedUser.campus,
       name: authorizedUser.name || googleUser.name || authorizedUser.email.split('@')[0],
-      picture: authorizedUser.picture || googleUser.picture || ''
+      picture: authorizedUser.picture || googleUser.picture || '',
+      isSuperAdmin: isSuperAdminEmail(authorizedUser.email, config.superAdminEmails)
     });
   }
 
   if (action === 'fetchADPasswordJobs') {
-    const payload = await fetchAdPasswordAgentJobs(data.secret, data);
+    const payload = await fetchAdPasswordAgentJobs(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
   if (action === 'completeADPasswordJob') {
-    const payload = await completeAdPasswordAgentJob(data.secret, data);
+    const payload = await completeAdPasswordAgentJob(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
   if (action === 'syncGLPI') {
-    const payload = await syncGlpiDevicesFromAgent(data.secret, data);
+    const payload = await syncGlpiDevicesFromAgent(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
   if (action === 'syncPersonnel') {
-    const payload = await syncPersonnelFromAgent(data.secret, data);
+    const payload = await syncPersonnelFromAgent(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
   if (action === 'fetchSignatureJobs') {
-    const payload = await fetchSignatureAgentJobs(data.secret, data);
+    const payload = await fetchSignatureAgentJobs(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
   if (action === 'completeSignatureJob') {
-    const payload = await completeSignatureAgentJob(data.secret, data);
+    const payload = await completeSignatureAgentJob(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
+
+  if (action === 'logout') {
+    await revokeSession(data.authToken);
+    return success();
+  }
+
   const currentUser = await getSessionUser(data.authToken);
 
+  if (action === 'adminFetchOverview') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await fetchAdminOverviewForUser();
+    return success({
+      ...payload,
+      users: payload.users.map((user) => ({
+        ...user,
+        protected: isSuperAdminEmail(user.email, config.superAdminEmails)
+      }))
+    });
+  }
+
+  if (action === 'adminSaveAuthorizedUser') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await saveAuthorizedUserForAdmin(currentUser, data, {
+      isProtectedEmail: (email) => isSuperAdminEmail(email, config.superAdminEmails)
+    });
+    return success(payload);
+  }
+
+  if (action === 'adminSavePersonnelOverride') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await savePersonnelOverrideForAdmin(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'adminClearPersonnelOverride') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await clearPersonnelOverrideForAdmin(currentUser, data);
+    return success(payload);
+  }
+
   if (action === 'sendOTP') {
+    const person = await getOtpRecipientForUser(currentUser, data.personId);
     const payload = await sendOtpChallenge({
-      personEmail: data.personEmail,
-      personName: data.personName,
+      person,
       personPhone: data.personPhone,
-      channel: data.otpChannel
+      channel: data.otpChannel,
+      context: {
+        requesterEmail: currentUser.email,
+        action: data.otpAction,
+        hardwareIds: data.hardwareIds
+      }
     });
 
     if (payload.channel === 'sms' && data.personId && payload.phone) {
       await updatePersonnelPhoneForUser(currentUser, data.personId, payload.phone);
     }
 
-    return success({ phone: payload.phone, channel: payload.channel, delivery: payload.delivery, debugOtp: payload.debugOtp });
+    return success({
+      challengeId: payload.challengeId,
+      phone: payload.phone,
+      channel: payload.channel,
+      delivery: payload.delivery
+    });
   }
 
   if (action === 'verifyOTP') {
-    const payload = verifyOtpCode(data.personEmail, data.otpCode);
+    const person = await getOtpRecipientForUser(currentUser, data.personId);
+    const payload = verifyOtpCode({
+      challengeId: data.challengeId,
+      otpCode: data.otpCode,
+      context: {
+        requesterEmail: currentUser.email,
+        personId: person.id,
+        personEmail: person.email,
+        action: data.otpAction,
+        hardwareIds: data.hardwareIds
+      }
+    });
     return success(payload);
   }
 
@@ -170,7 +246,7 @@ export async function handleAction(data) {
   }
 
   if (action === 'fetchData') {
-    const payload = await fetchDataForUser(currentUser);
+    const payload = await fetchDataForUser(currentUser, data);
     return success(payload);
   }
 
@@ -196,6 +272,11 @@ export async function handleAction(data) {
 
   if (action === 'addHardware') {
     const payload = await addHardwareForUser(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'bulkAddHardware') {
+    const payload = await bulkAddHardwareForUser(currentUser, data);
     return success(payload);
   }
 

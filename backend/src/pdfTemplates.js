@@ -49,6 +49,19 @@ function logoHtml() {
   }
 }
 
+function normalizeStatement(value, fallbackText = '') {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    return { image: value, text: fallbackText, hash: '' };
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) return null;
+  return {
+    image: String(value.image || ''),
+    text: String(value.text || fallbackText),
+    hash: String(value.hash || '')
+  };
+}
+
 function legacyHardwareRows(items = [], accessories = []) {
   const rows = [];
   for (const item of items) {
@@ -84,19 +97,35 @@ export function buildZimmetDocumentHtml(payload) {
   const today = trDate();
   const currentTime = trDateTime();
   const person = payload.person || {};
-  const signatures = payload.signatures || {};
+  const legacySignatures = payload.signatures || {};
+  const statementPayload = payload.statements || {};
+  const statements = {
+    it: normalizeStatement(
+      statementPayload.it || legacySignatures.it,
+      isReturn ? 'Donanımı belirtilen durumda teslim aldım.' : 'Eksiksiz teslim ettim.'
+    ),
+    person: normalizeStatement(
+      statementPayload.person || legacySignatures.person,
+      isReturn
+        ? 'Donanımı belirtilen durumda teslim ettim.'
+        : 'Okudum, eksiksiz teslim aldım ve onaylıyorum.'
+    ),
+    otpHash: statementPayload.otpHash || legacySignatures.otpHash || ''
+  };
   const personTitle = person.department && person.department !== 'Personel'
     ? ` - ${escapeHtml(person.department)}`
     : '';
   const altText = isReturn
-    ? `Yukarıda marka, model ve seri numarası belirtilen İSTEK İstanbul Eğitim Hizmetleri A.Ş. mülkiyetindeki donanım, <strong>${today}</strong> tarihinde aşağıda imzası bulunan personel tarafından Bilgi İşlem (IT) departmanına iade edilmiştir.<br><br><strong>Cihazın İade Anındaki Durumu: </strong>${payload.returnCondition === 'eksiksiz' ? 'Eksiksiz, hasarsız ve çalışır durumda.' : `Hasarlı/Eksik: ${escapeHtml(payload.returnExplanation || '-')}`}`
+    ? `Yukarıda marka, model ve seri numarası belirtilen İSTEK İstanbul Eğitim Hizmetleri A.Ş. mülkiyetindeki donanım, <strong>${today}</strong> tarihinde aşağıda beyanı bulunan personel tarafından Bilgi İşlem (IT) departmanına iade edilmiştir.<br><br><strong>Cihazın İade Anındaki Durumu: </strong>${payload.returnCondition === 'eksiksiz' ? 'Eksiksiz, hasarsız ve çalışır durumda.' : `Hasarlı/Eksik: ${escapeHtml(payload.returnExplanation || '-')}`}`
     : `Yukarıda marka, model ve seri numarası belirtilen İSTEK İstanbul Eğitim Hizmetleri A.Ş. mülkiyetindeki donanım, <strong>${today}</strong> tarihinde tarafıma eksiksiz ve sorunsuz olarak teslim edilmiştir. Cihazı, 'Bilişim Kaynaklarını Kullanma Yönergesi' şartlarına uygun şekilde kullanacağımı, donanıma herhangi bir zarar verdiğim takdirde vermiş olduğum zarara ilişkin tutarın ücretimden, tazminatlarımdan ve diğer tüm hak edişlerimden kesilmesine nakden ve defaten muvafakat ettiğimi kabul ve beyan ederim.${payload.zimmetExplanation ? `<br><br><strong>Ek Açıklama / Not:</strong> ${escapeHtml(payload.zimmetExplanation)}` : ''}`;
 
-  const signatureCell = (titleText, name, signature, otpHash = '') => `
+  const statementCell = (titleText, name, statement, otpHash = '') => `
     <td style="width:50%;border:none;vertical-align:top;text-align:center;">
       <div style="font-size:12px;margin-bottom:4px;"><strong>${titleText}</strong></div>
       <div style="font-size:13px;font-weight:bold;margin-bottom:10px;">${escapeHtml(name || '')}</div>
-      ${signature ? `<img src="${signature}" style="height:60px;max-width:150px;object-fit:contain;"/>` : ''}
+      ${statement?.text ? `<div style="font-size:9px;color:#333;margin:0 auto 6px;max-width:240px;">“${escapeHtml(statement.text)}”</div>` : ''}
+      ${statement?.image ? `<img src="${statement.image}" style="height:60px;max-width:220px;object-fit:contain;"/>` : ''}
+      ${statement?.hash ? `<div style="font-family:monospace;font-size:8px;color:#666;margin-top:5px;">Beyan ID: ${escapeHtml(statement.hash)}</div>` : ''}
       ${otpHash ? `<div style="font-family:monospace;font-size:8px;color:#666;margin-top:5px;">OTP ID: ${escapeHtml(otpHash)}</div>` : ''}
     </td>
   `;
@@ -126,8 +155,8 @@ export function buildZimmetDocumentHtml(payload) {
 
       <table style="width:100%;text-align:center;border:none;margin-top:50px;">
         <tr>
-          ${signatureCell(isReturn ? 'İade Eden Personel' : 'Teslim Alan Personel', person.name, signatures.person, signatures.otpHash)}
-          ${signatureCell(isReturn ? 'Teslim Alan (IT)' : 'Teslim Eden (IT)', payload.itName || payload.requestedBy, signatures.it)}
+          ${statementCell(isReturn ? 'İade Eden Personel Beyanı' : 'Teslim Alan Personel Beyanı', person.name, statements.person, statements.otpHash)}
+          ${statementCell(isReturn ? 'Teslim Alan IT Beyanı' : 'Teslim Eden IT Beyanı', payload.itName || payload.requestedBy, statements.it)}
         </tr>
       </table>
     </div>
@@ -160,14 +189,7 @@ export function buildZimmetDocumentHtml(payload) {
         <p style="margin-bottom:6px;text-align:justify;"><strong>b)</strong> Herhangi bir nedenle iş akdi feshedilen personel bilgisayarını teslim aldığı şekilde iade etmezse, teslim belgesi ve ilgili yönergelere dayanarak İSTEK İstanbul Eğitim Hizmetleri A.Ş tarafından aleyhinde yasal takip başlatılır, tüm aksesuarları ile birlikte bilgisayar veya bedeli ilgili distribütörün vereceği satış fiyatı üzerinden yasal faizleri ile birlikte talep edilir.</p>
       </div>
 
-      <table style="width:100%;text-align:center;border:none;margin-top:25px;">
-        <tr>
-          ${signatureCell('Tebellüğ Eden (Personel)', person.name, signatures.person)}
-          ${signatureCell('Tebliğ Eden (IT)', payload.itName || payload.requestedBy, signatures.it)}
-        </tr>
-      </table>
-
-      <div style="margin-top:25px;font-size:9px;color:#777;border-top:1px solid #ccc;padding-top:10px;">
+      <div style="margin-top:18px;font-size:9px;color:#777;border-top:1px solid #ccc;padding-top:10px;">
         <strong>DİJİTAL İŞLEM LOGU:</strong> IP: ${escapeHtml(payload.clientIp || 'Bilinmiyor')} | Zaman: ${escapeHtml(currentTime)} | Yetkili: ${escapeHtml(payload.itEmail || payload.requestedBy || '')}
       </div>
     </div>
@@ -195,7 +217,12 @@ export function buildTransferDocumentHtml(payload) {
   const isOut = payload.transferDirection === 'out';
   const today = trDate();
   const currentTime = trDateTime();
-  const signatures = payload.signatures || {};
+  const legacySignatures = payload.signatures || {};
+  const statementPayload = payload.statements || {};
+  const transferStatement = normalizeStatement(
+    statementPayload.transfer || legacySignatures.transfer,
+    isOut ? 'Eksiksiz teslim ettim.' : 'Eksiksiz teslim aldım.'
+  );
   const senderCampus = payload.senderCampus || '-';
   const receiverCampus = payload.receiverCampus || '-';
   const targetCampus = isOut ? receiverCampus : receiverCampus;
@@ -248,15 +275,19 @@ export function buildTransferDocumentHtml(payload) {
   <table style="width: 100%; text-align: center; border: none; margin-top: 20px;">
     <tr>
       <td style="width: 50%; border: none; vertical-align: top;">
-        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Eden (Gönderen)</div>
+        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Eden Beyanı (Gönderen)</div>
         <div style="font-size: 12px; margin-bottom: 10px;">${escapeHtml(senderName)}</div>
-        ${isOut && signatures.transfer ? `<img src="${signatures.transfer}" style="height: 60px; max-width: 150px; object-fit: contain;" />` : ''}
+        ${isOut && transferStatement?.text ? `<div style="font-size:9px;color:#333;margin-bottom:6px;">“${escapeHtml(transferStatement.text)}”</div>` : ''}
+        ${isOut && transferStatement?.image ? `<img src="${transferStatement.image}" style="height:60px;max-width:220px;object-fit:contain;" />` : ''}
+        ${isOut && transferStatement?.hash ? `<div style="font-family:monospace;font-size:8px;color:#666;margin-top:5px;">Beyan ID: ${escapeHtml(transferStatement.hash)}</div>` : ''}
         <div style="font-size: 10px; color: #777; margin-top: 8px;">${escapeHtml(senderCampus)}</div>
       </td>
       <td style="width: 50%; border: none; vertical-align: top;">
-        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Alan (Alıcı)</div>
+        <div style="font-size: 12px; font-weight: bold; text-decoration: underline; margin-bottom: 20px;">Teslim Alan Beyanı (Alıcı)</div>
         <div style="font-size: 12px; margin-bottom: 10px;">${escapeHtml(receiverName)}</div>
-        ${!isOut && signatures.transfer ? `<img src="${signatures.transfer}" style="height: 60px; max-width: 150px; object-fit: contain;" />` : ''}
+        ${!isOut && transferStatement?.text ? `<div style="font-size:9px;color:#333;margin-bottom:6px;">“${escapeHtml(transferStatement.text)}”</div>` : ''}
+        ${!isOut && transferStatement?.image ? `<img src="${transferStatement.image}" style="height:60px;max-width:220px;object-fit:contain;" />` : ''}
+        ${!isOut && transferStatement?.hash ? `<div style="font-family:monospace;font-size:8px;color:#666;margin-top:5px;">Beyan ID: ${escapeHtml(transferStatement.hash)}</div>` : ''}
         <div style="font-size: 10px; color: #777; margin-top: 8px;">${escapeHtml(receiverCampus)}</div>
       </td>
     </tr>

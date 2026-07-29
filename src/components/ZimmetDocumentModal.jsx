@@ -1,7 +1,7 @@
 import React from 'react';
-import { CheckCircle2, FileSignature, Loader2 } from 'lucide-react';
+import { CheckCircle2, Loader2, PenLine } from 'lucide-react';
 import { OtpVerification } from './OtpVerification.jsx';
-import { SignaturePad } from './SignaturePad.jsx';
+import { HandwrittenStatementPad } from './HandwrittenStatementPad.jsx';
 
 function formatSerial(value) {
   const text = String(value ?? '').trim();
@@ -75,7 +75,7 @@ export function ZimmetDocumentModal({ deps }) {
             textRendering: 'optimizeLegibility',
             WebkitFontSmoothing: 'antialiased',
           }}
-          className="shadow-xl mx-auto print:shadow-none print:m-0 transition-all duration-300"
+          className="theme-paper shadow-xl mx-auto print:shadow-none print:m-0 transition-all duration-300"
         >
           <style>{`
             .pdf-page { padding: ${
@@ -224,29 +224,35 @@ export function ZimmetDocumentModal({ deps }) {
               <p className="pdf-p"><span className="pdf-strong">b)</span> Herhangi bir nedenle iş akdi feshedilen personel bilgisayarını teslim aldığı şekilde iade etmezse, teslim belgesi ve ilgili yönergelere dayanarak İSTEK İstanbul Eğitim Hizmetleri A.Ş tarafından aleyhinde yasal takip başlatılır, tüm aksesuarları ile birlikte bilgisayar veya bedeli ilgili distribütörün vereceği satış fiyatı üzerinden yasal faizleri ile birlikte talep edilir.</p>
             </div>
 
-            {/* 2. SAYFA IMZA VE OTP AKIS ALANI */}
+            {/* 2. SAYFA EL YAZISI BEYAN VE OTP AKIŞ ALANI */}
             <div style={{ display: 'flex', flexDirection: isGenerating ? 'row' : 'column', justifyContent: 'space-between', gap: isGenerating ? '0px' : '30px', marginTop: '40px' }}>
               
-              {/* --- 1. ADIM: IT IMZASI --- */}
+              {/* --- 1. ADIM: IT TESLİM BEYANI --- */}
               <div style={{ width: isGenerating ? '50%' : '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <p style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>Tebliğ Eden (IT):</p>
                 <p style={{ fontSize: '12px', marginBottom: '8px' }}>{currentUser.name}</p>
                 
-                {!isGenerating && !itSignature && (
-                  <SignaturePad onSign={setItSignature} label="1. Önce Siz (IT) İmzalayın" />
+                {!isGenerating && (
+                  <HandwrittenStatementPad
+                    value={itSignature}
+                    onChange={setItSignature}
+                    label="IT Teslim Beyanı"
+                    statement="Eksiksiz teslim ettim."
+                  />
                 )}
                 
-                <div style={{ height: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center' }} className={(!isGenerating && !itSignature) ? 'hidden' : 'flex'}>
-                  {itSignature && (
+                {isGenerating && itSignature && (
+                  <div style={{ minHeight: '80px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <img src={itSignature.image} alt="İmza IT" style={{ maxHeight: '60px', maxWidth: '100%' }} />
-                      <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>ID: {itSignature.hash}</span>
+                      <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Eksiksiz teslim ettim.”</div>
+                      <img src={itSignature.image} alt="IT teslim beyanı" style={{ maxHeight: '60px', maxWidth: '100%' }} />
+                      <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginTop: '2px' }}>Beyan ID: {itSignature.hash}</span>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
-              {/* --- 2. ADIM: PERSONEL KODU VE IMZASI --- */}
+              {/* --- 2. ADIM: PERSONEL KODU VE TESLİM BEYANI --- */}
               <div style={{ width: isGenerating ? '50%' : '100%', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                 <p style={{ fontWeight: 'bold', fontSize: '12px', marginBottom: '4px' }}>Tebellüğ Eden (Personel):</p>
                 <p style={{ fontSize: '12px', marginBottom: '8px' }}>{person?.name}</p>
@@ -254,32 +260,48 @@ export function ZimmetDocumentModal({ deps }) {
                 {!isGenerating && (
                   <div className="w-full">
                     {itSignature && !personOtpData && (
-                       <OtpVerification personId={person?.id} personName={person?.name} personEmail={person?.email} personPhone={person?.phone} currentUser={currentUser} onPhoneSaved={handlePersonPhoneSaved} onVerified={setPersonOtpData} />
+                       <OtpVerification
+                         personId={person?.id}
+                         personEmail={person?.email}
+                         personPhone={person?.phone}
+                         otpAction="zimmet"
+                         hardwareIds={items.map((item) => item.id)}
+                         currentUser={currentUser}
+                         onPhoneSaved={handlePersonPhoneSaved}
+                         onVerified={setPersonOtpData}
+                       />
                     )}
 
-                    {personOtpData && !personSignature && (
+                    {personOtpData && (
                        <div className="animate-in slide-in-from-bottom-2 mt-4">
-                         <div className="bg-green-50 text-green-700 text-[10px] font-bold py-1.5 px-3 rounded-t-xl border border-green-200 flex items-center justify-center gap-1.5 w-full max-w-[320px] mx-auto border-b-0">
-                           <CheckCircle2 className="w-3.5 h-3.5" /> Kod Doğrulandı! Lütfen İmza Çizin.
+                         <div className="bg-green-50 text-green-700 text-[10px] font-bold py-1.5 px-3 rounded-t-xl border border-green-200 flex items-center justify-center gap-1.5 w-full max-w-md mx-auto border-b-0">
+                           <CheckCircle2 className="w-3.5 h-3.5" /> Kod doğrulandı. Personel teslim beyanını yazabilir.
                          </div>
-                       <SignaturePad onSign={setPersonSignature} label="2. Personel İmzası" />
+                         <HandwrittenStatementPad
+                           value={personSignature}
+                           onChange={setPersonSignature}
+                           label="Personel Teslim Alma Beyanı"
+                           statement="Okudum, eksiksiz teslim aldım ve onaylıyorum."
+                         />
                        </div>
                     )}
                   </div>
                 )}
                 
-                <div style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }} className={(!isGenerating && !personSignature) ? 'hidden' : 'flex'}>
-                  {personSignature && (
-                    <img src={personSignature.image} alt="İmza Personel" style={{ maxHeight: '45px', maxWidth: '100%', marginBottom: '2px' }} />
-                  )}
-                  {personOtpData && personSignature && (
+                {isGenerating && personSignature && (
+                  <div style={{ minHeight: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+                    <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Okudum, eksiksiz teslim aldım ve onaylıyorum.”</div>
+                    <img src={personSignature.image} alt="Personel teslim alma beyanı" style={{ maxHeight: '45px', maxWidth: '100%', marginBottom: '2px' }} />
+                    <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginBottom: '3px' }}>Beyan ID: {personSignature.hash}</span>
+                    {personOtpData && (
                     <div style={{ border: '1px solid #0066b1', padding: '2px 8px', borderRadius: '4px', textAlign: 'center', backgroundColor: '#f0f7ff' }}>
-                      <p style={{ fontSize: '7px', color: '#0066b1', fontWeight: 'bold', margin: '0' }}>✓ E-POSTA İLE ONAYLANDI</p>
+                      <p style={{ fontSize: '7px', color: '#0066b1', fontWeight: 'bold', margin: '0' }}>✓ {personOtpData.channel === 'sms' ? 'SMS' : 'E-POSTA'} İLE ONAYLANDI</p>
                       <p style={{ fontSize: '6px', color: '#666', margin: '0' }}>{personOtpData.email}</p>
                       <p style={{ fontSize: '6px', color: '#999', margin: '0', fontFamily: 'monospace' }}>Onay ID: {personOtpData.hash}</p>
                     </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -328,7 +350,7 @@ export function ZimmetDocumentModal({ deps }) {
                   cihazlarda meydana gelebilecek ve garanti kapsamı dışında kalan her türlü zararı (kullanıcı hatası vb.) 
                   tazmin etmeyi peşinen kabul ve beyan ederim. 
                   <br/><br/>
-                  İşbu formda yer alan adım, soyadım ve imzamın/dijital izimin, zimmet süreçlerinin yürütülmesi amacıyla 
+                  İşbu formda yer alan kimlik, doğrulama ve beyan kayıtlarımın zimmet süreçlerinin yürütülmesi amacıyla
                   6698 sayılı KVKK kapsamında işlenmesine açık rıza gösteriyorum.
                 </div>
               </label>
@@ -340,7 +362,7 @@ export function ZimmetDocumentModal({ deps }) {
             {/* AKSIYON BUTONLARI */}
             <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
               <p className="text-[13px] font-bold text-gray-700 text-center sm:text-left flex items-center gap-2">
-                <FileSignature className="w-5 h-5 text-blue-600" /> İmzalarınızı atıp işlemi onaylayın.
+                <PenLine className="w-5 h-5 text-blue-600" /> El yazısı beyanlarını ve doğrulama adımlarını tamamlayın.
               </p>
               
               <div className="flex gap-3 w-full sm:w-auto justify-center">

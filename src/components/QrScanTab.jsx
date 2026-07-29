@@ -41,6 +41,7 @@ const playBeepSound = () => {
     oscillator.type = 'sine';
     oscillator.frequency.value = 800; // Frekans (Hz)
     gainNode.gain.value = 0.1; // Ses seviyesi
+    oscillator.addEventListener('ended', () => audioCtx.close().catch(() => {}), { once: true });
     
     oscillator.start();
     setTimeout(() => oscillator.stop(), 100); // 100ms sonra dur
@@ -81,12 +82,14 @@ export const QrScanTab = ({
 
   // qrScannedHardware listesi her değiştiğinde (yeni QR okunduğunda) animasyon tetiklenir
   useEffect(() => {
+    let animationTimer;
     if (qrScannedHardware.length > lastScannedCount.current) {
       playBeepSound();
       setScanSuccessAnim(true);
-      setTimeout(() => setScanSuccessAnim(false), 800); // 800ms sonra animasyonu kapat
+      animationTimer = window.setTimeout(() => setScanSuccessAnim(false), 800);
     }
     lastScannedCount.current = qrScannedHardware.length;
+    return () => window.clearTimeout(animationTimer);
   }, [qrScannedHardware.length]);
 
   const toggleSelected = (id) => {
@@ -133,7 +136,7 @@ export const QrScanTab = ({
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-4 animate-in fade-in pb-32">
+    <div className="app-tab-panel max-w-5xl mx-auto space-y-4 pb-32">
       <style>{`
         .qr-hide-scroll::-webkit-scrollbar { display: none; }
         .qr-hide-scroll { -ms-overflow-style: none; scrollbar-width: none; }
@@ -189,7 +192,11 @@ export const QrScanTab = ({
                     </button>
 
                     {/* Odak Çerçevesi */}
-                    <div className="absolute inset-12 md:inset-16 border-2 border-white/70 rounded-2xl shadow-[0_0_0_999px_rgba(0,0,0,0.4)] pointer-events-none" />
+                    <div
+                      className={`qr-scan-frame absolute inset-12 md:inset-16 border-2 border-white/70 rounded-2xl shadow-[0_0_0_999px_rgba(0,0,0,0.4)] pointer-events-none ${
+                        scanSuccessAnim ? 'is-success' : ''
+                      }`}
+                    />
                     
                     {/* Bilgi Metni */}
                     <div className="absolute bottom-4 left-4 right-4 text-center text-xs font-bold text-white/90 bg-black/50 rounded-full py-2 pointer-events-none backdrop-blur-sm">
@@ -198,7 +205,7 @@ export const QrScanTab = ({
 
                     {/* BAŞARILI OKUMA ANİMASYONU */}
                     {scanSuccessAnim && (
-                      <div className="absolute inset-0 bg-green-500/30 backdrop-blur-[2px] flex items-center justify-center z-30 animate-in fade-in zoom-in duration-200">
+                      <div className="qr-success-feedback absolute inset-0 bg-green-500/25 backdrop-blur-[1px] flex items-center justify-center z-30">
                          <div className="bg-white px-4 py-2 rounded-full shadow-xl flex items-center gap-2 transform scale-110">
                             <CheckCircle2 className="w-6 h-6 text-green-600" />
                             <span className="font-black text-green-700 text-sm">OKUNDU!</span>
@@ -251,7 +258,7 @@ export const QrScanTab = ({
                 </div>
               ) : (
                 <div className="divide-y divide-gray-100 max-h-[520px] overflow-y-auto">
-                  {qrScannedHardware.map((item) => {
+                  {qrScannedHardware.map((item, index) => {
                     const selected = selectedQrHardwareIds.includes(item.id);
                     return (
                       <div
@@ -265,7 +272,7 @@ export const QrScanTab = ({
                         onMouseLeave={clearCardPressTimer}
                         className={`p-3 md:p-4 flex items-start gap-3 cursor-pointer transition-colors ${
                           selected ? 'bg-blue-50/70' : 'hover:bg-gray-50'
-                        }`}
+                        } ${scanSuccessAnim && index === 0 ? 'qr-new-record' : ''}`}
                       >
                         {selectedCount > 0 && (
                           <input
@@ -290,7 +297,7 @@ export const QrScanTab = ({
                               </p>
                               <p className="text-xs text-[#0066b1] font-bold mt-0.5">S/N: {item.serial || item.id}</p>
                             </div>
-                            <span className={`text-[10px] font-black border px-2 py-1 rounded-full shrink-0 ${getStatusClass(item.status)}`}>
+                            <span className={`status-chip-motion text-[10px] font-black border px-2 py-1 rounded-full shrink-0 ${getStatusClass(item.status)}`}>
                               {getStatusLabel(item.status)}
                             </span>
                           </div>
