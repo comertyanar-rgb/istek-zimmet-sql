@@ -513,7 +513,16 @@ if (config.frontend.serveEnabled) {
     })
   );
 
-  app.get('*', (_req, res, next) => {
+  app.get('*', (req, res, next) => {
+    const isReservedPath =
+      req.path === '/health' ||
+      req.path.startsWith('/api/') ||
+      req.path.startsWith('/exports/');
+    if (isReservedPath || !req.accepts('html')) {
+      next();
+      return;
+    }
+
     res.setHeader('cache-control', 'no-store');
     res.sendFile(path.join(frontendDistDir, 'index.html'), (error) => {
       if (error) next(error);
