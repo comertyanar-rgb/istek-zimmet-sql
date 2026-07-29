@@ -35,6 +35,14 @@ kapsaminda girin:
 [Environment]::SetEnvironmentVariable("AD_RESET_PRIVATE_KEY_PATH", "C:\ZimmetAD\ad-reset-private.pem", "Machine")
 ```
 
+Ajan varsayılan olarak yazılabilir ve AD Web Services sunan bir etki alanı
+denetleyicisini otomatik keşfeder. Birden fazla denetleyici veya RODC bulunan
+ortamlarda yazılabilir denetleyiciyi açıkça sabitlemek daha güvenlidir:
+
+```powershell
+[Environment]::SetEnvironmentVariable("AD_DOMAIN_CONTROLLER", "dc01.example.local", "Machine")
+```
+
 Bildirim kullanilacaksa ayni ajan makinesinde bunlar da tanimlanabilir:
 
 Bu degerleri de `Machine` kapsaminda tanimlayin:

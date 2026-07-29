@@ -113,6 +113,32 @@ function Import-ADModule {
   }
 }
 
+function Resolve-WritableDomainController {
+  Import-ADModule
+
+  if (-not [string]::IsNullOrWhiteSpace($script:DomainController)) {
+    return $script:DomainController
+  }
+
+  try {
+    $controller = Get-ADDomainController `
+      -Discover `
+      -Writable `
+      -Service ADWS `
+      -ForceDiscover `
+      -ErrorAction Stop
+    $hostName = @($controller.HostName)[0]
+    if ([string]::IsNullOrWhiteSpace([string]$hostName)) {
+      throw "Yazilabilir etki alani denetleyicisi adi bos dondu."
+    }
+    $script:DomainController = [string]$hostName
+    Write-AgentLog "Yazilabilir etki alani denetleyicisi secildi: $script:DomainController"
+    return $script:DomainController
+  } catch {
+    throw "Yazilabilir Active Directory denetleyicisi bulunamadi. AD_DOMAIN_CONTROLLER ayarini tanimlayin. Hata: $($_.Exception.Message)"
+  }
+}
+
 function Set-DirectoryPassword {
   param(
     [object]$Job,
@@ -120,32 +146,43 @@ function Set-DirectoryPassword {
   )
 
   Import-ADModule
+  $domainController = Resolve-WritableDomainController
 
   $securePassword = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
-  $resetParams = @{
+  $lookupParams = @{
     Identity = $Job.adUser
+    Server = $domainController
+    ErrorAction = "Stop"
+  }
+  $directoryUser = Get-ADUser @lookupParams
+  $resetParams = @{
+    Identity = $directoryUser.DistinguishedName
     NewPassword = $securePassword
     Reset = $true
+    Server = $domainController
     ErrorAction = "Stop"
   }
   $userParams = @{
-    Identity = $Job.adUser
+    Identity = $directoryUser.DistinguishedName
+    Server = $domainController
     ErrorAction = "Stop"
   }
 
-  if (-not [string]::IsNullOrWhiteSpace($script:DomainController)) {
-    $resetParams.Server = $script:DomainController
-    $userParams.Server = $script:DomainController
-  }
-
   if ($script:WhatIfOnly) {
-    Write-AgentLog "WHATIF: $($Job.adUser) icin AD sifresi degistirilecek. Mod: $($Job.mode)"
+    Write-AgentLog "WHATIF: $($Job.adUser) icin AD sifresi $domainController uzerinden degistirilecek. Mod: $($Job.mode)"
     return
   }
 
-  Set-ADAccountPassword @resetParams
-  $mustChange = ($Job.mode -eq "TEMPORARY")
-  Set-ADUser @userParams -ChangePasswordAtLogon $mustChange
+  try {
+    Set-ADAccountPassword @resetParams
+    $mustChange = ($Job.mode -eq "TEMPORARY")
+    Set-ADUser @userParams -ChangePasswordAtLogon $mustChange
+  } catch {
+    if ($_.Exception.Message -match "(?i)referral|basvuru") {
+      throw "Parola yazilabilir etki alani denetleyicisine uygulanamadi ($domainController). AD_DOMAIN_CONTROLLER ayarini ve denetleyici yazma erisimini kontrol edin. Hata: $($_.Exception.Message)"
+    }
+    throw
+  }
 }
 
 function Normalize-TrMobile {
