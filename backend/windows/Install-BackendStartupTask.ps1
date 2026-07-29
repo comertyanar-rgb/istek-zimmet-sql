@@ -1,14 +1,17 @@
 # Installs/updates the Windows Scheduled Task that keeps the local SQL API running.
-# Default mode is silent and log-backed: the task starts Node through wscript.exe.
+# The task tracks the backend process, writes a persistent log and can run as SYSTEM.
 
 param(
   [string]$TaskName = "ISTEK Zimmet SQL API",
   [string]$BackendDirectory = "",
   [string]$NodePath = "",
-  [string]$WrapperPath = "C:\ZimmetBackend\Run-BackendHidden.vbs",
+  [Alias("WrapperPath")]
+  [string]$RunnerPath = "C:\ZimmetBackend\Run-BackendTask.ps1",
   [string]$LogPath = "C:\ZimmetBackend\backend.log",
   [switch]$AtStartup,
-  [switch]$Visible
+  [switch]$Visible,
+  [switch]$RunAsSystem,
+  [switch]$RunNow
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,35 +46,52 @@ if (-not [string]::IsNullOrWhiteSpace($logDir)) {
   New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 }
 
-$quotedNode = '"' + $NodePath + '"'
-$quotedServer = '"' + $serverPath + '"'
-$quotedLog = '"' + $LogPath + '"'
-$cmdArguments = '/d /s /c "' + $quotedNode + ' ' + $quotedServer + ' >> ' + $quotedLog + ' 2>&1"'
+function ConvertTo-PsSingleQuotedLiteral {
+  param([Parameter(Mandatory = $true)][string]$Value)
+  return "'" + $Value.Replace("'", "''") + "'"
+}
 
-if ($Visible) {
-  $action = New-ScheduledTaskAction -Execute (Join-Path $env:WINDIR "System32\cmd.exe") -Argument $cmdArguments -WorkingDirectory $BackendDirectory
-} else {
-  $wrapperDir = Split-Path -Parent $WrapperPath
-  if (-not [string]::IsNullOrWhiteSpace($wrapperDir)) {
-    New-Item -ItemType Directory -Force -Path $wrapperDir | Out-Null
-  }
+$runnerDir = Split-Path -Parent $RunnerPath
+if (-not [string]::IsNullOrWhiteSpace($runnerDir)) {
+  New-Item -ItemType Directory -Force -Path $runnerDir | Out-Null
+}
 
-  $hiddenCommand = '"' + (Join-Path $env:WINDIR "System32\cmd.exe") + '" ' + $cmdArguments
-  $escapedHiddenCommand = $hiddenCommand.Replace('"', '""')
-  $escapedWorkingDirectory = $BackendDirectory.Replace('"', '""')
-  $wrapperContent = @"
-Option Explicit
-Dim shell
-Set shell = CreateObject("WScript.Shell")
-shell.CurrentDirectory = "$escapedWorkingDirectory"
-shell.Run "$escapedHiddenCommand", 0, False
+$backendLiteral = ConvertTo-PsSingleQuotedLiteral $BackendDirectory
+$nodeLiteral = ConvertTo-PsSingleQuotedLiteral $NodePath
+$serverLiteral = ConvertTo-PsSingleQuotedLiteral $serverPath
+$logLiteral = ConvertTo-PsSingleQuotedLiteral $LogPath
+
+$runnerContent = @"
+`$ErrorActionPreference = "Stop"
+`$backendDirectory = $backendLiteral
+`$nodePath = $nodeLiteral
+`$serverPath = $serverLiteral
+`$logPath = $logLiteral
+
+Set-Location -LiteralPath `$backendDirectory
+
+try {
+  Add-Content -LiteralPath `$logPath -Value ("[{0}] Backend başlatılıyor." -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"))
+  & `$nodePath `$serverPath *>> `$logPath
+  `$exitCode = if (`$null -eq `$LASTEXITCODE) { 1 } else { [int]`$LASTEXITCODE }
+  Add-Content -LiteralPath `$logPath -Value ("[{0}] Backend kapandı. Çıkış kodu: {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), `$exitCode)
+  exit `$exitCode
+} catch {
+  Add-Content -LiteralPath `$logPath -Value ("[{0}] Backend başlatma hatası: {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), `$_.Exception.Message)
+  exit 1
+}
 "@
 
-  Set-Content -Path $WrapperPath -Value $wrapperContent -Encoding ASCII
+Set-Content -LiteralPath $RunnerPath -Value $runnerContent -Encoding UTF8
 
-  $wscript = Join-Path $env:WINDIR "System32\wscript.exe"
-  $action = New-ScheduledTaskAction -Execute $wscript -Argument ('"' + $WrapperPath + '"') -WorkingDirectory $BackendDirectory
-}
+$powershell = Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe"
+$windowStyle = if ($Visible) { "Normal" } else { "Hidden" }
+$runnerArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle ' +
+  $windowStyle + ' -File "' + $RunnerPath + '"'
+$action = New-ScheduledTaskAction `
+  -Execute $powershell `
+  -Argument $runnerArguments `
+  -WorkingDirectory $BackendDirectory
 
 if ($AtStartup) {
   $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -84,16 +104,31 @@ $settings = New-ScheduledTaskSettingsSet `
   -DontStopIfGoingOnBatteries `
   -ExecutionTimeLimit ([TimeSpan]::Zero) `
   -MultipleInstances IgnoreNew `
-  -RestartCount 3 `
-  -RestartInterval (New-TimeSpan -Minutes 1)
+  -RestartCount 12 `
+  -RestartInterval (New-TimeSpan -Minutes 1) `
+  -StartWhenAvailable
 
-Register-ScheduledTask `
-  -TaskName $TaskName `
-  -Action $action `
-  -Trigger $trigger `
-  -Settings $settings `
-  -Description "ISTEK Zimmet SQL API backend" `
-  -Force | Out-Null
+$registerParams = @{
+  TaskName = $TaskName
+  Action = $action
+  Trigger = $trigger
+  Settings = $settings
+  Description = "ISTEK Zimmet SQL API backend"
+  Force = $true
+}
+
+if ($RunAsSystem) {
+  $registerParams.Principal = New-ScheduledTaskPrincipal `
+    -UserId "SYSTEM" `
+    -LogonType ServiceAccount `
+    -RunLevel Highest
+}
+
+Register-ScheduledTask @registerParams | Out-Null
+
+if ($RunNow) {
+  Start-ScheduledTask -TaskName $TaskName
+}
 
 [pscustomobject]@{
   success = $true
@@ -103,5 +138,7 @@ Register-ScheduledTask `
   nodePath = $NodePath
   logPath = $LogPath
   hidden = -not $Visible
-  wrapperPath = if ($Visible) { "" } else { $WrapperPath }
+  runnerPath = $RunnerPath
+  runAs = if ($RunAsSystem) { "SYSTEM" } else { "CurrentUser" }
+  started = [bool]$RunNow
 }

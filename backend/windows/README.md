@@ -20,15 +20,37 @@ Sağlık kontrolü:
 http://localhost:8787/health
 ```
 
-Sessiz başlangıç görevi kurmak veya güncellemek için:
+Sunucuda sessiz başlangıç görevi kurmak veya güncellemek için PowerShell'i
+**Yönetici olarak çalıştırın**. `SYSTEM` hesabı sayesinde RDP oturumu kapansa da
+backend çalışır; görev Node sürecini izler ve hata halinde yeniden başlatır:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Install-BackendStartupTask.ps1"
+powershell.exe -ExecutionPolicy Bypass -File ".\backend\windows\Install-BackendStartupTask.ps1" `
+  -BackendDirectory "E:\IstekZimmet\App\backend" `
+  -RunnerPath "E:\IstekZimmet\Run-BackendTask.ps1" `
+  -LogPath "E:\IstekZimmet\Logs\backend.log" `
+  -AtStartup `
+  -RunAsSystem `
+  -RunNow
 ```
 
-Bilgisayar açılışında çalışması gerekiyorsa `-AtStartup` ekleyin. Görünür pencere
-yalnız teşhis için `-Visible` ile açılmalıdır. Varsayılan çalışma sessizdir ve log
-dosyası `C:\ZimmetBackend\backend.log` yolundadır.
+Görünür pencere yalnız teşhis için `-Visible` ile açılmalıdır. Varsayılan çalışma
+sessizdir. Kurulumdan sonra:
+
+```powershell
+Get-ScheduledTask -TaskName "ISTEK Zimmet SQL API"
+Get-ScheduledTaskInfo -TaskName "ISTEK Zimmet SQL API"
+Get-Content "E:\IstekZimmet\Logs\backend.log" -Tail 30
+Invoke-RestMethod "http://127.0.0.1:8787/health"
+```
+
+Görevi yeniden başlatmak için:
+
+```powershell
+Stop-ScheduledTask -TaskName "ISTEK Zimmet SQL API"
+Start-Sleep -Seconds 2
+Start-ScheduledTask -TaskName "ISTEK Zimmet SQL API"
+```
 
 ## SQL Server tam yedekleme
 
