@@ -11,34 +11,48 @@ islemini kurum icindeki Windows/AD makinesinde yapar.
 - Backend `.env` icindeki `AD_AGENT_SECRET` ile ayni secret
 - API calisir durumda olmali: `http://localhost:8787/api/action`
 
+## Servis hesabi
+
+Uretimde gorevi oturum acmis yonetici hesabi veya `SYSTEM` ile calistirmayin.
+AD'de yalnizca hedef kullanici OU'larinda su yetkilere sahip ayri bir servis
+hesabi kullanin:
+
+- Kullanici nesnelerini okuma
+- Parola sifirlama
+- Sonraki oturumda parola degistirme zorunlulugunu ayarlama
+
+Hesaba Domain Admin vermeyin. RDP/etkilesimli oturum acma izni vermeyin; yalnizca
+Windows Server uzerinde "Log on as a batch job" hakki verin.
+
 ## Ortam Degiskenleri
 
-Makine veya kullanici ortam degiskeni olarak girilebilir:
+Zamanlanmis gorev ayri bir servis hesabi ile calisacagi icin degerleri `Machine`
+kapsaminda girin:
 
 ```powershell
-setx ZIMMET_API_URL "http://localhost:8787/api/action"
-setx AD_AGENT_SECRET "BURAYA_BACKEND_AD_AGENT_SECRET"
-setx AD_RESET_PRIVATE_KEY_PATH "C:\ZimmetAD\ad-reset-private.pem"
+[Environment]::SetEnvironmentVariable("ZIMMET_API_URL", "http://127.0.0.1:8787/api/action", "Machine")
+[Environment]::SetEnvironmentVariable("AD_AGENT_SECRET", "BURAYA_BACKEND_AD_AGENT_SECRET", "Machine")
+[Environment]::SetEnvironmentVariable("AD_RESET_PRIVATE_KEY_PATH", "C:\ZimmetAD\ad-reset-private.pem", "Machine")
 ```
 
 Bildirim kullanilacaksa ayni ajan makinesinde bunlar da tanimlanabilir:
 
-```powershell
-setx ZIMMET_SMTP_SERVER "smtp.gmail.com"
-setx ZIMMET_SMTP_PORT "587"
-setx ZIMMET_SMTP_USER "bildirim@istek.k12.tr"
-setx ZIMMET_SMTP_PASSWORD "GOOGLE_APP_PASSWORD"
-setx ZIMMET_SMTP_USE_SSL "true"
-setx ZIMMET_NOTIFY_EMAIL_FROM "bildirim@istek.k12.tr"
+Bu degerleri de `Machine` kapsaminda tanimlayin:
 
-setx MOBILDEV_API_KEY "..."
-setx MOBILDEV_API_SECRET "..."
-setx MOBILDEV_ORIGINATOR "ISTEKOKUL"
-```
+- `ZIMMET_SMTP_SERVER`
+- `ZIMMET_SMTP_PORT`
+- `ZIMMET_SMTP_USER`
+- `ZIMMET_SMTP_PASSWORD`
+- `ZIMMET_SMTP_USE_SSL`
+- `ZIMMET_NOTIFY_EMAIL_FROM`
+- `MOBILDEV_API_KEY`
+- `MOBILDEV_API_SECRET`
+- `MOBILDEV_ORIGINATOR`
 
 ## Manuel Test
 
-AD'ye yazmadan sadece akis testi:
+`WhatIfOnly` bekleyen isi kiralar. Gercek kuyrukta bekleyen kayit varken
+kullanmayin. Once kuyrugun bos oldugunu kontrol edin, ardindan akis testi icin:
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File .\ad\windows\Run-ADPasswordAgent.ps1 -WhatIfOnly -Limit 1
@@ -52,36 +66,33 @@ pwsh -ExecutionPolicy Bypass -File .\ad\windows\Run-ADPasswordAgent.ps1 -Limit 5
 
 ## Gorev Zamanlayici
 
-Onerilen sessiz kurulum:
+Onerilen sessiz kurulum (yonetici PowerShell penceresinde):
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1
+powershell.exe -ExecutionPolicy Bypass `
+  -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" `
+  -IntervalMinutes 1 `
+  -ScriptPath "E:\IstekZimmet\App\ad\windows\Run-ADPasswordAgent.ps1" `
+  -WorkingDirectory "E:\IstekZimmet\App" `
+  -RunnerPath "E:\IstekZimmet\Run-ADPasswordAgentTask.ps1" `
+  -LogPath "E:\IstekZimmet\Logs\ad-agent.log" `
+  -RunAsUser "ISTEK\svc_zimmet_ad" `
+  -AtStartup `
+  -RunNow
 ```
 
-Bu komut gorevi `wscript.exe` ile kurar; arka planda calisirken PowerShell penceresi acmaz.
+Kurucu servis hesabi parolasini guvenli kimlik bilgisi penceresinde sorar; parola
+komut satirina veya loga yazilmaz. Gorev arka planda calisirken PowerShell
+penceresi acmaz. Bos kuyrukta log yazmaz ve log dosyasini 5 MB'da dondurur.
+
 Test ederken pencereyi gormek istersen:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" -IntervalMinutes 1 -Visible
+powershell.exe -ExecutionPolicy Bypass `
+  -File ".\ad\windows\Install-ADPasswordAgentTask.ps1" `
+  -IntervalMinutes 1 `
+  -RunAsUser "ISTEK\svc_zimmet_ad" `
+  -Visible
 ```
-
-Elle kurulum gerekirse program:
-
-```text
-C:\Program Files\PowerShell\7\pwsh.exe
-```
-
-Arguman:
-
-```text
--NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\ZimmetAD\Run-ADPasswordAgent.ps1" -Limit 5
-```
-
-Tetikleyici icin pratik kurulum:
-
-- Baslangicta bir kez calissin.
-- "Gorevi su siklikta yenile" ayari 1 dakika olsun.
-- "Su sureyle" ayari "Suresiz" olsun.
-- "Gorev zaten calisiyorsa yeni ornek baslatma" secili olsun.
 
 Private key dosyasini repoya koymayin. `.gitignore` PEM/key dosyalarini bilerek disarida birakir.

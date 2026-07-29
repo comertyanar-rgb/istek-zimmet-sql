@@ -4,7 +4,8 @@
   [string]$PrivateKeyPath = "",
   [int]$Limit = 5,
   [string]$DomainController = "",
-  [switch]$WhatIfOnly
+  [switch]$WhatIfOnly,
+  [switch]$QuietWhenIdle
 )
 
 $ErrorActionPreference = "Stop"
@@ -297,7 +298,6 @@ if ([string]::IsNullOrWhiteSpace($script:AgentSecret)) { throw "AD_AGENT_SECRET 
 if ($Limit -lt 1) { $Limit = 1 }
 if ($Limit -gt 20) { $Limit = 20 }
 
-Write-AgentLog "AD agent basladi. API: $script:ApiUrl Limit: $Limit"
 $rsa = Import-PrivateKey -Path $script:PrivateKeyPath
 
 $fetchResult = Invoke-ZimmetApi @{
@@ -307,9 +307,13 @@ $fetchResult = Invoke-ZimmetApi @{
 
 $jobs = @($fetchResult.jobs)
 if ($jobs.Count -eq 0) {
-  Write-AgentLog "Bekleyen AD sifre isi yok."
+  if (-not $QuietWhenIdle) {
+    Write-AgentLog "Bekleyen AD sifre isi yok."
+  }
   return
 }
+
+Write-AgentLog "AD agent basladi. API: $script:ApiUrl Is sayisi: $($jobs.Count)"
 
 foreach ($job in $jobs) {
   $plainPassword = $null
