@@ -29,6 +29,7 @@ import {
   fetchAdPasswordQueueForUser,
   fetchDataForUser,
   fetchHardwareHistoryForUser,
+  fetchPersonDocumentHistoryForUser,
   fetchMissingGlpiDevicesForUser,
   fetchOperationQueueForUser,
   fetchSignatureAgentJobStates,
@@ -272,6 +273,11 @@ export async function handleAction(data, context = {}) {
   if (action === 'fetchHardwareHistory') {
     const history = await fetchHardwareHistoryForUser(currentUser, data.hardwareId);
     return success({ history });
+  }
+
+  if (action === 'fetchPersonDocumentHistory') {
+    const documents = await fetchPersonDocumentHistoryForUser(currentUser, data.personId);
+    return success({ documents });
   }
 
   if (action === 'fetchMissingGLPIDevices') {

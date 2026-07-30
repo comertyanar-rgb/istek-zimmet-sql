@@ -26,6 +26,7 @@ const KNOWN_ACTIONS = new Set([
   'adminClearPersonnelOverride',
   'fetchData',
   'fetchHardwareHistory',
+  'fetchPersonDocumentHistory',
   'fetchMissingGLPIDevices',
   'importMissingGLPIDevices',
   'createSheet',

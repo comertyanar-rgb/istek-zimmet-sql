@@ -7,6 +7,15 @@ test('bilinen ve sade bir aksiyon isteğini kabul eder', () => {
   assert.equal(validateActionRequest(payload), payload);
 });
 
+test('personel belge geçmişi isteğini kabul eder', () => {
+  const payload = {
+    action: 'fetchPersonDocumentHistory',
+    authToken: 'x'.repeat(43),
+    personId: 'person-123'
+  };
+  assert.equal(validateActionRequest(payload), payload);
+});
+
 test('bilinmeyen aksiyonu iş mantığına ulaşmadan reddeder', () => {
   assert.throws(
     () => validateActionRequest({ action: 'deleteEverything' }),

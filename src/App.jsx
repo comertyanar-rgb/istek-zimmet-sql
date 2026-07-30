@@ -1197,6 +1197,41 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
   // Personel profilindeki geçmişi açıp kapatmak için EKLENDİ
   const [showPersonHistory, setShowPersonHistory] = useState(false);
+  const [isLoadingPersonHistory, setIsLoadingPersonHistory] = useState(false);
+
+  const handleOpenPersonHistory = async (personId) => {
+    if (showPersonHistory) {
+      setShowPersonHistory(false);
+      return;
+    }
+
+    setShowPersonHistory(true);
+    const person = personnelById.get(personId);
+    if (person?.documentsLoaded) return;
+
+    setIsLoadingPersonHistory(true);
+    try {
+      const result = await postApiAction({
+        action: 'fetchPersonDocumentHistory',
+        authToken: currentUser.token,
+        personId,
+      });
+      const documents = Array.isArray(result.documents) ? result.documents : [];
+      setPersonnel((prev) =>
+        prev.map((item) =>
+          item.id === personId
+            ? { ...item, documents, documentsLoaded: true }
+            : item
+        )
+      );
+    } catch (error) {
+      setShowPersonHistory(false);
+      showAppAlert(`Belge geçmişi yüklenemedi: ${error.message}`);
+    } finally {
+      setIsLoadingPersonHistory(false);
+    }
+  };
+
   // Kopyalandı efektleri için
   const [copiedSerial, setCopiedSerial] = useState(false);
   const [copiedEmail, setCopiedEmail] = useState(false);
@@ -2765,13 +2800,23 @@ setTimeout(() => setSuccessMessage(null), 2500);
         ? { id: Date.now().toString(), name: filename, date: new Date().toLocaleDateString('tr-TR'), url: realDriveUrl }
         : null;
 
-      if (newDoc) {
-        setPersonnel((prev) => prev.map((p) => p.id === selectedPerson ? { ...p, documents: [...(p.documents || []), newDoc] } : p ));
-      }
+      setPersonnel((prev) =>
+        prev.map((p) =>
+          p.id === selectedPerson
+            ? {
+                ...p,
+                documents: newDoc ? [...(p.documents || []), newDoc] : p.documents || [],
+                documentsLoaded: Boolean(newDoc),
+              }
+            : p
+        )
+      );
       setHardware((prev) => prev.map((h) => {
           if (finalSelectedHardware.includes(h.id)) {
             return {
               ...h, status: 'Assigned', assignedTo: selectedPerson, driveLink: realDriveUrl || null,
+              hasHistory: true,
+              historyLoaded: false,
               history: [{ personName: person.name, date: new Date().toLocaleDateString('tr-TR'), driveLink: realDriveUrl, type: isQueued ? 'Zimmet (PDF hazırlanıyor)' : 'Zimmet' }, ...(h.history || [])],
             };
           }
@@ -2871,10 +2916,40 @@ setTimeout(() => setSuccessMessage(null), 2500);
         ? { id: Date.now().toString(), name: filename, date: new Date().toLocaleDateString('tr-TR'), url: realDriveUrl }
         : null;
 
-      setHardware((prev) => prev.map((h) => hardwareArray.some((item) => item.id === h.id) ? { ...h, status: 'Available', assignedTo: null, driveLink: realDriveUrl || null } : h ));
-      if (newDoc) {
-        setPersonnel((prev) => prev.map((p) => p.id === person.id ? { ...p, documents: [...(p.documents || []), newDoc] } : p ));
-      }
+      setHardware((prev) =>
+        prev.map((h) =>
+          hardwareArray.some((item) => item.id === h.id)
+            ? {
+                ...h,
+                status: 'Available',
+                assignedTo: null,
+                driveLink: realDriveUrl || null,
+                hasHistory: true,
+                historyLoaded: false,
+                history: [
+                  {
+                    personName: person.name,
+                    date: new Date().toLocaleDateString('tr-TR'),
+                    driveLink: realDriveUrl,
+                    type: isQueued ? 'İade (PDF hazırlanıyor)' : 'İade',
+                  },
+                  ...(h.history || []),
+                ],
+              }
+            : h
+        )
+      );
+      setPersonnel((prev) =>
+        prev.map((p) =>
+          p.id === person.id
+            ? {
+                ...p,
+                documents: newDoc ? [...(p.documents || []), newDoc] : p.documents || [],
+                documentsLoaded: Boolean(newDoc),
+              }
+            : p
+        )
+      );
 
       setSuccessMessage(result.message || (isQueued ? "İade kaydedildi. PDF arka planda hazırlanıyor." : "İade işlemi tamamlandı. Belge sunucuda üretildi ve Drive'a kaydedildi."));
       setTimeout(() => setSuccessMessage(null), 4500);
@@ -7907,21 +7982,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     {/* 4. ZİMMET VE İADE GEÇMİŞİ AKORDEONU */}
                     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm mt-4">
                       <button
-                        onClick={() => setShowPersonHistory(!showPersonHistory)}
-                        disabled={
-                          !viewedPerson.documents ||
-                          viewedPerson.documents.length === 0
-                        }
+                        onClick={() => handleOpenPersonHistory(viewedPerson.id)}
+                        disabled={isLoadingPersonHistory}
                         className={`w-full p-4 flex justify-between items-center transition-colors ${
                           showPersonHistory
                             ? 'bg-slate-50 border-b border-gray-200'
                             : 'hover:bg-slate-50'
-                        } ${
-                          !viewedPerson.documents ||
-                          viewedPerson.documents.length === 0
-                            ? 'opacity-60 cursor-not-allowed'
-                            : ''
-                        }`}
+                        } ${isLoadingPersonHistory ? 'opacity-70 cursor-wait' : ''}`}
                       >
                         <div className="flex items-center gap-2">
                           <History className="w-4 h-4 text-gray-500" />
@@ -7934,7 +8001,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             )}
                           </span>
                         </div>
-                        {viewedPerson.documents?.length > 0 ? (
+                        {isLoadingPersonHistory ? (
+                          <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+                        ) : viewedPerson.documents?.length > 0 ? (
                           <ChevronDown
                             className={`w-4 h-4 text-gray-400 transition-transform duration-300 ${
                               showPersonHistory ? 'rotate-180' : ''
@@ -7942,7 +8011,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           />
                         ) : (
                           <span className="text-[11px] font-semibold text-gray-400">
-                            Kayıt Yok
+                            {viewedPerson.documentsLoaded ? 'Kayıt Yok' : 'Yükle'}
                           </span>
                         )}
                       </button>

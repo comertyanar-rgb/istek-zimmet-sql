@@ -201,12 +201,22 @@ async function attachPdfToHardware(payload, uploadResult, job) {
 
     await query(
       `
-        IF NOT EXISTS (
-          SELECT 1
+        UPDATE dbo.HardwareHistory
+        SET EventType = @eventType,
+            PersonId = COALESCE(@personId, PersonId),
+            PersonName = COALESCE(@personName, PersonName),
+            DriveLink = @driveLink,
+            DetailsJson = @detailsJson,
+            CreatedBy = COALESCE(@createdBy, CreatedBy)
+        WHERE HistoryId = (
+          SELECT TOP (1) HistoryId
           FROM dbo.HardwareHistory
           WHERE HardwareId = @hardwareId
             AND CASE WHEN ISJSON(DetailsJson) = 1 THEN JSON_VALUE(DetailsJson, '$.queueId') ELSE NULL END = @queuePublicId
+          ORDER BY EventDate DESC, HistoryId DESC
         )
+
+        IF @@ROWCOUNT = 0
         BEGIN
           INSERT INTO dbo.HardwareHistory (HardwareId, EventType, PersonId, PersonName, DriveLink, DetailsJson, CreatedBy)
           VALUES (@hardwareId, @eventType, @personId, @personName, @driveLink, @detailsJson, @createdBy)
@@ -227,7 +237,8 @@ async function attachPdfToHardware(payload, uploadResult, job) {
             documentStatus: 'PDF hazırlandı',
             pdfHash: uploadResult.pdfHash,
             delivery: uploadResult.delivery,
-            url: uploadResult.url || ''
+            url: uploadResult.url || '',
+            pdfName: payload.pdfName || ''
           })
         },
         createdBy: { type: sql.NVarChar(320), value: payload.requestedBy || null }

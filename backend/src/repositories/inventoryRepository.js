@@ -960,7 +960,9 @@ export async function fetchDataForUser(user, options = {}) {
       signatureTitle: row.SignatureTitleTr || '',
       signatureTitleEn: row.SignatureTitleEn || '',
       signatureTemplateVariant: row.SignatureTemplateKey || '',
-      signatureMissing: !row.SignatureUrl
+      signatureMissing: !row.SignatureUrl,
+      documents: [],
+      documentsLoaded: false
     };
   }
 
@@ -1044,10 +1046,37 @@ export async function fetchHardwareHistoryForUser(user, serialNo) {
 
   const historyResult = await query(
     `
-      SELECT TOP 100 EventType, PersonName, DriveLink, EventDate, DetailsJson
-      FROM dbo.HardwareHistory
-      WHERE HardwareId = @hardwareId
-      ORDER BY EventDate DESC, HistoryId DESC
+      SELECT TOP (100)
+        CASE
+          WHEN oq.Status = N'TAMAMLANDI' THEN
+            REPLACE(
+              REPLACE(hh.EventType, N', PDF hazırlanıyor', N''),
+              N' (PDF hazırlanıyor)',
+              N''
+            )
+          ELSE hh.EventType
+        END AS EventType,
+        hh.PersonName,
+        COALESCE(
+          NULLIF(LTRIM(RTRIM(hh.DriveLink)), N''),
+          NULLIF(
+            CASE WHEN ISJSON(oq.ResultJson) = 1
+              THEN JSON_VALUE(oq.ResultJson, '$.url')
+              ELSE NULL
+            END,
+            N''
+          )
+        ) AS DriveLink,
+        hh.EventDate,
+        hh.DetailsJson
+      FROM dbo.HardwareHistory hh
+      LEFT JOIN dbo.OperationQueue oq
+        ON oq.PublicId = CASE WHEN ISJSON(hh.DetailsJson) = 1
+          THEN JSON_VALUE(hh.DetailsJson, '$.queueId')
+          ELSE NULL
+        END
+      WHERE hh.HardwareId = @hardwareId
+      ORDER BY hh.EventDate DESC, hh.HistoryId DESC
     `,
     { hardwareId: { type: sql.Int, value: device.HardwareId } }
   );
@@ -1059,6 +1088,148 @@ export async function fetchHardwareHistoryForUser(user, serialNo) {
     type: row.EventType || '',
     details: row.DetailsJson || ''
   }));
+}
+
+export async function fetchPersonDocumentHistoryForUser(user, personId) {
+  const cleanPersonId = cleanText(personId, 160);
+  if (!cleanPersonId) throw new Error('Personel kimliği bulunamadı.');
+
+  const personResult = await query(
+    `
+      SELECT TOP (1)
+        p.PersonId,
+        c.Name AS Campus,
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM dbo.Hardware h
+          INNER JOIN dbo.Campuses hc ON hc.CampusId = h.CampusId
+          WHERE h.AssignedPersonId = p.PersonId
+            AND hc.CoreName = @userCampusCore
+        ) THEN 1 ELSE 0 END AS HasVisibleAssignment
+      FROM dbo.vw_EffectivePersonnel p
+      LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+      WHERE p.PersonId = @personId
+    `,
+    {
+      personId: { type: sql.NVarChar(160), value: cleanPersonId },
+      userCampusCore: { type: sql.NVarChar(160), value: core(user.campus) }
+    }
+  );
+
+  const person = personResult.recordset[0];
+  if (!person) throw new Error('Personel bulunamadı.');
+  if (
+    user.role !== 'HQ IT' &&
+    !canSeeCampus(user, person.Campus) &&
+    !Boolean(person.HasVisibleAssignment)
+  ) {
+    throw new Error('Bu personelin belge geçmişini görme yetkiniz yok.');
+  }
+
+  const documentsResult = await query(
+    `
+      WITH DocumentRows AS (
+        SELECT
+          hh.HistoryId,
+          CASE
+            WHEN oq.Status = N'TAMAMLANDI' THEN
+              REPLACE(
+                REPLACE(hh.EventType, N', PDF hazırlanıyor', N''),
+                N' (PDF hazırlanıyor)',
+                N''
+              )
+            ELSE hh.EventType
+          END AS EventType,
+          hh.EventDate,
+          hh.DetailsJson,
+          COALESCE(
+            NULLIF(LTRIM(RTRIM(hh.DriveLink)), N''),
+            NULLIF(
+              CASE WHEN ISJSON(oq.ResultJson) = 1
+                THEN JSON_VALUE(oq.ResultJson, '$.url')
+                ELSE NULL
+              END,
+              N''
+            )
+          ) AS DriveLink,
+          COALESCE(
+            NULLIF(
+              CASE WHEN ISJSON(hh.DetailsJson) = 1
+                THEN JSON_VALUE(hh.DetailsJson, '$.pdfName')
+                ELSE NULL
+              END,
+              N''
+            ),
+            NULLIF(
+              CASE WHEN ISJSON(oq.PayloadJson) = 1
+                THEN JSON_VALUE(oq.PayloadJson, '$.pdfName')
+                ELSE NULL
+              END,
+              N''
+            )
+          ) AS PdfName
+        FROM dbo.HardwareHistory hh
+        LEFT JOIN dbo.OperationQueue oq
+          ON oq.PublicId = CASE WHEN ISJSON(hh.DetailsJson) = 1
+            THEN JSON_VALUE(hh.DetailsJson, '$.queueId')
+            ELSE NULL
+          END
+        WHERE hh.PersonId = @personId
+          AND (
+            hh.EventType LIKE N'Zimmet%'
+            OR hh.EventType LIKE N'İade%'
+            OR hh.EventType LIKE N'Iade%'
+          )
+      ),
+      RankedDocuments AS (
+        SELECT
+          HistoryId,
+          EventType,
+          EventDate,
+          DetailsJson,
+          DriveLink,
+          PdfName,
+          ROW_NUMBER() OVER (
+            PARTITION BY DriveLink
+            ORDER BY EventDate DESC, HistoryId DESC
+          ) AS DocumentRank
+        FROM DocumentRows
+        WHERE DriveLink IS NOT NULL
+      )
+      SELECT TOP (100)
+        HistoryId,
+        EventType,
+        EventDate,
+        DetailsJson,
+        DriveLink,
+        PdfName
+      FROM RankedDocuments
+      WHERE DocumentRank = 1
+      ORDER BY EventDate DESC, HistoryId DESC
+    `,
+    { personId: { type: sql.NVarChar(160), value: cleanPersonId } }
+  );
+
+  // İstemci geçmişi kronolojik tutup gösterirken ters çevirdiği için
+  // API yanıtını eskiden yeniye döndür.
+  return documentsResult.recordset.slice().reverse().map((row) => {
+    const eventType = String(row.EventType || '');
+    const isReturn = /iade/i.test(eventType.replace(/İ/g, 'I'));
+    const eventDate = row.EventDate ? new Date(row.EventDate) : null;
+    const date =
+      eventDate && !Number.isNaN(eventDate.getTime())
+        ? eventDate.toLocaleDateString('tr-TR', { timeZone: 'Europe/Istanbul' })
+        : '';
+    const url = String(row.DriveLink || '');
+
+    return {
+      id: crypto.createHash('sha256').update(`${row.HistoryId}|${url}`).digest('hex').slice(0, 24),
+      name: row.PdfName || (isReturn ? 'Donanım İade Belgesi.pdf' : 'Donanım Zimmet Belgesi.pdf'),
+      date,
+      url,
+      type: eventType
+    };
+  });
 }
 
 export async function addHardwareForUser(user, data) {
