@@ -1257,22 +1257,26 @@ html[data-theme='dark'] .theme-logo-surface img {
 
 .mobile-brand-mark {
   position: relative;
-  display: block;
+  display: none;
   width: 48px;
-  height: 28px;
+  height: 23px;
   overflow: hidden;
 }
 
 .mobile-brand-mark__image {
   position: absolute;
   top: 0;
-  left: -8px;
-  width: 82px;
+  left: -2px;
+  width: 77px;
   max-width: none;
   height: auto;
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1023px) {
+  .mobile-brand-mark {
+    display: block;
+  }
+
   .mobile-brand-surface,
   html[data-theme='dark'] .mobile-brand-surface {
     padding: 0 !important;
