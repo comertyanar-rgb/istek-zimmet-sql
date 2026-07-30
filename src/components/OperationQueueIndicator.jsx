@@ -527,7 +527,7 @@ export const OperationQueueIndicator = ({
   };
 
   const panelPositionClass = isMobile
-    ? 'left-4 right-4 top-20 w-auto max-w-none'
+    ? 'left-auto right-4 top-20 w-[min(384px,calc(100vw-32px))] max-w-[calc(100vw-32px)]'
     : 'left-3 bottom-[104px] top-auto right-auto w-[min(420px,calc(100vw-24px))] max-w-sm';
 
   const panelContent = open ? (
