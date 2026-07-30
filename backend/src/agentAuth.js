@@ -8,6 +8,7 @@ const AGENT_ACTIONS = new Set([
   'syncGLPI',
   'syncPersonnel',
   'fetchSignatureJobs',
+  'fetchSignatureJobStates',
   'completeSignatureJob'
 ]);
 
@@ -25,7 +26,11 @@ function secretForAction(action) {
   }
   if (action === 'syncGLPI') return config.glpiSyncSecret;
   if (action === 'syncPersonnel') return config.personnelSyncSecret;
-  if (action === 'fetchSignatureJobs' || action === 'completeSignatureJob') {
+  if (
+    action === 'fetchSignatureJobs' ||
+    action === 'fetchSignatureJobStates' ||
+    action === 'completeSignatureJob'
+  ) {
     return config.signatureAgentSecret;
   }
   return '';

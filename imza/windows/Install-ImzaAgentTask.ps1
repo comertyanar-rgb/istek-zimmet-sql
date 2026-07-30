@@ -7,7 +7,7 @@ param(
   [string]$ScriptPath = "",
   [string]$WorkingDirectory = "",
   [string]$WrapperPath = "C:\GAMWork\scripts\Run-ImzaAgentHidden.vbs",
-  [int]$SignatureFetchLimit = 5,
+  [int]$SignatureFetchLimit = 1,
   [switch]$Visible,
   [switch]$SkipPhotoshop,
   [switch]$SkipUpload,
@@ -62,7 +62,7 @@ Option Explicit
 Dim shell
 Set shell = CreateObject("WScript.Shell")
 shell.CurrentDirectory = "$escapedWorkingDirectory"
-shell.Run "$escapedHiddenCommand", 0, False
+shell.Run "$escapedHiddenCommand", 0, True
 "@
 
   Set-Content -Path $WrapperPath -Value $wrapperContent -Encoding ASCII

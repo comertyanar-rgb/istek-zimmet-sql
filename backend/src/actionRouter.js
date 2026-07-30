@@ -5,6 +5,7 @@ import { createSession, getSessionUser, revokeSession } from './sessionService.j
 import { config } from './config.js';
 import {
   clearPersonnelOverrideForAdmin,
+  fetchAdminAuditLogsForUser,
   fetchAdminOverviewForUser,
   saveAuthorizedUserForAdmin,
   savePersonnelOverrideForAdmin
@@ -15,6 +16,7 @@ import {
   bulkAddHardwareForUser,
   bulkStatusUpdateForUser,
   bulkUpdateGroupForUser,
+  cancelSignatureJobForUser,
   cancelTransferForUser,
   completeAdPasswordAgentJob,
   completeSignatureAgentJob,
@@ -28,6 +30,7 @@ import {
   fetchHardwareHistoryForUser,
   fetchMissingGlpiDevicesForUser,
   fetchOperationQueueForUser,
+  fetchSignatureAgentJobStates,
   fetchSignatureAgentJobs,
   fetchSignatureMetaForUser,
   fetchSignatureQueueForUser,
@@ -110,6 +113,11 @@ export async function handleAction(data, context = {}) {
 
   if (action === 'fetchSignatureJobs') {
     const payload = await fetchSignatureAgentJobs(agentSecretForRequest(data, context, action), data);
+    return success(payload);
+  }
+
+  if (action === 'fetchSignatureJobStates') {
+    const payload = await fetchSignatureAgentJobStates(agentSecretForRequest(data, context, action), data);
     return success(payload);
   }
 
@@ -223,6 +231,11 @@ export async function handleAction(data, context = {}) {
     return success(payload);
   }
 
+  if (action === 'cancelSignatureJob') {
+    const payload = await cancelSignatureJobForUser(currentUser, data);
+    return success(payload);
+  }
+
   if (action === 'createPersonnelSignature') {
     const payload = await createPersonnelSignatureForUser(currentUser, data);
     return success(payload);
@@ -272,6 +285,12 @@ export async function handleAction(data, context = {}) {
 
   if (action === 'addHardware') {
     const payload = await addHardwareForUser(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'adminFetchAuditLogs') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await fetchAdminAuditLogsForUser(data);
     return success(payload);
   }
 

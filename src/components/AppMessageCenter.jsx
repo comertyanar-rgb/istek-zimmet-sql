@@ -118,15 +118,17 @@ export function AppMessageCenter() {
         </button>
 
         <div className="px-6 pb-5 pt-7 sm:px-7">
-          <div className={`mb-4 flex h-12 w-12 items-center justify-center rounded-xl border ${style.iconClass}`}>
-            <Icon className="h-6 w-6" strokeWidth={2.2} />
+          <div className="flex items-center gap-3 pr-10">
+            <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border ${style.iconClass}`}>
+              <Icon className="h-6 w-6" strokeWidth={2.2} />
+            </div>
+            <h2 id="app-message-title" className="min-w-0 text-lg font-black leading-tight text-slate-900">
+              {current.title}
+            </h2>
           </div>
-          <h2 id="app-message-title" className="pr-10 text-lg font-black text-slate-900">
-            {current.title}
-          </h2>
           <p
             id="app-message-description"
-            className="mt-2 whitespace-pre-line break-words text-sm font-medium leading-6 text-slate-600"
+            className="mt-4 whitespace-pre-line break-words text-sm font-medium leading-6 text-slate-600"
           >
             {current.message}
           </p>

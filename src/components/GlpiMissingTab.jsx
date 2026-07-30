@@ -19,6 +19,7 @@ export const GlpiMissingTab = ({
   setShowMissingGlpiFilters,
   fetchMissingGlpiDevices,
   isLoadingMissingGlpi,
+  missingGlpiLoadError,
   activeMissingGlpiFilterDropdown,
   setActiveMissingGlpiFilterDropdown,
   missingGlpiFilterType,
@@ -318,6 +319,19 @@ export const GlpiMissingTab = ({
       {isLoadingMissingGlpi ? (
         <div className="mt-2">
           <ListSkeleton rows={7} compact />
+        </div>
+      ) : missingGlpiLoadError ? (
+        <div className="mt-3 flex min-h-44 flex-col items-center justify-center gap-3 rounded-xl border border-red-200 bg-red-50 px-5 py-8 text-center">
+          <p className="text-sm font-bold text-red-700">GLPI cihazları yüklenemedi</p>
+          <p className="max-w-lg text-xs leading-5 text-red-600">{missingGlpiLoadError}</p>
+          <button
+            type="button"
+            onClick={() => fetchMissingGlpiDevices(true)}
+            className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-red-200 bg-white px-4 text-xs font-bold text-red-700 shadow-sm transition-colors hover:bg-red-100"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Yeniden dene
+          </button>
         </div>
       ) : (
         <>

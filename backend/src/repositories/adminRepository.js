@@ -60,7 +60,7 @@ function mapPersonnel(row) {
 }
 
 export async function fetchAdminOverviewForUser() {
-  const [authorizedResult, campusesResult, personnelResult, logsResult] = await Promise.all([
+  const [authorizedResult, campusesResult, personnelResult, logCountResult] = await Promise.all([
     query(`
       SELECT
         au.Email,
@@ -106,18 +106,7 @@ export async function fetchAdminOverviewForUser() {
         ON overrides.PersonId = p.PersonId AND overrides.IsActive = 1
       ORDER BY p.FullName
     `),
-    query(`
-      SELECT TOP (100)
-        LogId,
-        CreatedAt,
-        ExecutedBy,
-        ActionType,
-        Details,
-        ChainHash
-      FROM dbo.SystemLogs
-      WHERE ActionType LIKE N'YÖNETİM %'
-      ORDER BY LogId DESC
-    `)
+    query(`SELECT COUNT_BIG(*) AS LogCount FROM dbo.SystemLogs`)
   ]);
 
   return {
@@ -129,13 +118,146 @@ export async function fetchAdminOverviewForUser() {
       active: Boolean(row.IsActive)
     })),
     personnel: personnelResult.recordset.map(mapPersonnel),
-    logs: logsResult.recordset.map((row) => ({
+    logs: [],
+    auditTotal: Number(logCountResult.recordset[0]?.LogCount || 0)
+  };
+}
+
+const AUDIT_CATEGORIES = new Set([
+  '',
+  'PASSWORD',
+  'HARDWARE',
+  'ASSIGNMENT',
+  'TRANSFER',
+  'GLPI',
+  'SIGNATURE',
+  'MANAGEMENT',
+  'EXPORT',
+  'OTHER'
+]);
+
+function normalizeAuditDate(value) {
+  const dateText = cleanText(value, 10);
+  if (!dateText) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) {
+    throw new Error('Denetim tarihi geçersiz.');
+  }
+  return dateText;
+}
+
+export async function fetchAdminAuditLogsForUser(data = {}) {
+  const page = Math.min(Math.max(Number.parseInt(data.page, 10) || 1, 1), 1_000_000);
+  const pageSize = Math.min(Math.max(Number.parseInt(data.pageSize, 10) || 25, 10), 100);
+  const offset = (page - 1) * pageSize;
+  const search = cleanText(data.search, 200);
+  const category = cleanText(data.category, 40).toUpperCase();
+  const fromDate = normalizeAuditDate(data.fromDate);
+  const toDate = normalizeAuditDate(data.toDate);
+
+  if (!AUDIT_CATEGORIES.has(category)) {
+    throw new Error('Denetim kategorisi geçersiz.');
+  }
+  if (fromDate && toDate && fromDate > toDate) {
+    throw new Error('Başlangıç tarihi bitiş tarihinden sonra olamaz.');
+  }
+
+  const result = await query(
+    `
+      ;WITH AuditRows AS (
+        SELECT
+          logs.LogId,
+          logs.CreatedAt,
+          logs.ExecutedBy,
+          logs.ActionType,
+          logs.Details,
+          logs.FileHash,
+          logs.DriveLink,
+          logs.ChainHash,
+          logs.ClientInfo,
+          CASE
+            WHEN logs.ActionType LIKE N'%ŞİFRE%' OR logs.ActionType LIKE N'AD %' THEN N'PASSWORD'
+            WHEN logs.ActionType LIKE N'%TRANSFER%' THEN N'TRANSFER'
+            WHEN logs.ActionType LIKE N'%ZİMMET%' OR logs.ActionType LIKE N'%İADE%' THEN N'ASSIGNMENT'
+            WHEN logs.ActionType LIKE N'%GLPI%' THEN N'GLPI'
+            WHEN logs.ActionType LIKE N'%İMZA%' THEN N'SIGNATURE'
+            WHEN logs.ActionType LIKE N'YÖNETİM %' THEN N'MANAGEMENT'
+            WHEN logs.ActionType LIKE N'%EXPORT%' OR logs.ActionType LIKE N'%AKTAR%' THEN N'EXPORT'
+            WHEN logs.ActionType LIKE N'%DONANIM%'
+              OR logs.ActionType LIKE N'%GRUP%'
+              OR logs.ActionType LIKE N'%SAYIM%'
+              OR logs.ActionType LIKE N'%HURDA%'
+              OR logs.ActionType LIKE N'%DEPO%' THEN N'HARDWARE'
+            ELSE N'OTHER'
+          END AS Category,
+          CONVERT(BIT, COALESCE(verification.IsValid, 0)) AS ChainValid
+        FROM dbo.SystemLogs logs
+        LEFT JOIN dbo.vw_SystemLogChainVerification verification
+          ON verification.LogId = logs.LogId
+      ),
+      FilteredRows AS (
+        SELECT *
+        FROM AuditRows
+        WHERE (@category = N'' OR Category = @category)
+          AND (
+            @search = N''
+            OR ExecutedBy LIKE N'%' + @search + N'%'
+            OR ActionType LIKE N'%' + @search + N'%'
+            OR Details LIKE N'%' + @search + N'%'
+          )
+          AND (
+            @fromDate = N''
+            OR CONVERT(DATE, CreatedAt) >= TRY_CONVERT(DATE, @fromDate, 23)
+          )
+          AND (
+            @toDate = N''
+            OR CONVERT(DATE, CreatedAt) <= TRY_CONVERT(DATE, @toDate, 23)
+          )
+      )
+      SELECT
+        LogId,
+        CreatedAt,
+        ExecutedBy,
+        ActionType,
+        Details,
+        FileHash,
+        DriveLink,
+        ChainHash,
+        ClientInfo,
+        Category,
+        ChainValid,
+        COUNT_BIG(*) OVER() AS TotalCount
+      FROM FilteredRows
+      ORDER BY LogId DESC
+      OFFSET @offset ROWS FETCH NEXT @pageSize ROWS ONLY
+    `,
+    {
+      category: { type: sql.NVarChar(40), value: category },
+      search: { type: sql.NVarChar(200), value: search },
+      fromDate: { type: sql.NVarChar(10), value: fromDate || '' },
+      toDate: { type: sql.NVarChar(10), value: toDate || '' },
+      offset: { type: sql.Int, value: offset },
+      pageSize: { type: sql.Int, value: pageSize }
+    }
+  );
+
+  const total = Number(result.recordset[0]?.TotalCount || 0);
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    logs: result.recordset.map((row) => ({
       id: row.LogId,
       createdAt: row.CreatedAt,
-      executedBy: row.ExecutedBy || '',
+      executedBy: row.ExecutedBy || 'Sistem',
       action: row.ActionType,
       details: row.Details || '',
-      chainHash: row.ChainHash || ''
+      fileHash: row.FileHash || '',
+      driveLink: row.DriveLink || '',
+      chainHash: row.ChainHash || '',
+      clientInfo: row.ClientInfo || '',
+      category: row.Category || 'OTHER',
+      chainValid: Boolean(row.ChainValid)
     }))
   };
 }
@@ -268,4 +390,3 @@ export async function clearPersonnelOverrideForAdmin(user, data) {
     return { personId };
   });
 }
-

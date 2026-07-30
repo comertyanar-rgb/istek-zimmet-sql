@@ -115,7 +115,7 @@ BEGIN
     ;WITH DeleteCandidates AS (
       SELECT TOP (@BatchSize) JobId
       FROM dbo.SignatureJobs WITH (READPAST, ROWLOCK)
-      WHERE Status IN (N'TAMAMLANDI', N'HATA')
+      WHERE Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
         AND UpdatedAt < DATEADD(DAY, -@SignatureRetentionDays, @now)
       ORDER BY UpdatedAt, JobId
     )

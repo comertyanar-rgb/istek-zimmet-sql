@@ -5,6 +5,7 @@ const KNOWN_ACTIONS = new Set([
   'syncGLPI',
   'syncPersonnel',
   'fetchSignatureJobs',
+  'fetchSignatureJobStates',
   'completeSignatureJob',
   'logout',
   'sendOTP',
@@ -14,9 +15,11 @@ const KNOWN_ACTIONS = new Set([
   'enqueueADPasswordReset',
   'fetchSignatureMeta',
   'fetchSignatureQueue',
+  'cancelSignatureJob',
   'createPersonnelSignature',
   'runOperationQueue',
   'adminFetchOverview',
+  'adminFetchAuditLogs',
   'adminSaveAuthorizedUser',
   'adminSavePersonnelOverride',
   'adminClearPersonnelOverride',
@@ -52,6 +55,7 @@ const ROOT_ARRAY_LIMITS = {
   hardwareIds: 5000,
   hardwareList: 5000,
   glpiIds: 5000,
+  signatureIds: 25,
   scans: 5000
 };
 
@@ -121,6 +125,7 @@ function validateScalarIdArray(value, field, maxItems) {
 function validateActionSpecificShape(data) {
   if (Object.hasOwn(data, 'hardwareIds')) validateScalarIdArray(data.hardwareIds, 'hardwareIds', 5000);
   if (Object.hasOwn(data, 'glpiIds')) validateScalarIdArray(data.glpiIds, 'glpiIds', 5000);
+  if (Object.hasOwn(data, 'signatureIds')) validateScalarIdArray(data.signatureIds, 'signatureIds', 25);
 
   if (Object.hasOwn(data, 'scans')) {
     if (!Array.isArray(data.scans) || data.scans.length > 5000) {
@@ -143,6 +148,17 @@ function validateActionSpecificShape(data) {
     !isPlainObject(data.person)
   ) {
     throw new RequestValidationError('Personel senkronizasyon kaydı bulunamadı.');
+  }
+
+  if (data.action === 'fetchSignatureJobStates' && !Array.isArray(data.signatureIds)) {
+    throw new RequestValidationError('İmza kimlikleri liste biçiminde olmalıdır.');
+  }
+
+  if (
+    data.action === 'cancelSignatureJob' &&
+    (typeof data.queueId !== 'string' || !data.queueId.trim() || data.queueId.length > 80)
+  ) {
+    throw new RequestValidationError('İptal edilecek imza kuyruğu kimliği geçersiz.');
   }
 
   if (data.action === 'createSheet' && !Array.isArray(data.data)) {

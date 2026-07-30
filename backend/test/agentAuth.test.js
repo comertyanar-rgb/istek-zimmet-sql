@@ -50,6 +50,7 @@ function signedRequest({ body, timestamp = Math.floor(Date.now() / 1000), nonce 
 
 test('yalnızca tanımlı agent aksiyonlarını işaretler', () => {
   assert.equal(isAgentAction('fetchADPasswordJobs'), true);
+  assert.equal(isAgentAction('fetchSignatureJobStates'), true);
   assert.equal(isAgentAction('fetchData'), false);
 });
 

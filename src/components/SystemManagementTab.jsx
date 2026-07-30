@@ -23,6 +23,34 @@ import { confirmAppAction, showAppAlert } from '../services/uiMessageService.js'
 import { toTrLower } from '../utils/text.js';
 
 const PAGE_SIZE = 20;
+const AUDIT_PAGE_SIZE = 25;
+
+const AUDIT_CATEGORY_OPTIONS = [
+  ['', 'Tüm işlemler'],
+  ['PASSWORD', 'Şifre işlemleri'],
+  ['HARDWARE', 'Donanım'],
+  ['ASSIGNMENT', 'Zimmet / İade'],
+  ['TRANSFER', 'Transfer'],
+  ['GLPI', 'GLPI'],
+  ['SIGNATURE', 'İmza'],
+  ['MANAGEMENT', 'Yönetim'],
+  ['EXPORT', 'Dışa aktarım'],
+  ['OTHER', 'Diğer'],
+];
+
+const AUDIT_CATEGORY_LABELS = Object.fromEntries(AUDIT_CATEGORY_OPTIONS);
+
+function auditCategoryClass(category) {
+  if (category === 'PASSWORD') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (category === 'TRANSFER') return 'border-violet-200 bg-violet-50 text-violet-700';
+  if (category === 'ASSIGNMENT') return 'border-blue-200 bg-blue-50 text-blue-700';
+  if (category === 'GLPI') return 'border-cyan-200 bg-cyan-50 text-cyan-700';
+  if (category === 'MANAGEMENT') return 'border-red-200 bg-red-50 text-red-700';
+  if (category === 'SIGNATURE') return 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700';
+  if (category === 'EXPORT') return 'border-indigo-200 bg-indigo-50 text-indigo-700';
+  if (category === 'HARDWARE') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  return 'border-slate-200 bg-slate-100 text-slate-600';
+}
 
 const emptyUserForm = {
   email: '',
@@ -115,6 +143,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
     campuses: [],
     personnel: [],
     logs: [],
+    auditTotal: 0,
   });
   const [activeSection, setActiveSection] = useState('access');
   const [loading, setLoading] = useState(true);
@@ -124,6 +153,15 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
   const [personnelPage, setPersonnelPage] = useState(1);
   const [userForm, setUserForm] = useState(null);
   const [overrideForm, setOverrideForm] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditTotal, setAuditTotal] = useState(0);
+  const [auditTotalPages, setAuditTotalPages] = useState(1);
+  const [auditPage, setAuditPage] = useState(1);
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditCategory, setAuditCategory] = useState('');
+  const [auditFromDate, setAuditFromDate] = useState('');
+  const [auditToDate, setAuditToDate] = useState('');
+  const [auditLoading, setAuditLoading] = useState(false);
 
   const loadOverview = useCallback(async (showLoader = true) => {
     if (!currentUser?.token) return;
@@ -138,6 +176,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         campuses: result.campuses || [],
         personnel: result.personnel || [],
         logs: result.logs || [],
+        auditTotal: Number(result.auditTotal || 0),
       });
     } catch (error) {
       showAppAlert(`Sistem yönetimi verileri alınamadı: ${error.message}`, {
@@ -149,9 +188,49 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
     }
   }, [currentUser?.token]);
 
+  const loadAuditLogs = useCallback(async () => {
+    if (!currentUser?.token) return;
+    setAuditLoading(true);
+    try {
+      const result = await postApiAction({
+        action: 'adminFetchAuditLogs',
+        authToken: currentUser.token,
+        page: auditPage,
+        pageSize: AUDIT_PAGE_SIZE,
+        search: auditSearch,
+        category: auditCategory,
+        fromDate: auditFromDate,
+        toDate: auditToDate,
+      });
+      setAuditLogs(Array.isArray(result.logs) ? result.logs : []);
+      setAuditTotal(Number(result.total || 0));
+      setAuditTotalPages(Math.max(1, Number(result.totalPages || 1)));
+    } catch (error) {
+      showAppAlert(`Denetim kayıtları alınamadı: ${error.message}`, {
+        type: 'error',
+        title: 'Denetim kayıtları',
+      });
+    } finally {
+      setAuditLoading(false);
+    }
+  }, [
+    auditCategory,
+    auditFromDate,
+    auditPage,
+    auditSearch,
+    auditToDate,
+    currentUser?.token,
+  ]);
+
   useEffect(() => {
     loadOverview(true);
   }, [loadOverview]);
+
+  useEffect(() => {
+    if (activeSection !== 'audit') return undefined;
+    const timeoutId = window.setTimeout(loadAuditLogs, auditSearch ? 300 : 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeSection, loadAuditLogs, auditSearch]);
 
   const activeCampuses = useMemo(
     () => overview.campuses.filter((campus) => campus.active),
@@ -310,7 +389,13 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               'Personel',
               overview.personnel.filter((item) => item.hasOverride).length,
             ],
-            ['audit', ScrollText, 'Denetim Kayıtları', 'Kayıt', overview.logs.length],
+            [
+              'audit',
+              ScrollText,
+              'Denetim Kayıtları',
+              'Kayıt',
+              overview.auditTotal,
+            ],
           ].map(([key, Icon, label, mobileLabel, count]) => (
             <button
               key={key}
@@ -333,7 +418,10 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
             </button>
           ))}
         </div>
-        <RefreshButton onRefresh={() => loadOverview(true)} loading={loading} />
+        <RefreshButton
+          onRefresh={activeSection === 'audit' ? loadAuditLogs : () => loadOverview(true)}
+          loading={activeSection === 'audit' ? auditLoading : loading}
+        />
       </div>
 
       {activeSection === 'access' && (
@@ -541,37 +629,178 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
 
       {activeSection === 'audit' && (
         <section>
-          <div className="mb-4">
-            <h2 className="text-base font-bold text-slate-900">Son yönetim işlemleri</h2>
+          <div className="mb-4 flex flex-col gap-3">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Tüm sistem işlemleri</h2>
+              <p className="text-xs text-slate-500">
+                Kim, hangi hedefte, hangi işlemi ve ne zaman yaptı. Parola, OTP ve gizli
+                anahtar değerleri kayıtlara alınmaz.
+              </p>
+            </div>
+            <div className="grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3 md:grid-cols-[minmax(220px,1fr)_180px_150px_150px_auto]">
+              <label className="flex h-10 min-w-0 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 shadow-sm">
+                <Search className="h-4 w-4 shrink-0 text-slate-400" />
+                <input
+                  value={auditSearch}
+                  onChange={(event) => {
+                    setAuditSearch(event.target.value);
+                    setAuditPage(1);
+                  }}
+                  placeholder="Yetkili, işlem veya hedef ara"
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+                />
+              </label>
+              <select
+                value={auditCategory}
+                onChange={(event) => {
+                  setAuditCategory(event.target.value);
+                  setAuditPage(1);
+                }}
+                className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm outline-none"
+                aria-label="Denetim kategorisi"
+              >
+                {AUDIT_CATEGORY_OPTIONS.map(([value, label]) => (
+                  <option key={value || 'all'} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={auditFromDate}
+                onChange={(event) => {
+                  setAuditFromDate(event.target.value);
+                  setAuditPage(1);
+                }}
+                className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm outline-none"
+                title="Başlangıç tarihi"
+                aria-label="Başlangıç tarihi"
+              />
+              <input
+                type="date"
+                value={auditToDate}
+                onChange={(event) => {
+                  setAuditToDate(event.target.value);
+                  setAuditPage(1);
+                }}
+                className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm outline-none"
+                title="Bitiş tarihi"
+                aria-label="Bitiş tarihi"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  setAuditSearch('');
+                  setAuditCategory('');
+                  setAuditFromDate('');
+                  setAuditToDate('');
+                  setAuditPage(1);
+                }}
+                disabled={
+                  !auditSearch && !auditCategory && !auditFromDate && !auditToDate
+                }
+                className="inline-flex h-10 items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 shadow-sm hover:bg-slate-100 disabled:opacity-40"
+              >
+                <X className="h-4 w-4" /> Temizle
+              </button>
+            </div>
             <p className="text-xs text-slate-500">
-              Kayıtlar sistemin SHA-256 zincirli, yalnız eklenebilir denetim günlüğündedir.
+              {auditTotal.toLocaleString('tr-TR')} kayıt bulundu. Kayıtlar SHA-256 zincirli
+              ve yalnız eklenebilir yapıdadır.
             </p>
           </div>
-          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-            {overview.logs.map((log) => (
+          <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white">
+            {auditLoading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 backdrop-blur-[1px]">
+                <Loader2 className="h-7 w-7 animate-spin text-[#0066b1]" />
+              </div>
+            )}
+            {auditLogs.map((log) => (
               <div
                 key={log.id}
-                className="grid gap-2 border-b border-slate-100 px-4 py-3 last:border-b-0 md:grid-cols-[160px_220px_1fr]"
+                className="grid gap-2 border-b border-slate-100 px-4 py-3 last:border-b-0 md:grid-cols-[145px_minmax(190px,240px)_1fr]"
               >
-                <div className="text-xs font-bold text-slate-500">{formatDateTime(log.createdAt)}</div>
+                <div>
+                  <p className="text-xs font-bold text-slate-600">
+                    {formatDateTime(log.createdAt)}
+                  </p>
+                  <span
+                    className={`mt-1 inline-flex rounded-md border px-1.5 py-0.5 text-[9px] font-bold ${auditCategoryClass(
+                      log.category
+                    )}`}
+                  >
+                    {AUDIT_CATEGORY_LABELS[log.category] || 'Diğer'}
+                  </span>
+                </div>
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-bold text-[#0066b1]">{log.action}</p>
-                  <p className="truncate text-[11px] text-slate-500">{log.executedBy}</p>
+                  <p className="text-xs font-bold text-[#0066b1]">{log.action}</p>
+                  <p className="mt-1 truncate text-[11px] font-medium text-slate-500">
+                    İşlemi yapan: {log.executedBy}
+                  </p>
                 </div>
                 <div className="min-w-0">
                   <p className="text-xs leading-relaxed text-slate-700">{log.details}</p>
-                  <p className="mt-1 truncate font-mono text-[9px] text-slate-300">
-                    {log.chainHash}
-                  </p>
+                  <details className="mt-2 text-[10px] text-slate-400">
+                    <summary className="cursor-pointer select-none font-bold hover:text-slate-600">
+                      Teknik detaylar
+                    </summary>
+                    <div className="mt-1 space-y-1 break-all rounded-md bg-slate-50 p-2 font-mono">
+                      <p>
+                        Zincir: {log.chainValid ? 'Doğrulandı' : 'Doğrulanamadı'} /{' '}
+                        {log.chainHash}
+                      </p>
+                      {log.clientInfo && <p>İstemci: {log.clientInfo}</p>}
+                      {log.fileHash && <p>Dosya: {log.fileHash}</p>}
+                      {/^(https?:\/\/)/i.test(log.driveLink || '') && (
+                        <a
+                          href={log.driveLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-sans font-bold text-[#0066b1] hover:underline"
+                        >
+                          İlişkili belgeyi aç
+                        </a>
+                      )}
+                    </div>
+                  </details>
                 </div>
               </div>
             ))}
-            {overview.logs.length === 0 && (
+            {!auditLoading && auditLogs.length === 0 && (
               <div className="px-4 py-12 text-center text-sm font-bold text-slate-400">
-                Henüz yönetim işlemi kaydı yok.
+                Bu ölçütlere uygun denetim kaydı bulunamadı.
               </div>
             )}
           </div>
+          {auditTotalPages > 1 && (
+            <div className="mt-4 flex items-center justify-between gap-3 text-xs">
+              <span className="text-slate-500">
+                Sayfa {auditPage} / {auditTotalPages}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setAuditPage((page) => Math.max(1, page - 1))}
+                  disabled={auditPage <= 1 || auditLoading}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm disabled:opacity-40"
+                  title="Önceki sayfa"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAuditPage((page) => Math.min(auditTotalPages, page + 1))
+                  }
+                  disabled={auditPage >= auditTotalPages || auditLoading}
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white shadow-sm disabled:opacity-40"
+                  title="Sonraki sayfa"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       )}
 

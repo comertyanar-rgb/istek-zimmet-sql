@@ -8,7 +8,7 @@ param(
   [string]$SignatureApiUrl = "http://localhost:8787/api/action",
   [string]$SignatureCallbackUrl = "",
   [string]$SignatureAgentSecret = "",
-  [int]$SignatureFetchLimit = 5,
+  [int]$SignatureFetchLimit = 1,
   [switch]$SkipSignatureFetch,
   [switch]$SkipSignatureCallback,
   [switch]$SkipPhotoshop,
@@ -193,6 +193,165 @@ function Invoke-SignatureApi {
   return Invoke-RestMethod -Uri $Url -Method Post -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec $TimeoutSec
 }
 
+function Get-ReadableSignatureError {
+  param([string]$Message)
+
+  if ($Message -match '(?i)scratch disks? (are|is) full|scratch disk.*dolu') {
+    return "Photoshop geçici çalışma (scratch) diski dolu. Photoshop Tercihler > Scratch Disks bölümünde boş alanı yüksek bir sürücü seçin veya diskte alan açın."
+  }
+  if ([string]::IsNullOrWhiteSpace($Message)) {
+    return "İmza ajanı bilinmeyen bir hata bildirdi."
+  }
+  return $Message.Trim()
+}
+
+function Get-ActiveSignatureRows {
+  param(
+    [object[]]$Rows,
+    [string]$RunLog
+  )
+
+  $inputRows = @($Rows)
+  if ($inputRows.Count -eq 0) { return @() }
+  if ($SkipSignatureCallback) { return $inputRows }
+
+  $signatureIds = @(
+    $inputRows |
+      ForEach-Object { [string]$_.filename } |
+      Where-Object { ![string]::IsNullOrWhiteSpace($_) } |
+      Select-Object -Unique
+  )
+  if ($signatureIds.Count -eq 0) { return @() }
+
+  $response = Invoke-SignatureApi -Payload @{
+    action = "fetchSignatureJobStates"
+    signatureIds = $signatureIds
+    machine = $env:COMPUTERNAME
+  } -Url $SignatureApiUrl -TimeoutSec 30
+  if (!$response.success) {
+    throw "Signature job state check failed: $($response.error)"
+  }
+
+  $activeIds = @{}
+  foreach ($state in @($response.states)) {
+    if ([string]$state.status -eq "ISLENIYOR") {
+      $activeIds[[string]$state.signatureId] = $true
+    }
+  }
+
+  $activeRows = @($inputRows | Where-Object { $activeIds.ContainsKey([string]$_.filename) })
+  $cancelledCount = $inputRows.Count - $activeRows.Count
+  if ($cancelledCount -gt 0 -and ![string]::IsNullOrWhiteSpace($RunLog)) {
+    "$cancelledCount cancelled or inactive signature row(s) skipped." |
+      Tee-Object -FilePath $RunLog -Append |
+      Out-Null
+  }
+  return $activeRows
+}
+
+function Set-SignatureDatasetRows {
+  param(
+    [string]$Path,
+    [object[]]$Rows
+  )
+
+  $datasetRows = New-Object System.Collections.Generic.List[string]
+  $datasetRows.Add((@("filename", "ad", "unvan", "ing", "email", "adres", "CampusImage") | ForEach-Object { Format-SignatureCell $_ }) -join "`t")
+  foreach ($row in @($Rows)) {
+    $datasetRows.Add(
+      (@($row.filename, $row.ad, $row.unvan, $row.ing, $row.email, $row.adres, $row.CampusImage) |
+        ForEach-Object { Format-SignatureCell $_ }) -join "`t"
+    )
+  }
+  Set-Content -LiteralPath $Path -Value ($datasetRows -join "`n") -Encoding UTF8
+}
+
+function New-ActiveGamFile {
+  param(
+    [object[]]$Rows,
+    [string]$Stamp
+  )
+
+  $path = Join-Path $JobDir ("gam_imza_active_{0}.cmd" -f $Stamp)
+  $commands = New-Object System.Collections.Generic.List[string]
+  $commands.Add("@echo off")
+  $commands.Add("setlocal")
+  $commands.Add("cd /d C:\GAMWork")
+  $commands.Add("")
+
+  foreach ($row in @($Rows)) {
+    $signatureId = [string]$row.filename
+    $email = [string]$row.email
+    if ($signatureId -notmatch '^[A-Za-z0-9_-]{8,80}$') {
+      throw "Invalid signature ID in GAM dataset: $signatureId"
+    }
+    if ($email -notmatch '^[A-Za-z0-9._%+-]+@istek\.k12\.tr$') {
+      throw "Invalid institutional email in GAM dataset: $email"
+    }
+    $commands.Add(('gam user "{0}" signature file "signature/{1}.html" html' -f $email, $signatureId))
+  }
+
+  $commands.Add("")
+  $commands.Add("exit /b %ERRORLEVEL%")
+  Set-Content -LiteralPath $path -Value ($commands -join "`r`n") -Encoding ASCII
+  return $path
+}
+
+function Move-SignatureInputToArchive {
+  param(
+    $Dataset,
+    [string]$GamFile,
+    [string]$Bucket
+  )
+
+  $bucketName = if ([string]::IsNullOrWhiteSpace($Bucket)) { "failed" } else { $Bucket }
+  $datasetDir = Join-Path (Join-Path $ProcessedDir $bucketName) "datasets"
+  $commandDir = Join-Path (Join-Path $ProcessedDir $bucketName) "commands"
+  foreach ($dir in @($datasetDir, $commandDir)) {
+    if (!(Test-Path -LiteralPath $dir)) {
+      New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    }
+  }
+
+  if ($null -ne $Dataset -and (Test-Path -LiteralPath $Dataset.FullName)) {
+    Move-Item -LiteralPath $Dataset.FullName -Destination (Join-Path $datasetDir $Dataset.Name) -Force
+  }
+  if (![string]::IsNullOrWhiteSpace($GamFile) -and (Test-Path -LiteralPath $GamFile)) {
+    Move-Item -LiteralPath $GamFile -Destination (Join-Path $commandDir (Split-Path $GamFile -Leaf)) -Force
+  }
+}
+
+function Send-SignatureFailureCallbacks {
+  param(
+    [object[]]$Rows,
+    [string]$ErrorMessage,
+    [string]$RunLog
+  )
+
+  if ($SkipSignatureCallback -or [string]::IsNullOrWhiteSpace($SignatureAgentSecret)) { return }
+
+  foreach ($row in @($Rows)) {
+    $signatureId = [string]$row.filename
+    if ([string]::IsNullOrWhiteSpace($signatureId)) { continue }
+    try {
+      $response = Invoke-SignatureApi -Payload @{
+        action = "completeSignatureJob"
+        signatureId = $signatureId
+        success = $false
+        error = $ErrorMessage
+        machine = $env:COMPUTERNAME
+      } -Url $SignatureCallbackUrl -TimeoutSec 30
+      if (!$response.success) {
+        throw $response.error
+      }
+    } catch {
+      if (![string]::IsNullOrWhiteSpace($RunLog)) {
+        "Failure callback skipped for ${signatureId}: $($_.Exception.Message)" | Tee-Object -FilePath $RunLog -Append
+      }
+    }
+  }
+}
+
 function New-SignatureInputFilesFromJobs {
   param(
     [object[]]$Jobs,
@@ -318,6 +477,12 @@ if (Test-Path -LiteralPath $LockFile) {
 
 Set-Content -LiteralPath $LockFile -Value (Get-Date).ToString("s")
 
+$dataset = $null
+$gamFile = ""
+$activeGamFile = ""
+$rows = @()
+$runLog = ""
+
 try {
   $logStamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
   $runLog = Join-Path $LogDir ("pipeline_{0}.log" -f $logStamp)
@@ -359,6 +524,18 @@ try {
   $rows = Import-Csv -LiteralPath $dataset.FullName -Delimiter "`t"
   if (!$rows -or $rows.Count -eq 0) {
     throw "Dataset has no rows: $($dataset.FullName)"
+  }
+
+  $rowCountBeforeStateCheck = @($rows).Count
+  $rows = @(Get-ActiveSignatureRows -Rows $rows -RunLog $runLog)
+  if ($rows.Count -eq 0) {
+    Write-AgentInfo "Dataset içindeki tüm imza işleri iptal edilmiş; Photoshop çalıştırılmadı."
+    "All signature jobs in this dataset are inactive. Archiving input files." | Tee-Object -FilePath $runLog -Append
+    Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "cancelled"
+    exit 0
+  }
+  if ($rows.Count -ne $rowCountBeforeStateCheck) {
+    Set-SignatureDatasetRows -Path $dataset.FullName -Rows $rows
   }
 
   if (!$SkipPhotoshop) {
@@ -436,6 +613,14 @@ var SIGNATURE_JOB = {
     }
   }
 
+  $rows = @(Get-ActiveSignatureRows -Rows $rows -RunLog $runLog)
+  if ($rows.Count -eq 0) {
+    Write-AgentInfo "İmza işi Photoshop aşamasında iptal edildi; yükleme ve GAM adımları atlandı."
+    "Signature jobs were cancelled after Photoshop. Upload and GAM skipped." | Tee-Object -FilePath $runLog -Append
+    Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "cancelled"
+    exit 0
+  }
+
   if (!$SkipUpload) {
     if (!(Test-Path -LiteralPath $WinScpCom)) {
       throw "WinSCP.com was not found: $WinScpCom"
@@ -492,11 +677,19 @@ var SIGNATURE_JOB = {
   }
 
   if (!$SkipGam) {
+    $rows = @(Get-ActiveSignatureRows -Rows $rows -RunLog $runLog)
+    if ($rows.Count -eq 0) {
+      Write-AgentInfo "İmza işi yüklemeden sonra iptal edildi; GAM adımı atlandı."
+      "Signature jobs were cancelled before GAM. GAM skipped." | Tee-Object -FilePath $runLog -Append
+      Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "cancelled"
+      exit 0
+    }
+    $activeGamFile = New-ActiveGamFile -Rows $rows -Stamp $stamp
     Write-AgentInfo "GAM komutları çalıştırılıyor..."
     "Running GAM commands..." | Tee-Object -FilePath $runLog -Append
-    & cmd.exe /c "`"$gamFile`""
+    & cmd.exe /c "`"$activeGamFile`""
     if ($LASTEXITCODE -ne 0) {
-      throw "GAM command file failed: $gamFile"
+      throw "GAM command file failed: $activeGamFile"
     }
   }
 
@@ -513,6 +706,7 @@ var SIGNATURE_JOB = {
         $payload = @{
           action = "completeSignatureJob"
           signatureId = $signatureId
+          success = $true
           templateVariant = $templateVariant
           machine = $env:COMPUTERNAME
         }
@@ -546,9 +740,17 @@ var SIGNATURE_JOB = {
 }
 catch {
   $errorLog = Join-Path $LogDir ("pipeline_error_{0}.log" -f (Get-Date -Format "yyyy-MM-dd_HHmmss"))
+  $rawError = $_.Exception.Message
+  $readableError = Get-ReadableSignatureError $rawError
   $_ | Out-String | Tee-Object -FilePath $errorLog -Append
+  $readableError | Tee-Object -FilePath $errorLog -Append
+  Send-SignatureFailureCallbacks -Rows $rows -ErrorMessage $readableError -RunLog $errorLog
+  Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "failed"
   throw
 }
 finally {
+  if (![string]::IsNullOrWhiteSpace($activeGamFile)) {
+    Remove-Item -LiteralPath $activeGamFile -ErrorAction SilentlyContinue
+  }
   Remove-Item -LiteralPath $LockFile -ErrorAction SilentlyContinue
 }

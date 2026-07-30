@@ -77,6 +77,7 @@ const actionRateLimits = {
   verifyOTP: { windowMs: 10 * 60 * 1000, max: 300 },
   enqueueADPasswordReset: { windowMs: 10 * 60 * 1000, max: 60 },
   createPersonnelSignature: { windowMs: 10 * 60 * 1000, max: 60 },
+  cancelSignatureJob: { windowMs: 10 * 60 * 1000, max: 120 },
   createSheet: { windowMs: 10 * 60 * 1000, max: 10 },
   runOperationQueue: { windowMs: 60 * 1000, max: 30 },
   adminFetchOverview: { windowMs: 10 * 60 * 1000, max: 120 },
@@ -88,6 +89,7 @@ const actionRateLimits = {
   fetchADPasswordJobs: { windowMs: 10 * 60 * 1000, max: 180 },
   completeADPasswordJob: { windowMs: 10 * 60 * 1000, max: 300 },
   fetchSignatureJobs: { windowMs: 10 * 60 * 1000, max: 180 },
+  fetchSignatureJobStates: { windowMs: 10 * 60 * 1000, max: 300 },
   completeSignatureJob: { windowMs: 10 * 60 * 1000, max: 300 }
 };
 
@@ -243,17 +245,34 @@ app.use(
     crossOriginOpenerPolicy: false
   })
 );
-app.use(
+function getRequestHost(req) {
+  return String(req.headers['x-forwarded-host'] || req.headers.host || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+}
+
+function isAllowedApiOrigin(req, origin) {
+  if (!origin || config.corsOrigins.includes(origin)) return true;
+
+  try {
+    return new URL(origin).host.toLowerCase() === getRequestHost(req);
+  } catch {
+    return false;
+  }
+}
+
+app.use('/api/action', (req, res, next) =>
   cors({
     origin(origin, callback) {
-      if (!origin || config.corsOrigins.includes(origin)) {
+      if (isAllowedApiOrigin(req, origin)) {
         callback(null, true);
         return;
       }
       callback(new Error(`CORS reddedildi: ${origin}`));
     },
     credentials: true
-  })
+  })(req, res, next)
 );
 app.use(
   pinoHttp({

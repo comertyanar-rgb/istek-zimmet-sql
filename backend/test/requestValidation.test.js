@@ -85,3 +85,30 @@ test('toplu donanım içe aktarmada 1000 satır sınırını uygular', () => {
     (error) => error instanceof RequestValidationError && /en fazla 1000/i.test(error.message)
   );
 });
+
+test('imza işi iptalinde kuyruk kimliğini zorunlu tutar', () => {
+  const payload = { action: 'cancelSignatureJob', authToken: 'x'.repeat(43), queueId: 'SIG-TEST-001' };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () => validateActionRequest({ action: 'cancelSignatureJob', authToken: 'x'.repeat(43), queueId: '' }),
+    (error) => error instanceof RequestValidationError && /kuyruğu kimliği/i.test(error.message)
+  );
+});
+
+test('imza agent durum sorgusunda en fazla 25 kimlik kabul eder', () => {
+  const payload = {
+    action: 'fetchSignatureJobStates',
+    signatureIds: ['ABC12345']
+  };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'fetchSignatureJobStates',
+        signatureIds: Array.from({ length: 26 }, (_, index) => `SIG${index}`)
+      }),
+    (error) => error instanceof RequestValidationError && /en fazla 25/i.test(error.message)
+  );
+});

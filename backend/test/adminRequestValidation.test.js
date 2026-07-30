@@ -6,6 +6,13 @@ test('süper yönetici aksiyonlarını bilinen ve güvenli istekler olarak kabul
   const requests = [
     { action: 'adminFetchOverview' },
     {
+      action: 'adminFetchAuditLogs',
+      page: 1,
+      pageSize: 25,
+      search: 'şifre',
+      category: 'PASSWORD',
+    },
+    {
       action: 'adminSaveAuthorizedUser',
       email: 'it@istek.k12.tr',
       role: 'IT',

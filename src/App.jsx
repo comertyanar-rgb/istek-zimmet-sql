@@ -5,7 +5,6 @@ import {
   Monitor,
   Users,
   FileSignature,
-  LogOut,
   Search,
   CheckCircle2,
   Laptop,
@@ -55,6 +54,7 @@ import { Pagination } from './components/Pagination.jsx';
 import { AssignmentFloatingAction } from './components/AssignmentFloatingAction.jsx';
 import { ListSkeleton, WorkspaceSkeleton } from './components/LoadingSkeletons.jsx';
 import { ThemeToggle } from './components/ThemeToggle.jsx';
+import { UserSettingsMenu } from './components/UserSettingsMenu.jsx';
 import { confirmAppAction, showAppAlert } from './services/uiMessageService.js';
 import { useAppTheme } from './hooks/useAppTheme.js';
 
@@ -446,6 +446,7 @@ export default function App() {
   const lastDataSyncRef = useRef('');
   const lastFullSyncAtRef = useRef(0);
   const dataFetchInFlightRef = useRef(null);
+  const missingGlpiFetchInFlightRef = useRef(null);
   const qrVideoRef = useRef(null);
   const qrStreamRef = useRef(null);
   const qrDetectorRef = useRef(null);
@@ -849,6 +850,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
   const [missingGlpiFilterCampus, setMissingGlpiFilterCampus] = useState('All');
   const [activeMissingGlpiFilterDropdown, setActiveMissingGlpiFilterDropdown] = useState(null);
   const [isLoadingMissingGlpi, setIsLoadingMissingGlpi] = useState(false);
+  const [missingGlpiLoadError, setMissingGlpiLoadError] = useState('');
   const [isImportingMissingGlpi, setIsImportingMissingGlpi] = useState(false);
   const [qrInput, setQrInput] = useState('');
   const [qrFoundHardwareId, setQrFoundHardwareId] = useState(null);
@@ -1438,19 +1440,49 @@ setTimeout(() => setSuccessMessage(null), 2500);
   };
 
   const fetchMissingGlpiDevices = async (showLoader = true) => {
-    if (!currentUser || !currentUser.token) return;
+    if (!currentUser?.token) {
+      setMissingGlpiLoadError('GLPI cihazlarını görüntülemek için yeniden giriş yapın.');
+      return null;
+    }
+
     if (showLoader) setIsLoadingMissingGlpi(true);
-    try {
+
+    if (missingGlpiFetchInFlightRef.current) {
+      try {
+        return await missingGlpiFetchInFlightRef.current;
+      } finally {
+        if (showLoader) setIsLoadingMissingGlpi(false);
+      }
+    }
+
+    setMissingGlpiLoadError('');
+    const request = (async () => {
       const data = await postApiAction({
         action: 'fetchMissingGLPIDevices',
         authToken: currentUser.token,
       });
-      setMissingGlpiDevices(data.devices || []);
+
+      if (!Array.isArray(data?.devices)) {
+        throw new Error('Sunucu GLPI cihaz listesini beklenen biçimde döndürmedi.');
+      }
+
+      setMissingGlpiDevices(data.devices);
       setSelectedMissingGlpiIds([]);
+      return data;
+    })();
+
+    missingGlpiFetchInFlightRef.current = request;
+    try {
+      return await request;
     } catch (err) {
       console.error('GLPI eksik cihazlar çekilemedi:', err);
+      setMissingGlpiLoadError(err.message || 'GLPI cihazları alınamadı.');
       showAppAlert('GLPI eksikleri alınamadı: ' + err.message);
+      return null;
     } finally {
+      if (missingGlpiFetchInFlightRef.current === request) {
+        missingGlpiFetchInFlightRef.current = null;
+      }
       if (showLoader) setIsLoadingMissingGlpi(false);
     }
   };
@@ -3126,8 +3158,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
   const handleTabChange = (tabName) => {
     // İşlem yapiliyorsa sekme degistirmeyi engelle
-    if (isGenerating) return;
-    if (tabName === 'systemAdmin' && !currentUser?.isSuperAdmin) return;
+    if (isGenerating) return false;
+    if (tabName === 'systemAdmin' && !currentUser?.isSuperAdmin) return false;
 
     // --- AÇIK OLAN HER TÜRLÜ İŞLEMİ VE MODALI İPTAL ET ---
     setIsSigning(false);
@@ -3186,6 +3218,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         mainContainerRef.current.scrollTop = 0;
       }
     }, 10);
+    return true;
   };
 
   // YENİ: TÜM UYGULAMA İÇİN GENEL GELEN TRANSFER BİLDİRİM SAYACI
@@ -3404,29 +3437,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
               }}
             >
               <img
-                src={'https://istek.site/logo/Kurum_Genel_Logo-04.png'}
-                alt="İSTEK Okulları Logo Mobil"
-                className="h-6 w-auto object-contain md:hidden pointer-events-none"
+                src="/logo.png"
+                alt="İSTEK Okulları amblemi"
+                className="h-7 w-7 object-contain md:hidden pointer-events-none"
                 onError={(e) => { e.target.style.display = 'none'; }}
               />
               <img
-                src={'https://istek.site/logo/Kurum_Genel_Logo-01.png'}
+                src="/istek-logo.png"
                 alt="İSTEK Okulları Logo Masaüstü"
                 className="hidden md:block h-20 md:h-12 lg:h-14 w-auto object-contain pointer-events-none"
                 onError={(e) => { e.target.style.display = 'none'; }}
               />
             </div>
 
-            {/* MOBIL PROFIL */}
+            {/* MOBİL AKSİYONLAR */}
             <div className="flex items-center gap-2 md:hidden shrink-0 ml-2">
-              <div className="w-9 h-9 rounded-full bg-white flex items-center justify-center text-[#0066b1] font-bold shadow-md shrink-0 border-2 border-[#8bcdc5] overflow-hidden">
-              {currentUser.picture ? (
-  <img src={currentUser.picture} alt="Profil" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={handleCurrentUserPictureError} />
-) : (
-  (currentUser?.name || 'U').charAt(0)
-)}
-              </div>
-
               <Suspense fallback={<LazyInlineFallback label="" />}>
                 <OperationQueueIndicator
                   currentUser={currentUser}
@@ -3437,26 +3462,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 />
               </Suspense>
 
-              <ThemeToggle theme={theme} onToggle={toggleTheme} />
-               
-              {/* YENİ: Mobil Veri Yenile Butonu */}
-              <button
-                onClick={() => fetchVeritabani(true)}
-                disabled={isRefreshing}
-                className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors shrink-0 disabled:opacity-50"
-                title="Verileri Yenile"
-              >
-                <RefreshCw className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} />
-              </button>
-
-              <button
-                onClick={() => {
-                  handleLogout();
-                }}
-                className="p-1.5 bg-red-500/20 text-red-100 hover:bg-red-500 rounded-lg transition-colors shrink-0"
-              >
-                <LogOut className="w-5 h-5" />
-              </button>
+              <UserSettingsMenu
+                theme={theme}
+                onToggleTheme={toggleTheme}
+                onRefresh={() => fetchVeritabani(true)}
+                onLogout={handleLogout}
+                isRefreshing={isRefreshing}
+                variant="mobile"
+              />
             </div>
 
           </div>
@@ -3529,61 +3542,48 @@ setTimeout(() => setSuccessMessage(null), 2500);
           </div>
         </nav>
 
-        {/* Masaüstü Aksiyon Butonları (SADECE ÇIKIŞ YAP) */}
-        <div className="hidden md:flex mt-auto p-4 border-t border-[#8bcdc5]/30 bg-[#005595] space-y-2 flex-col">
-          <ThemeToggle
-            theme={theme}
-            onToggle={toggleTheme}
-            showLabel
-            className="w-full"
-          />
+        {/* MASAÜSTÜ KULLANICI VE AYARLAR */}
+        <div className="hidden md:flex mt-auto p-4 border-t border-[#8bcdc5]/30 bg-[#005595] flex-col">
+          <div className="w-full space-y-2" data-user-settings-anchor>
+            <Suspense fallback={<LazyInlineFallback label="İşlem kuyruğu..." />}>
+              <OperationQueueIndicator
+                currentUser={currentUser}
+                gasUrl={GAS_URL}
+                onRefreshData={fetchVeritabani}
+                variant="desktop"
+                alwaysVisible
+              />
+            </Suspense>
 
-          <Suspense fallback={<LazyInlineFallback label="İşlem kuyruğu..." />}>
-            <OperationQueueIndicator
-              currentUser={currentUser}
-              gasUrl={GAS_URL}
-              onRefreshData={fetchVeritabani}
-              variant="desktop"
-              alwaysVisible
-            />
-          </Suspense>
+            <div className="bg-[#005595] p-3 rounded-xl border border-[#8bcdc5]/30 shadow-inner flex items-center gap-3 relative group">
+              <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-[#0066b1] font-bold shadow-md shrink-0 border-2 border-[#8bcdc5] overflow-hidden">
+                {currentUser.picture ? (
+                  <img src={currentUser.picture} alt="Profil" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={handleCurrentUserPictureError} />
+                ) : (
+                  <span className="text-lg">{String(currentUser?.name || 'U').charAt(0)}</span>
+                )}
+              </div>
 
-          <div className="bg-[#005595] p-3 rounded-xl border border-[#8bcdc5]/30 shadow-inner flex items-center gap-3 relative group">
-            <div className="w-10 h-10 rounded-full bg-white flex items-center justify-center text-[#0066b1] font-bold shadow-md shrink-0 border-2 border-[#8bcdc5] overflow-hidden">
-              {currentUser.picture ? (
-                <img src={currentUser.picture} alt="Profil" className="w-full h-full object-cover" referrerPolicy="no-referrer" onError={handleCurrentUserPictureError} />
-              ) : (
-                <span className="text-lg">{String(currentUser?.name || 'U').charAt(0)}</span>
-              )}
+              <div className="flex flex-col flex-1 min-w-0 pr-6">
+                <p className="text-sm font-bold text-white truncate" title={currentUser.name}>
+                  {currentUser.name}
+                </p>
+                <p className="text-xs text-[#96b4d9] mt-0.5 truncate" title={currentUser.campus}>
+                  {currentUser.campus}
+                </p>
+              </div>
+
+              <UserSettingsMenu
+                theme={theme}
+                onToggleTheme={toggleTheme}
+                onRefresh={() => fetchVeritabani(true)}
+                onLogout={handleLogout}
+                isRefreshing={isRefreshing}
+                variant="desktop"
+                className="user-settings-menu--profile-card"
+              />
             </div>
-
-            <div className="flex flex-col flex-1 min-w-0 pr-6">
-              <p className="text-sm font-bold text-white truncate" title={currentUser.name}>
-                {currentUser.name}
-              </p>
-              <p className="text-xs text-[#96b4d9] mt-0.5 truncate" title={currentUser.campus}>
-                {currentUser.campus}
-              </p>
-            </div>
-
-            <button
-              onClick={() => fetchVeritabani(true)}
-              disabled={isRefreshing}
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-full bg-white/10 text-white hover:bg-white/25 transition-all shadow-sm disabled:opacity-50"
-              title="Verileri Yenile"
-            >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-white' : 'text-white/80 group-hover:text-white'}`} />
-            </button>
           </div>
-
-          <button
-            onClick={() => {
-              handleLogout();
-            }}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-500/20 text-red-100 hover:bg-red-500 hover:text-white rounded-lg transition-colors text-sm font-bold"
-          >
-            <LogOut className="w-4 h-4" /> Çıkış Yap
-          </button>
         </div>
       </aside>
 
@@ -3736,7 +3736,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 setMissingGlpiFilterType('All');
                                 setMissingGlpiFilterCampus('All');
                                 setActiveMissingGlpiFilterDropdown(null);
-                                handleTabChange('glpiMissing');
+                                if (handleTabChange('glpiMissing')) {
+                                  void fetchMissingGlpiDevices(true);
+                                }
                               }}
                               className="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
                             >
@@ -4117,9 +4119,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 )}
 
                 {/* --- DESKTOP VIEW (TABLE) --- */}
-                <div className="hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mt-1">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-gray-50 border-b border-gray-200 select-none">
+                <div className="inventory-table-shell hidden md:block bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden mt-1">
+                  <table className="inventory-table w-full text-left border-collapse">
+                    <thead className="inventory-table-head bg-gray-50 border-b border-gray-200 select-none">
                       <tr>
                         <th className="p-4 w-12 text-center">
                           <input
@@ -4208,7 +4210,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           <tr
                             key={item.id}
                             onClick={() => setViewingHardwareId(item.id)}
-                            className={`border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer ${
+                            className={`inventory-table-row border-b border-gray-100 hover:bg-gray-50 transition-colors cursor-pointer ${
                               isSelected ? 'bg-blue-50/50' : ''
                             } ${
                               recentlyUpdatedHardwareIds.has(item.id) ? 'app-record-updated' : ''
@@ -4241,7 +4243,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     {item.type}
                                   </button>
                                   {isHQ && (
-                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                                    <p className="inventory-campus-label text-[11px] text-gray-400 font-semibold">
                                       {item.campus}
                                     </p>
                                   )}
@@ -4310,7 +4312,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   e.stopPropagation();
                                   setViewingHardwareId(item.id);
                                 }}
-                                className="text-blue-600 font-semibold hover:underline hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer inline-block"
+                                className="inventory-serial-link text-blue-600 font-semibold hover:underline hover:bg-blue-50 px-1.5 py-0.5 rounded transition-colors cursor-pointer inline-block"
                                 title="Cihaz detaylarını gör"
                               >
                                 {item.serial}
@@ -4318,12 +4320,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             </td>
                             <td className="p-4">
                               <span
-                                className={`status-chip-motion px-3 py-1 rounded-full text-xs font-bold ${
+                                className={`inventory-status status-chip-motion px-3 py-1 rounded-full text-xs font-bold ${
                                   item.status === 'Available'
-                                    ? 'bg-green-100 text-green-700'
+                                    ? 'inventory-status--available bg-green-100 text-green-700'
                                     : item.status === 'Hurda'
-                                    ? 'bg-red-100 text-red-700'
-                                    : 'bg-blue-100 text-blue-700'
+                                    ? 'inventory-status--scrap bg-red-100 text-red-700'
+                                    : 'inventory-status--assigned bg-blue-100 text-blue-700'
                                 }`}
                               >
                                 {item.status === 'Available'
@@ -4436,7 +4438,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         onMouseDown={() => handleTouchStart(item.id)}
                         onMouseUp={handleTouchEnd}
                         onMouseLeave={handleTouchEnd}
-                        className={`bg-white p-4 rounded-xl shadow-sm border flex flex-col transition-colors cursor-pointer relative select-none ${
+                        className={`inventory-mobile-card bg-white p-4 rounded-xl shadow-sm border flex flex-col transition-colors cursor-pointer relative select-none ${
                           isSelectionMode && isSelected
                             ? 'border-[#0066b1] bg-[#e0f0ff] ring-1 ring-[#0066b1]/50'
                             : 'border-gray-200 active:bg-gray-50'
@@ -4517,7 +4519,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                                 <div className="flex items-center gap-1.5">
                                   <div
-                                    className={`status-chip-motion w-2.5 h-2.5 rounded-full ${statusColor} shadow-sm`}
+                                    className={`inventory-status-dot status-chip-motion w-2.5 h-2.5 rounded-full ${statusColor} shadow-sm`}
                                   ></div>
                                   <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider hidden sm:inline-block">
                                     {statusText}
@@ -4525,7 +4527,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 </div>
                               </div>
                             </div>
-                            <p className="text-xs text-gray-500 font-medium truncate mt-0.5">
+                            <p className="inventory-serial-inline text-xs text-gray-500 font-medium truncate mt-0.5">
                               S/N: {item.serial}
                             </p>
                           </div>
@@ -4613,6 +4615,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   setShowMissingGlpiFilters={setShowMissingGlpiFilters}
                   fetchMissingGlpiDevices={fetchMissingGlpiDevices}
                   isLoadingMissingGlpi={isLoadingMissingGlpi}
+                  missingGlpiLoadError={missingGlpiLoadError}
                   activeMissingGlpiFilterDropdown={activeMissingGlpiFilterDropdown}
                   setActiveMissingGlpiFilterDropdown={setActiveMissingGlpiFilterDropdown}
                   missingGlpiFilterType={missingGlpiFilterType}
@@ -8921,12 +8924,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
             ) : activeTab === 'hardware' ? (
               <button
                 onClick={() => handleTabChange('qrScan')}
-                className="btn-zimmet"
+                className="btn-zimmet btn-zimmet--qr"
+                aria-label="QR okut"
+                title="QR Okut"
               >
                 <div className="btn-zimmet-icon">
                   <QrCode className="w-5 h-5 text-white" strokeWidth={2.5} />
                 </div>
-                <span className="whitespace-nowrap tracking-wide">
+                <span className="qr-fab-label whitespace-nowrap tracking-wide">
                   QR Okut
                 </span>
               </button>

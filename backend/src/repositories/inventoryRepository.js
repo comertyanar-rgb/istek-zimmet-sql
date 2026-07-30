@@ -2048,34 +2048,56 @@ export async function completeAdPasswordAgentJob(secret, data = {}) {
   if (!queueId) throw new Error('Queue ID boş.');
   if (!leaseToken) throw new Error('AD iş lease tokenı boş.');
 
-  const result = await query(
-    `
-      UPDATE dbo.ADPasswordQueue
-      SET Status = @status,
-          FinishedAt = SYSUTCDATETIME(),
-          ResultMessage = @resultMessage,
-          ErrorMessage = @errorMessage,
-          PasswordCiphertext = N'',
-          EncryptionKeyId = NULL,
-          LeaseToken = NULL,
-          LeaseExpiresAt = NULL,
-          UpdatedAt = SYSUTCDATETIME()
-      WHERE PublicId = @queueId
-        AND Status = N'ISLENIYOR'
-        AND LeaseToken = @leaseToken
-    `,
-    {
-      status: { type: sql.NVarChar(40), value: data.success === true ? 'TAMAMLANDI' : 'HATA' },
-      resultMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? cleanText(data.result || 'AD şifresi uygulandı.', 4000) : null },
-      errorMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? null : cleanText(data.error || 'Bilinmeyen hata', 4000) },
-      queueId: { type: sql.NVarChar(80), value: queueId },
-      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken }
-    }
-  );
+  await withTransaction(async (execute) => {
+    const result = await execute(
+      `
+        UPDATE dbo.ADPasswordQueue
+        SET Status = @status,
+            FinishedAt = SYSUTCDATETIME(),
+            ResultMessage = @resultMessage,
+            ErrorMessage = @errorMessage,
+            PasswordCiphertext = N'',
+            EncryptionKeyId = NULL,
+            LeaseToken = NULL,
+            LeaseExpiresAt = NULL,
+            UpdatedAt = SYSUTCDATETIME()
+        OUTPUT
+          INSERTED.RequestedBy,
+          INSERTED.PersonName,
+          INSERTED.AdUsername,
+          INSERTED.PasswordMode,
+          INSERTED.Status
+        WHERE PublicId = @queueId
+          AND Status = N'ISLENIYOR'
+          AND LeaseToken = @leaseToken
+      `,
+      {
+        status: { type: sql.NVarChar(40), value: data.success === true ? 'TAMAMLANDI' : 'HATA' },
+        resultMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? cleanText(data.result || 'AD şifresi uygulandı.', 4000) : null },
+        errorMessage: { type: sql.NVarChar(sql.MAX), value: data.success === true ? null : cleanText(data.error || 'Bilinmeyen hata', 4000) },
+        queueId: { type: sql.NVarChar(80), value: queueId },
+        leaseToken: { type: sql.UniqueIdentifier, value: leaseToken }
+      }
+    );
 
-  if (Number(result.rowsAffected?.[0] || 0) !== 1) {
-    throw new Error('AD işi tamamlanamadı: lease süresi dolmuş veya iş başka bir ajan tarafından alınmış.');
-  }
+    const completedJob = result.recordset[0];
+    if (!completedJob || Number(result.rowsAffected?.[0] || 0) !== 1) {
+      throw new Error('AD işi tamamlanamadı: lease süresi dolmuş veya iş başka bir ajan tarafından alınmış.');
+    }
+
+    const modeLabel = completedJob.PasswordMode === 'TEMPORARY' ? 'Geçici' : 'Kalıcı';
+    const actionType =
+      completedJob.Status === 'TAMAMLANDI'
+        ? 'AD ŞİFRE RESET TAMAMLANDI'
+        : 'AD ŞİFRE RESET HATA';
+    await appendSystemLog(
+      actionType,
+      { email: completedJob.RequestedBy || 'AD Agent' },
+      `${completedJob.PersonName || '-'} / ${completedJob.AdUsername || '-'} / ${modeLabel} / ${queueId}`,
+      'AD password agent',
+      execute
+    );
+  });
 
   return {};
 }
@@ -2372,8 +2394,8 @@ export async function fetchSignatureAgentJobs(secret, data = {}) {
       ;WITH NextJobs AS (
         SELECT TOP (@limit) JobId
         FROM dbo.SignatureJobs WITH (READPAST, UPDLOCK, ROWLOCK)
-        WHERE Status IN (N'BEKLIYOR', N'HATA')
-        ORDER BY CASE WHEN Status = N'BEKLIYOR' THEN 0 ELSE 1 END, CreatedAt, JobId
+        WHERE Status = N'BEKLIYOR'
+        ORDER BY CreatedAt, JobId
       )
       UPDATE j
       SET Status = N'ISLENIYOR',
@@ -2424,6 +2446,43 @@ export async function fetchSignatureAgentJobs(secret, data = {}) {
   };
 }
 
+export async function fetchSignatureAgentJobStates(secret, data = {}) {
+  requireSignatureAgentSecret(secret);
+  await ensureSignatureJobsTable();
+  const signatureIds = normalizeIds(data.signatureIds, {
+    maxItems: 25,
+    maxLength: 80,
+    label: 'İmza'
+  });
+  if (!signatureIds.length) return { states: [] };
+
+  const params = {};
+  const placeholders = signatureIds.map((signatureId, index) => {
+    const name = `signatureId${index}`;
+    params[name] = { type: sql.NVarChar(80), value: cleanText(signatureId, 80) };
+    return `@${name}`;
+  });
+
+  const result = await query(
+    `
+      SELECT SignatureId, PublicId, Status, UpdatedAt, FinishedAt
+      FROM dbo.SignatureJobs
+      WHERE SignatureId IN (${placeholders.join(', ')})
+    `,
+    params
+  );
+
+  return {
+    states: result.recordset.map((row) => ({
+      signatureId: row.SignatureId,
+      queueId: row.PublicId,
+      status: row.Status,
+      updatedAt: row.UpdatedAt,
+      finishedAt: row.FinishedAt
+    }))
+  };
+}
+
 export async function completeSignatureAgentJob(secret, data = {}) {
   requireSignatureAgentSecret(secret);
   await ensureSignatureJobsTable();
@@ -2441,11 +2500,14 @@ export async function completeSignatureAgentJob(secret, data = {}) {
       UPDATE dbo.SignatureJobs
       SET Status = @status,
           ErrorMessage = @errorMessage,
-          FinishedAt = CASE WHEN @success = 1 THEN SYSUTCDATETIME() ELSE FinishedAt END,
+          FinishedAt = SYSUTCDATETIME(),
           UpdatedAt = SYSUTCDATETIME()
       OUTPUT INSERTED.SignatureId, INSERTED.PersonId, INSERTED.ImageUrl
-      WHERE (@queueId <> N'' AND PublicId = @queueId)
-         OR (@queueId = N'' AND @signatureId <> N'' AND SignatureId = @signatureId AND Status = N'ISLENIYOR')
+      WHERE Status = N'ISLENIYOR'
+        AND (
+          (@queueId <> N'' AND PublicId = @queueId)
+          OR (@queueId = N'' AND @signatureId <> N'' AND SignatureId = @signatureId)
+        )
     `,
     {
       status: { type: sql.NVarChar(40), value: status },
@@ -2457,7 +2519,7 @@ export async function completeSignatureAgentJob(secret, data = {}) {
   );
 
   const completed = result.recordset[0];
-  if (!completed) throw new Error('Tamamlanacak imza işi bulunamadı.');
+  if (!completed) throw new Error('İmza işi artık aktif değil; tamamlanmış, iptal edilmiş veya bulunamıyor.');
 
   await query(
     `
@@ -2483,6 +2545,100 @@ export async function completeSignatureAgentJob(secret, data = {}) {
 
   return { signatureId: completed.SignatureId, status: personStatus };
 }
+
+export async function cancelSignatureJobForUser(user, data = {}) {
+  await ensureSignatureJobsTable();
+  const queueId = cleanText(data.queueId, 80);
+  if (!queueId) throw new Error('İptal edilecek imza işi seçilmedi.');
+
+  return withTransaction(async (execute) => {
+    const lookup = await execute(
+      `
+        SELECT TOP (1)
+          j.PublicId,
+          j.SignatureId,
+          j.Status,
+          j.PersonId,
+          j.PersonName,
+          j.RequestedBy,
+          c.CoreName AS PersonCampusCore
+        FROM dbo.SignatureJobs j WITH (UPDLOCK, HOLDLOCK)
+        LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
+        LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+        WHERE j.PublicId = @queueId
+      `,
+      {
+        queueId: { type: sql.NVarChar(80), value: queueId }
+      }
+    );
+    const job = lookup.recordset[0];
+    if (!job) throw new Error('İptal edilecek imza işi bulunamadı.');
+
+    const isHq =
+      user.role === 'HQ IT' ||
+      ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
+    const isRequester = normalizeEmail(job.RequestedBy) === normalizeEmail(user.email);
+    const isSameCampus =
+      Boolean(job.PersonCampusCore) && core(job.PersonCampusCore) === core(user.campus);
+    if (!isHq && !isRequester && !isSameCampus) {
+      throw new Error('Bu imza işini iptal etme yetkiniz yok.');
+    }
+
+    if (job.Status === 'IPTAL') {
+      return { queueId: job.PublicId, signatureId: job.SignatureId, status: 'IPTAL' };
+    }
+    if (!['BEKLIYOR', 'ISLENIYOR'].includes(job.Status)) {
+      throw new Error('Yalnızca bekleyen veya işlenen imza işleri iptal edilebilir.');
+    }
+
+    const cancelled = await execute(
+      `
+        UPDATE dbo.SignatureJobs
+        SET Status = N'IPTAL',
+            ErrorMessage = N'Kullanıcı tarafından iptal edildi.',
+            FinishedAt = SYSUTCDATETIME(),
+            UpdatedAt = SYSUTCDATETIME()
+        OUTPUT INSERTED.PublicId, INSERTED.SignatureId, INSERTED.PersonId, INSERTED.PersonName
+        WHERE PublicId = @queueId
+          AND Status IN (N'BEKLIYOR', N'ISLENIYOR')
+      `,
+      {
+        queueId: { type: sql.NVarChar(80), value: queueId }
+      }
+    );
+    const row = cancelled.recordset[0];
+    if (!row) throw new Error('İmza işi başka bir işlem tarafından güncellendi; kuyruğu yenileyin.');
+
+    await execute(
+      `
+        UPDATE dbo.Personnel
+        SET SignatureStatus = N'İptal edildi',
+            UpdatedAt = SYSUTCDATETIME()
+        WHERE PersonId = @personId
+          AND SignatureId = @signatureId
+      `,
+      {
+        personId: { type: sql.NVarChar(160), value: row.PersonId },
+        signatureId: { type: sql.NVarChar(80), value: row.SignatureId }
+      }
+    );
+
+    await appendSystemLog(
+      'İMZA İŞİ İPTAL',
+      user,
+      `${row.PersonName || row.PersonId} / ${row.PublicId}`,
+      data.clientIp || '',
+      execute
+    );
+
+    return {
+      queueId: row.PublicId,
+      signatureId: row.SignatureId,
+      status: 'IPTAL'
+    };
+  });
+}
+
 export async function fetchSignatureQueueForUser(user, data = {}) {
   await ensureSignatureJobsTable();
   const limit = Math.min(Math.max(Number(data.limit || 20), 1), 100);

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  Ban,
   CheckCircle2,
   Clock3,
   ExternalLink,
@@ -22,6 +23,7 @@ const statusLabel = (status) => {
   if (status === 'ISLENIYOR') return 'İşleniyor';
   if (status === 'TAMAMLANDI') return 'Tamamlandı';
   if (status === 'HATA') return 'Hata';
+  if (status === 'IPTAL') return 'İptal edildi';
   return status || '-';
 };
 
@@ -87,7 +89,8 @@ const formatDateTime = (value) => {
   }).format(date);
 };
 
-const isTerminalStatus = (status) => status === 'TAMAMLANDI' || status === 'HATA';
+const isTerminalStatus = (status) =>
+  status === 'TAMAMLANDI' || status === 'HATA' || status === 'IPTAL';
 
 const EMPTY_QUEUE_SNAPSHOT = Object.freeze({
   jobs: [],
@@ -219,7 +222,7 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
       });
       const completedAfterActive = nextJobs.some((job) => {
         const oldStatus = previousJobs.get(`${job.kind}:${job.queueId}`);
-        return ACTIVE_STATUSES.has(oldStatus) && job.status === 'TAMAMLANDI';
+        return ACTIVE_STATUSES.has(oldStatus) && isTerminalStatus(job.status);
       });
 
       previousJobs = new Map(
@@ -390,6 +393,8 @@ export const OperationQueueIndicator = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [dismissedKeys, setDismissedKeys] = useState(() => new Set());
+  const [cancellingKey, setCancellingKey] = useState('');
+  const [cancelError, setCancelError] = useState('');
   const { jobs, loading, running, error, fetchQueue, runQueue } = useSharedQueueData({
     currentUser,
     gasUrl,
@@ -460,6 +465,37 @@ export const OperationQueueIndicator = ({
     persistDismissedKeys(next);
   };
 
+  const cancelSignatureJob = async (job) => {
+    if (
+      job.kind !== 'signature' ||
+      !ACTIVE_STATUSES.has(job.status) ||
+      !job.queueId ||
+      cancellingKey
+    ) {
+      return;
+    }
+
+    const key = getJobKey(job);
+    setCancellingKey(key);
+    setCancelError('');
+    try {
+      await postApiAction(
+        {
+          action: 'cancelSignatureJob',
+          authToken: currentUser.token,
+          queueId: job.queueId,
+        },
+        { url: gasUrl, timeoutMs: 30000 }
+      );
+      await fetchQueue({ silent: true, force: true });
+      onRefreshData?.(false);
+    } catch (cancelRequestError) {
+      setCancelError(cancelRequestError.message || 'İmza işi iptal edilemedi.');
+    } finally {
+      setCancellingKey('');
+    }
+  };
+
   const panelPositionClass = isMobile
     ? 'left-4 right-4 top-20 w-auto max-w-none'
     : 'left-3 bottom-[104px] top-auto right-auto w-[min(420px,calc(100vw-24px))] max-w-sm';
@@ -526,9 +562,9 @@ export const OperationQueueIndicator = ({
           </div>
         </div>
 
-        {error && (
+        {(error || cancelError) && (
           <div className="m-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700">
-            {error}
+            {cancelError || error}
           </div>
         )}
 
@@ -548,6 +584,8 @@ export const OperationQueueIndicator = ({
                   ? 'bg-green-50 text-green-700 border-green-200'
                   : job.status === 'HATA'
                     ? 'bg-red-50 text-red-700 border-red-200'
+                    : job.status === 'IPTAL'
+                      ? 'bg-gray-100 text-gray-600 border-gray-200'
                     : job.status === 'ISLENIYOR'
                       ? 'bg-blue-50 text-[#0066b1] border-blue-200'
                       : 'bg-amber-50 text-amber-700 border-amber-200';
@@ -576,6 +614,22 @@ export const OperationQueueIndicator = ({
                       <span className={`px-2 py-1 rounded-full border text-[10px] font-black ${statusClass}`}>
                         {statusLabel(job.status)}
                       </span>
+                      {job.kind === 'signature' && ACTIVE_STATUSES.has(job.status) && (
+                        <button
+                          type="button"
+                          onClick={() => cancelSignatureJob(job)}
+                          disabled={Boolean(cancellingKey)}
+                          className="h-7 px-2 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 flex items-center justify-center gap-1 text-[10px] font-black disabled:opacity-60"
+                          title="Bu imza işini iptal et"
+                        >
+                          {cancellingKey === getJobKey(job) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Ban className="w-3.5 h-3.5" />
+                          )}
+                          <span>İptal</span>
+                        </button>
+                      )}
                       {isTerminalStatus(job.status) && (
                         <button
                           type="button"
@@ -601,7 +655,13 @@ export const OperationQueueIndicator = ({
                   </div>
 
                   {job.error && (
-                    <p className="mt-2 rounded-lg bg-red-50 px-2 py-1.5 text-[11px] font-bold text-red-700">
+                    <p
+                      className={`mt-2 rounded-lg px-2 py-1.5 text-[11px] font-bold ${
+                        job.status === 'IPTAL'
+                          ? 'bg-gray-100 text-gray-600'
+                          : 'bg-red-50 text-red-700'
+                      }`}
+                    >
                       {job.error}
                     </p>
                   )}
@@ -664,9 +724,9 @@ export const OperationQueueIndicator = ({
           <ListChecks className={isMobile ? 'w-5 h-5' : 'w-4 h-4'} />
         )}
         {!isMobile && <span>İşlem Kuyruğu</span>}
-        {(summary.active > 0 || summary.failed > 0) && (
+        {summary.active > 0 && (
           <span className="absolute -top-2 -right-2 min-w-[20px] h-5 px-1 rounded-full bg-amber-400 text-[#005595] text-[10px] font-black flex items-center justify-center shadow-sm">
-            {summary.failed > 0 ? summary.failed : summary.active}
+            {summary.active}
           </span>
         )}
       </button>
