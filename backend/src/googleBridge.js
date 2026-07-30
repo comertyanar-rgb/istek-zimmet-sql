@@ -12,9 +12,9 @@ function sha256(buffer) {
 function bridgeAuthorizationError(serviceLabel) {
   return (
     `${serviceLabel} köprüsü anahtarı eşleşmiyor. ` +
-    'Sunucudaki GOOGLE_BRIDGE_SECRET ile Apps Script Script Properties içindeki ' +
-    'GOOGLE_BRIDGE_SECRET veya PDF_BRIDGE_SECRET değerini eşitleyin ve Apps Script web ' +
-    'uygulamasını yeni sürüm olarak dağıtın.'
+    'Sunucudaki GOOGLE_BRIDGE_SECRET değerini Apps Script > Proje Ayarları > ' +
+    'Komut Dosyası Özellikleri bölümüne aynı adla ekleyin. Ardından doğru Apps Script ' +
+    'projesindeki web uygulamasını yeni sürüm olarak dağıtın ve backend görevini yeniden başlatın.'
   );
 }
 

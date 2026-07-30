@@ -1245,9 +1245,9 @@ html[data-theme='dark'] .responsive-tab-toolbar__search:focus-within {
 }
 
 html[data-theme='dark'] .theme-logo-surface {
-  border: 1px solid rgba(139, 205, 197, 0.34);
-  background-color: rgba(240, 250, 251, 0.96) !important;
-  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.2) !important;
+  border-color: transparent;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 html[data-theme='dark'] .theme-logo-surface img {
@@ -1284,9 +1284,9 @@ html[data-theme='dark'] .theme-logo-surface img {
 }
 
 html[data-theme='dark'] .login-logo-surface {
-  border-color: rgba(139, 205, 197, 0.34);
-  background-color: rgba(240, 250, 251, 0.96);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.22);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 html[data-theme='dark'] .login-logo-image {

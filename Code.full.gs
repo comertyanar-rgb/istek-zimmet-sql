@@ -1871,6 +1871,18 @@ function handleBridgeEmail_(data) {
   return jsonOut({ success: true });
 }
 
+function handleBridgeHealth_(data) {
+  if (!isBridgeSecretAuthorized_(data.secret)) {
+    return jsonOut({ success: false, error: "Yetkisiz Google köprüsü." });
+  }
+
+  return jsonOut({
+    success: true,
+    service: "google-bridge",
+    checkedAt: Utilities.formatDate(new Date(), "Europe/Istanbul", "dd.MM.yyyy HH:mm:ss")
+  });
+}
+
 function buildPersonnelSyncItemsFromSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName("Kullanıcılar");
@@ -2296,6 +2308,7 @@ function doPost(e) {
     syncGLPI: true,
     uploadGeneratedPdf: true,
     sendBridgeEmail: true,
+    verifyGoogleBridge: true,
     exportPersonnelForSync: true,
     enqueueOperation: true,
     fetchOperationQueue: true,
@@ -2324,6 +2337,10 @@ function doPost(e) {
 
     if (data.action === "sendBridgeEmail") {
       return handleBridgeEmail_(data);
+    }
+
+    if (data.action === "verifyGoogleBridge") {
+      return handleBridgeHealth_(data);
     }
 
     if (data.action === "exportPersonnelForSync") {

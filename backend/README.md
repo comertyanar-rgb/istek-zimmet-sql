@@ -239,6 +239,18 @@ npm run verify:runtime
 Komut eksik tablo/kolon/prosedür, yüksek yetkili sabit rol, beklenmeyen
 `DELETE/UPDATE` izni veya bozuk log zinciri bulursa hata koduyla kapanır.
 
+Google Drive/Gmail Apps Script köprüsünün URL ve anahtar eşleşmesini e-posta
+göndermeden doğrulamak için:
+
+```powershell
+cd backend
+npm run verify:google-bridge
+```
+
+Bu kontrol `.env` içindeki `GOOGLE_BRIDGE_URL` ve `GOOGLE_BRIDGE_SECRET`
+değerlerini kullanır. Başarılı sonuç için aynı kodun Apps Script web uygulamasında
+yeni sürüm olarak dağıtılmış olması gerekir.
+
 Çalışan API'nin SQL bağlantısını, güvenlik başlıklarını, CORS politikasını,
 istek doğrulamasını, oturum zorunluluğunu ve imzalı export korumasını veri
 yazmadan kontrol etmek için:

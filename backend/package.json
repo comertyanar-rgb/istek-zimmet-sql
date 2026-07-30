@@ -17,6 +17,7 @@
     "smoke:ui:cookie": "node scripts/smoke-ui-cookie.js",
     "smoke:pdf-load": "node scripts/smoke-pdf-load.js",
     "smoke:business-bulk": "node scripts/smoke-business-bulk.js",
+    "verify:google-bridge": "node scripts/verify-google-bridge.js",
     "import:personnel-contact": "node scripts/import-personnel-contact-data.js"
   },
   "dependencies": {
