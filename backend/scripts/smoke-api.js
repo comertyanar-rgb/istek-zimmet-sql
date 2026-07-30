@@ -148,8 +148,14 @@ await check('Korunan eylemde oturum zorunlulugu', async () => {
 });
 
 await check('Izin verilmeyen Origin reddi', async () => {
-  const response = await request('/health', {
-    headers: { Accept: 'application/json', Origin: 'https://untrusted.invalid' }
+  const response = await request('/api/action', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Origin: 'https://untrusted.invalid'
+    },
+    body: JSON.stringify({ action: 'fetchData' })
   });
   assert(response.status === 403, `HTTP ${response.status}; 403 bekleniyordu`);
   const body = await readJson(response);
