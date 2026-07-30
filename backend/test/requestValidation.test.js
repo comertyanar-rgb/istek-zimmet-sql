@@ -112,3 +112,30 @@ test('imza agent durum sorgusunda en fazla 25 kimlik kabul eder', () => {
     (error) => error instanceof RequestValidationError && /en fazla 25/i.test(error.message)
   );
 });
+
+test('kuyruk bildirimi gizleme isteğini tür ve kimlik bazında doğrular', () => {
+  const payload = {
+    action: 'dismissQueueNotifications',
+    authToken: 'x'.repeat(43),
+    items: [
+      { kind: 'operation', queueId: 'PDF-TEST-001' },
+      { kind: 'ad-password', queueId: 'AD-TEST-001' },
+      { kind: 'signature', queueId: 'SIG-TEST-001' }
+    ]
+  };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'dismissQueueNotifications',
+        items: [{ kind: 'unknown', queueId: 'TEST-001' }]
+      }),
+    (error) => error instanceof RequestValidationError && /geçersiz/i.test(error.message)
+  );
+
+  assert.throws(
+    () => validateActionRequest({ action: 'dismissQueueNotifications', items: [] }),
+    (error) => error instanceof RequestValidationError && /1-100/i.test(error.message)
+  );
+});

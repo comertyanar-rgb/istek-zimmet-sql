@@ -1939,7 +1939,12 @@ export async function fetchAdPasswordQueueForUser(user, data = {}) {
         q.UpdatedAt
       FROM dbo.ADPasswordQueue q
       LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
-      WHERE @isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @campusCore
+      LEFT JOIN dbo.QueueNotificationDismissals d
+        ON d.QueueKind = N'ad-password'
+       AND d.QueuePublicId = q.PublicId
+       AND d.UserEmail = @email
+      WHERE d.DismissalId IS NULL
+        AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @campusCore)
       ORDER BY q.CreatedAt DESC
     `,
     {
@@ -2666,9 +2671,16 @@ export async function fetchSignatureQueueForUser(user, data = {}) {
       FROM dbo.SignatureJobs j
       LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
       LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
-      WHERE @isHq = 1
-         OR j.RequestedBy = @email
-         OR c.CoreName = @userCore
+      LEFT JOIN dbo.QueueNotificationDismissals d
+        ON d.QueueKind = N'signature'
+       AND d.QueuePublicId = j.PublicId
+       AND d.UserEmail = @email
+      WHERE d.DismissalId IS NULL
+        AND (
+          @isHq = 1
+          OR j.RequestedBy = @email
+          OR c.CoreName = @userCore
+        )
       ORDER BY COALESCE(j.FinishedAt, j.UpdatedAt, j.CreatedAt) DESC
     `,
     {
@@ -3998,7 +4010,12 @@ export async function fetchOperationQueueForUser(user, data = {}) {
           c.Name AS Campus
         FROM dbo.OperationQueue q
         LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
-        WHERE @isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore
+        LEFT JOIN dbo.QueueNotificationDismissals d
+          ON d.QueueKind = N'operation'
+         AND d.QueuePublicId = q.PublicId
+         AND d.UserEmail = @email
+        WHERE d.DismissalId IS NULL
+          AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
         ORDER BY q.CreatedAt DESC
       )
       SELECT
@@ -4109,6 +4126,131 @@ export async function fetchOperationQueueForUser(user, data = {}) {
         campus: row.Campus || ''
       };
     })
+  };
+}
+
+export async function dismissQueueNotificationsForUser(user, data = {}) {
+  const allowedKinds = new Set(['operation', 'ad-password', 'signature']);
+  const uniqueItems = [];
+  const seen = new Set();
+
+  for (const item of Array.isArray(data.items) ? data.items : []) {
+    const kind = cleanText(item?.kind, 32).toLocaleLowerCase('en-US');
+    const queueId = cleanText(item?.queueId, 80);
+    const key = `${kind}:${queueId}`;
+    if (!allowedKinds.has(kind) || !queueId || seen.has(key)) continue;
+    seen.add(key);
+    uniqueItems.push({ kind, queueId });
+  }
+
+  if (uniqueItems.length === 0) {
+    throw new Error('Gizlenecek kuyruk bildirimi bulunamadı.');
+  }
+
+  const email = cleanText(user.email, 320).toLocaleLowerCase('en-US');
+  const isHq = user.role === 'HQ IT';
+  const isSignatureHq =
+    isHq || ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
+
+  const result = await withTransaction((execute) =>
+    execute(
+      `
+        DECLARE @Requested TABLE (
+          QueueKind NVARCHAR(32) NOT NULL,
+          QueuePublicId NVARCHAR(80) NOT NULL,
+          PRIMARY KEY (QueueKind, QueuePublicId)
+        );
+
+        INSERT INTO @Requested (QueueKind, QueuePublicId)
+        SELECT QueueKind, QueuePublicId
+        FROM OPENJSON(@itemsJson)
+        WITH (
+          QueueKind NVARCHAR(32) N'$.kind',
+          QueuePublicId NVARCHAR(80) N'$.queueId'
+        );
+
+        ;WITH Accessible AS (
+          SELECT r.QueueKind, r.QueuePublicId
+          FROM @Requested r
+          INNER JOIN dbo.OperationQueue q
+            ON r.QueueKind = N'operation'
+           AND q.PublicId = r.QueuePublicId
+          LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
+          WHERE q.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
+            AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
+
+          UNION ALL
+
+          SELECT r.QueueKind, r.QueuePublicId
+          FROM @Requested r
+          INNER JOIN dbo.ADPasswordQueue q
+            ON r.QueueKind = N'ad-password'
+           AND q.PublicId = r.QueuePublicId
+          LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
+          WHERE q.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
+            AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
+
+          UNION ALL
+
+          SELECT r.QueueKind, r.QueuePublicId
+          FROM @Requested r
+          INNER JOIN dbo.SignatureJobs j
+            ON r.QueueKind = N'signature'
+           AND j.PublicId = r.QueuePublicId
+          LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
+          LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+          WHERE j.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
+            AND (
+              @isSignatureHq = 1
+              OR j.RequestedBy = @email
+              OR c.CoreName = @userCore
+            )
+        ),
+        DistinctAccessible AS (
+          SELECT DISTINCT QueueKind, QueuePublicId
+          FROM Accessible
+        )
+        INSERT INTO dbo.QueueNotificationDismissals (
+          QueueKind,
+          QueuePublicId,
+          UserEmail
+        )
+        SELECT
+          a.QueueKind,
+          a.QueuePublicId,
+          @email
+        FROM DistinctAccessible a
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM dbo.QueueNotificationDismissals d WITH (UPDLOCK, HOLDLOCK)
+          WHERE d.UserEmail = @email
+            AND d.QueueKind = a.QueueKind
+            AND d.QueuePublicId = a.QueuePublicId
+        );
+
+        SELECT
+          (SELECT COUNT(*) FROM @Requested) AS RequestedCount,
+          COUNT(*) AS DismissedCount
+        FROM dbo.QueueNotificationDismissals d
+        INNER JOIN @Requested r
+          ON r.QueueKind = d.QueueKind
+         AND r.QueuePublicId = d.QueuePublicId
+        WHERE d.UserEmail = @email;
+      `,
+      {
+        itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(uniqueItems) },
+        isHq: { type: sql.Bit, value: isHq ? 1 : 0 },
+        isSignatureHq: { type: sql.Bit, value: isSignatureHq ? 1 : 0 },
+        email: { type: sql.NVarChar(320), value: email },
+        userCore: { type: sql.NVarChar(160), value: core(user.campus) }
+      }
+    )
+  );
+
+  const counts = result.recordset?.[0] || {};
+  return {
+    requestedCount: Number(counts.RequestedCount || 0),
+    dismissedCount: Number(counts.DismissedCount || 0)
   };
 }
 

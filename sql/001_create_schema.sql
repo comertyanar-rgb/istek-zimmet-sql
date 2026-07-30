@@ -257,6 +257,21 @@ CREATE TABLE dbo.OperationQueue (
 
 CREATE INDEX IX_OperationQueue_StatusCreated ON dbo.OperationQueue(Status, CreatedAt);
 
+CREATE TABLE dbo.QueueNotificationDismissals (
+  DismissalId BIGINT IDENTITY(1,1) NOT NULL,
+  QueueKind NVARCHAR(32) NOT NULL,
+  QueuePublicId NVARCHAR(80) NOT NULL,
+  UserEmail NVARCHAR(320) NOT NULL,
+  CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_QueueNotificationDismissals_CreatedAt DEFAULT SYSUTCDATETIME(),
+  CONSTRAINT PK_QueueNotificationDismissals PRIMARY KEY (DismissalId),
+  CONSTRAINT UQ_QueueNotificationDismissals_UserQueue UNIQUE (UserEmail, QueueKind, QueuePublicId),
+  CONSTRAINT CK_QueueNotificationDismissals_QueueKind
+    CHECK (QueueKind IN (N'operation', N'ad-password', N'signature'))
+);
+
+CREATE INDEX IX_QueueNotificationDismissals_CreatedAt
+  ON dbo.QueueNotificationDismissals(CreatedAt);
+
 CREATE TABLE dbo.SystemLogs (
   LogId BIGINT IDENTITY(1,1) NOT NULL,
   CreatedAt DATETIME2(0) NOT NULL CONSTRAINT DF_SystemLogs_CreatedAt DEFAULT SYSUTCDATETIME(),

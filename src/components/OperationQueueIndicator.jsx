@@ -393,6 +393,7 @@ export const OperationQueueIndicator = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [dismissedKeys, setDismissedKeys] = useState(() => new Set());
+  const [dismissingKey, setDismissingKey] = useState('');
   const [cancellingKey, setCancellingKey] = useState('');
   const [cancelError, setCancelError] = useState('');
   const { jobs, loading, running, error, fetchQueue, runQueue } = useSharedQueueData({
@@ -402,8 +403,9 @@ export const OperationQueueIndicator = ({
     open,
   });
 
-  const storageKey = currentUser?.email
-    ? `istek_operation_queue_dismissed:${currentUser.email}`
+  const normalizedUserEmail = String(currentUser?.email || '').trim().toLocaleLowerCase('en-US');
+  const storageKey = normalizedUserEmail
+    ? `istek_operation_queue_dismissed:${normalizedUserEmail}`
     : 'istek_operation_queue_dismissed:anonymous';
 
   const getJobKey = (job) => `${job.kind}:${job.queueId}`;
@@ -450,20 +452,48 @@ export const OperationQueueIndicator = ({
     ? 'relative p-1.5 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg transition-colors shrink-0 border border-amber-200'
     : 'relative w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-white/10 text-white hover:bg-white/20 border border-white/10 transition-colors text-sm font-bold';
 
-  const dismissJob = (job) => {
-    if (!isTerminalStatus(job.status)) return;
-    const next = new Set(dismissedKeys);
-    next.add(getJobKey(job));
+  const dismissQueueJobs = async (targetJobs) => {
+    if (dismissingKey || !currentUser?.token) return;
+    const terminalJobs = targetJobs.filter(
+      (job) => isTerminalStatus(job.status) && job.kind && job.queueId
+    );
+    if (terminalJobs.length === 0) return;
+
+    const previous = new Set(dismissedKeys);
+    const next = new Set(previous);
+    terminalJobs.forEach((job) => next.add(getJobKey(job)));
+    const operationKey = terminalJobs.length === 1 ? getJobKey(terminalJobs[0]) : 'all';
+
+    setDismissingKey(operationKey);
+    setCancelError('');
     persistDismissedKeys(next);
+
+    try {
+      await postApiAction(
+        {
+          action: 'dismissQueueNotifications',
+          authToken: currentUser.token,
+          items: terminalJobs.map((job) => ({
+            kind: job.kind,
+            queueId: job.queueId,
+          })),
+        },
+        { url: gasUrl, timeoutMs: 30000 }
+      );
+      await fetchQueue({ silent: true, force: true });
+    } catch (dismissError) {
+      persistDismissedKeys(previous);
+      setCancelError(
+        dismissError.message || 'Kuyruk bildirimi kalıcı olarak gizlenemedi.'
+      );
+    } finally {
+      setDismissingKey('');
+    }
   };
 
-  const dismissCompletedJobs = () => {
-    const next = new Set(dismissedKeys);
-    visibleJobs.forEach((job) => {
-      if (isTerminalStatus(job.status)) next.add(getJobKey(job));
-    });
-    persistDismissedKeys(next);
-  };
+  const dismissJob = (job) => dismissQueueJobs([job]);
+
+  const dismissCompletedJobs = () => dismissQueueJobs(visibleJobs);
 
   const cancelSignatureJob = async (job) => {
     if (
@@ -525,10 +555,15 @@ export const OperationQueueIndicator = ({
               <button
                 type="button"
                 onClick={dismissCompletedJobs}
+                disabled={Boolean(dismissingKey)}
                 className="h-8 px-2.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 flex items-center gap-1.5 text-[11px] font-black"
                 title="Tamamlanan ve hatalı bildirimleri gizle"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                {dismissingKey === 'all' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
                 <span className="hidden sm:inline">Temizle</span>
               </button>
             )}
@@ -634,10 +669,15 @@ export const OperationQueueIndicator = ({
                         <button
                           type="button"
                           onClick={() => dismissJob(job)}
+                          disabled={Boolean(dismissingKey)}
                           className="w-6 h-6 rounded-full text-gray-400 hover:text-red-500 hover:bg-red-50 flex items-center justify-center"
                           title="Bu bildirimi gizle"
                         >
-                          <X className="w-3.5 h-3.5" />
+                          {dismissingKey === getJobKey(job) ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <X className="w-3.5 h-3.5" />
+                          )}
                         </button>
                       )}
                     </div>

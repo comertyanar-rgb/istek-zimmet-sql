@@ -60,6 +60,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON OBJECT::dbo.GlpiDevices TO zimmet_api;
 GRANT SELECT, INSERT, UPDATE ON OBJECT::dbo.OperationQueue TO zimmet_api;
 DENY DELETE ON OBJECT::dbo.OperationQueue TO zimmet_api;
 
+IF OBJECT_ID(N'dbo.QueueNotificationDismissals', N'U') IS NOT NULL
+BEGIN
+  GRANT SELECT, INSERT ON OBJECT::dbo.QueueNotificationDismissals TO zimmet_api;
+  DENY UPDATE, DELETE ON OBJECT::dbo.QueueNotificationDismissals TO zimmet_api;
+END;
+
 GRANT SELECT, INSERT ON OBJECT::dbo.SystemLogs TO zimmet_api;
 DENY UPDATE, DELETE ON OBJECT::dbo.SystemLogs TO zimmet_api;
 GO

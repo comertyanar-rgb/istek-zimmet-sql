@@ -1111,7 +1111,7 @@ html[data-theme='dark'] .app-sidebar .bg-\[\#005595\] {
   background-color: rgba(4, 38, 62, 0.62) !important;
 }
 
-@media (min-width: 768px) {
+@media (min-width: 1025px) {
   html[data-theme='dark'] .app-sidebar nav > div,
   html[data-theme='dark'] .app-sidebar nav > div.bg-\[\#005595\] {
     background-color: transparent !important;
@@ -1253,6 +1253,34 @@ html[data-theme='dark'] .theme-logo-surface {
 html[data-theme='dark'] .theme-logo-surface img {
   opacity: 1;
   filter: none;
+}
+
+.mobile-brand-mark {
+  position: relative;
+  display: block;
+  width: 48px;
+  height: 28px;
+  overflow: hidden;
+}
+
+.mobile-brand-mark__image {
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 82px;
+  max-width: none;
+  height: auto;
+}
+
+@media (max-width: 1024px) {
+  .mobile-brand-surface,
+  html[data-theme='dark'] .mobile-brand-surface {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
 }
 
 html[data-theme='dark'] .login-logo-surface {

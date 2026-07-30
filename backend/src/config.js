@@ -118,9 +118,9 @@ export const config = {
     originator: process.env.MOBILDEV_ORIGINATOR || process.env.ZIMMET_MOBILDEV_ORIGINATOR || ''
   },
   googleBridge: {
-    url: process.env.GOOGLE_BRIDGE_URL || '',
-    secret: process.env.GOOGLE_BRIDGE_SECRET || '',
-    uploadAction: process.env.GOOGLE_BRIDGE_UPLOAD_ACTION || 'uploadGeneratedPdf'
+    url: String(process.env.GOOGLE_BRIDGE_URL || '').trim(),
+    secret: String(process.env.GOOGLE_BRIDGE_SECRET || '').trim(),
+    uploadAction: String(process.env.GOOGLE_BRIDGE_UPLOAD_ACTION || 'uploadGeneratedPdf').trim()
   },
   chrome: {
     executablePath: process.env.PDF_CHROME_PATH || process.env.CHROME_PATH || '',

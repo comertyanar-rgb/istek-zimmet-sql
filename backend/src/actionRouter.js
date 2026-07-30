@@ -23,6 +23,7 @@ import {
   completeTransferForUser,
   createPersonnelSignatureForUser,
   createSheetForUser,
+  dismissQueueNotificationsForUser,
   enqueueAdPasswordResetForUser,
   fetchAdPasswordAgentJobs,
   fetchAdPasswordQueueForUser,
@@ -208,6 +209,11 @@ export async function handleAction(data, context = {}) {
 
   if (action === 'fetchOperationQueue') {
     const payload = await fetchOperationQueueForUser(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'dismissQueueNotifications') {
+    const payload = await dismissQueueNotificationsForUser(currentUser, data);
     return success(payload);
   }
 

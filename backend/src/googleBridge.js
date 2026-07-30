@@ -9,6 +9,23 @@ function sha256(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex').toUpperCase();
 }
 
+function bridgeAuthorizationError(serviceLabel) {
+  return (
+    `${serviceLabel} köprüsü anahtarı eşleşmiyor. ` +
+    'Sunucudaki GOOGLE_BRIDGE_SECRET ile Apps Script Script Properties içindeki ' +
+    'GOOGLE_BRIDGE_SECRET veya PDF_BRIDGE_SECRET değerini eşitleyin ve Apps Script web ' +
+    'uygulamasını yeni sürüm olarak dağıtın.'
+  );
+}
+
+function normalizeBridgeError(message, serviceLabel) {
+  const bridgeError = String(message || '').trim();
+  if (/yetkisiz\s+(?:pdf|dosya|e-posta)\s+k[öo]pr[üu]s[üu]/i.test(bridgeError)) {
+    return bridgeAuthorizationError(serviceLabel);
+  }
+  return bridgeError;
+}
+
 async function saveLocalPdf(pdfBuffer, pdfName) {
   const baseDir = config.queue.generatedPdfDir || path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'generated-pdfs');
   await fs.mkdir(baseDir, { recursive: true });
@@ -49,7 +66,10 @@ export async function uploadPdfThroughGoogleBridge({ pdfBuffer, pdfName, campus,
   try { data = JSON.parse(text); } catch { data = { success: false, error: text }; }
 
   if (!response.ok || !data.success) {
-    const bridgeError = data.error || `Google köprüsü hata döndürdü: ${response.status}`;
+    const bridgeError = normalizeBridgeError(
+      data.error || `Google köprüsü hata döndürdü: ${response.status}`,
+      'Google PDF'
+    );
     if (/oturum bulunamad[ıi]/i.test(bridgeError)) {
       throw new Error(
         'Google PDF köprüsü uploadGeneratedPdf isteğini oturumlu kullanıcı isteği gibi işledi. ' +
@@ -97,7 +117,12 @@ export async function uploadFileThroughGoogleBridge({ fileBuffer, fileName, mime
   try { data = JSON.parse(text); } catch { data = { success: false, error: text }; }
 
   if (!response.ok || !data.success) {
-    throw new Error(data.error || `Google dosya köprüsü hata döndürdü: ${response.status}`);
+    throw new Error(
+      normalizeBridgeError(
+        data.error || `Google dosya köprüsü hata döndürdü: ${response.status}`,
+        'Google dosya'
+      )
+    );
   }
 
   return { url: data.url || data.fileUrl || '', fileHash, pdfHash: fileHash, delivery: 'google', response: data };
@@ -132,7 +157,12 @@ export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, repl
   try { data = JSON.parse(text); } catch { data = { success: false, error: text }; }
 
   if (!response.ok || !data.success) {
-    throw new Error(data.error || `Google e-posta köprüsü hata döndürdü: ${response.status}`);
+    throw new Error(
+      normalizeBridgeError(
+        data.error || `Google e-posta köprüsü hata döndürdü: ${response.status}`,
+        'Google e-posta'
+      )
+    );
   }
 
   return { delivery: 'email', response: data };

@@ -11,6 +11,7 @@ const KNOWN_ACTIONS = new Set([
   'sendOTP',
   'verifyOTP',
   'fetchOperationQueue',
+  'dismissQueueNotifications',
   'fetchADPasswordQueue',
   'enqueueADPasswordReset',
   'fetchSignatureMeta',
@@ -63,7 +64,8 @@ const ACTION_ARRAY_LIMITS = {
   syncGLPI: { items: 20_000 },
   syncPersonnel: { items: 5000 },
   createSheet: { data: 10_000 },
-  bulkAddHardware: { items: 1000 }
+  bulkAddHardware: { items: 1000 },
+  dismissQueueNotifications: { items: 100 }
 };
 
 export class RequestValidationError extends Error {
@@ -171,6 +173,26 @@ function validateActionSpecificShape(data) {
     }
     if (data.items.some((item) => !isPlainObject(item))) {
       throw new RequestValidationError('Donanım içe aktarma listesinde geçersiz bir kayıt var.');
+    }
+  }
+
+  if (data.action === 'dismissQueueNotifications') {
+    const allowedKinds = new Set(['operation', 'ad-password', 'signature']);
+    if (!Array.isArray(data.items) || data.items.length === 0 || data.items.length > 100) {
+      throw new RequestValidationError(
+        'Gizlenecek kuyruk bildirimleri 1-100 kayıt içeren bir liste olmalıdır.'
+      );
+    }
+    for (const item of data.items) {
+      if (
+        !isPlainObject(item) ||
+        !allowedKinds.has(item.kind) ||
+        typeof item.queueId !== 'string' ||
+        !item.queueId.trim() ||
+        item.queueId.length > 80
+      ) {
+        throw new RequestValidationError('Gizlenecek kuyruk bildirimlerinden biri geçersiz.');
+      }
     }
   }
 

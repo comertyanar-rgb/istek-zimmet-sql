@@ -144,6 +144,7 @@ sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\013_redact_final_op
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\014_least_privilege_api_user.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\015_super_admin_console.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\016_personnel_contact_identity.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_queue_notification_dismissals.sql
 ```
 
 `010_system_log_chain.sql`, mevcut logları SHA-256 zincirine dahil eder ve

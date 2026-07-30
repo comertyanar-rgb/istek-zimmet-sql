@@ -3303,7 +3303,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
   return (
     <div 
       // YENİ: overscroll-none ve touch-none ile arka planın esnemesini (rubber-band) tamamen kapattık
-      className="app-shell fixed inset-0 flex flex-col md:flex-row w-full bg-slate-50 font-sans text-gray-800 selection:bg-[#8bcdc5]/30 overflow-hidden overscroll-none"
+      className="app-shell fixed inset-0 flex flex-col lg:flex-row w-full bg-slate-50 font-sans text-gray-800 selection:bg-[#8bcdc5]/30 overflow-hidden overscroll-none"
     >
       {/* SİTE İÇİ PDF ÖNİZLEYİCİ MODAL (MOBİL VE DESKTOP UYUMLU) */}
       {previewPdf && (
@@ -3383,7 +3383,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </div>
       )}
 
-<aside className="app-sidebar w-full md:w-64 bg-[#0066b1] text-white flex flex-col print:hidden shrink-0 shadow-md z-30 transition-all">
+<aside className="app-sidebar w-full lg:w-64 bg-[#0066b1] text-white flex flex-col print:hidden shrink-0 shadow-md z-30 transition-all">
         {/* MOBİL VE IPAD'DE GİZLENEN LOGO BÖLÜMÜ */}
         <div className="overflow-hidden">
           <style>{`
@@ -3422,11 +3422,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
           <div
             ref={headerRef}
-            className="mobile-logo-inner flex justify-between items-center md:block overflow-hidden"
+            className="mobile-logo-inner flex justify-between items-center lg:block overflow-hidden"
           >
             {/* LOGO (GİZLİ TIKLAMA SAYACI İÇERİR) */}
             <div
-              className="theme-logo-surface bg-white px-2 py-1 md:px-4 md:py-2.5 rounded-xl shadow-md transition-transform hover:scale-105 cursor-pointer flex justify-center items-center md:w-full select-none"
+              className="theme-logo-surface mobile-brand-surface bg-white px-2 py-1 lg:px-4 lg:py-2.5 rounded-xl shadow-md transition-transform hover:scale-105 cursor-pointer flex justify-center items-center lg:w-full select-none"
               onClick={() => {
                 const newCount = logoClickCount + 1;
                 setLogoClickCount(newCount);
@@ -3436,22 +3436,24 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 }
               }}
             >
-              <img
-                src="/logo.png"
-                alt="İSTEK Okulları amblemi"
-                className="h-7 w-7 object-contain md:hidden pointer-events-none"
-                onError={(e) => { e.target.style.display = 'none'; }}
-              />
+              <span className="mobile-brand-mark lg:hidden" aria-hidden="true">
+                <img
+                  src="/istek-logo.png"
+                  alt=""
+                  className="mobile-brand-mark__image pointer-events-none"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+              </span>
               <img
                 src="/istek-logo.png"
                 alt="İSTEK Okulları Logo Masaüstü"
-                className="hidden md:block h-20 md:h-12 lg:h-14 w-auto object-contain pointer-events-none"
+                className="hidden lg:block h-14 w-auto object-contain pointer-events-none"
                 onError={(e) => { e.target.style.display = 'none'; }}
               />
             </div>
 
             {/* MOBİL AKSİYONLAR */}
-            <div className="flex items-center gap-2 md:hidden shrink-0 ml-2">
+            <div className="flex items-center gap-2 lg:hidden shrink-0 ml-2">
               <Suspense fallback={<LazyInlineFallback label="" />}>
                 <OperationQueueIndicator
                   currentUser={currentUser}
@@ -3476,14 +3478,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </div>
 
         {/* SEKMELER (Donanım / PERSONEL / TRANSFER) - HER ZAMAN GÖRÜNÜR OLACAK */}
-        <nav className="p-1.5 sm:p-2 md:px-4 md:py-6 flex flex-col shrink-0 md:flex-1 bg-[#0066b1] z-40 relative">
-          <div className="flex w-full bg-[#005595] p-1 rounded-xl space-x-1 md:flex-col md:bg-transparent md:p-0 md:space-x-0 md:space-y-2 md:w-auto md:rounded-none">
+        <nav className="p-1.5 sm:p-2 lg:px-4 lg:py-6 flex flex-col shrink-0 lg:flex-1 bg-[#0066b1] z-40 relative">
+          <div className="flex w-full bg-[#005595] p-1 rounded-xl space-x-1 lg:flex-col lg:bg-transparent lg:p-0 lg:space-x-0 lg:space-y-2 lg:w-auto lg:rounded-none">
             <button
               onClick={() => handleTabChange('hardware')}
-              className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm md:flex-none md:justify-start md:px-4 md:py-3 md:text-base md:space-x-3 ${
+              className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm lg:flex-none lg:justify-start lg:px-4 lg:py-3 lg:text-base lg:space-x-3 ${
                 activeTab === 'hardware'
                   ? 'bg-[#8bcdc5] text-[#0066b1] shadow-md'
-                  : 'text-white hover:bg-[#004a82] md:hover:bg-[#005595]'
+                  : 'text-white hover:bg-[#004a82] lg:hover:bg-[#005595]'
               }`}
             >
               <Laptop className="w-4 h-4 sm:w-5 sm:h-5" />{' '}
@@ -3492,10 +3494,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             <button
               onClick={() => handleTabChange('personnel')}
-              className={`relative flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm md:flex-none md:justify-start md:px-4 md:py-3 md:text-base md:space-x-3 ${
+              className={`relative flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm lg:flex-none lg:justify-start lg:px-4 lg:py-3 lg:text-base lg:space-x-3 ${
                 activeTab === 'personnel'
                   ? 'bg-[#8bcdc5] text-[#0066b1] shadow-md'
-                  : 'text-white hover:bg-[#004a82] md:hover:bg-[#005595]'
+                  : 'text-white hover:bg-[#004a82] lg:hover:bg-[#005595]'
               }`}
             >
               <Users className="w-4 h-4 sm:w-5 sm:h-5" />{' '}
@@ -3504,10 +3506,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
             <button
               onClick={() => handleTabChange('transfer')}
-              className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm md:flex-none md:justify-start md:px-4 md:py-3 md:text-base md:space-x-3 ${
+              className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm lg:flex-none lg:justify-start lg:px-4 lg:py-3 lg:text-base lg:space-x-3 ${
                 activeTab === 'transfer'
                   ? 'bg-[#8bcdc5] text-[#0066b1] shadow-md'
-                  : 'text-white hover:bg-[#004a82] md:hover:bg-[#005595]'
+                  : 'text-white hover:bg-[#004a82] lg:hover:bg-[#005595]'
               }`}
             >
               <div className="relative flex items-center justify-center">
@@ -3527,10 +3529,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
             {currentUser?.isSuperAdmin && (
               <button
                 onClick={() => handleTabChange('systemAdmin')}
-                className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm md:flex-none md:justify-start md:px-4 md:py-3 md:text-base md:space-x-3 ${
+                className={`flex-1 flex justify-center items-center space-x-1 sm:space-x-2 px-1.5 py-2.5 sm:py-3 rounded-lg transition-all font-bold text-xs sm:text-sm lg:flex-none lg:justify-start lg:px-4 lg:py-3 lg:text-base lg:space-x-3 ${
                   activeTab === 'systemAdmin'
                     ? 'bg-[#8bcdc5] text-[#0066b1] shadow-md'
-                    : 'text-white hover:bg-[#004a82] md:hover:bg-[#005595]'
+                    : 'text-white hover:bg-[#004a82] lg:hover:bg-[#005595]'
                 }`}
                 title="Sistem Yönetimi"
               >
@@ -3543,7 +3545,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         </nav>
 
         {/* MASAÜSTÜ KULLANICI VE AYARLAR */}
-        <div className="hidden md:flex mt-auto p-4 border-t border-[#8bcdc5]/30 bg-[#005595] flex-col">
+        <div className="hidden lg:flex mt-auto p-4 border-t border-[#8bcdc5]/30 bg-[#005595] flex-col">
           <div className="w-full space-y-2" data-user-settings-anchor>
             <Suspense fallback={<LazyInlineFallback label="İşlem kuyruğu..." />}>
               <OperationQueueIndicator

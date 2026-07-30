@@ -1726,10 +1726,25 @@ function sendGeneratedDocumentEmail_(email, blob) {
   );
 }
 
-function handleGeneratedPdfUpload_(data) {
+function isBridgeSecretAuthorized_(secret) {
+  var incomingSecret = (secret || "").toString().trim();
+  if (!incomingSecret) return false;
+
   var props = PropertiesService.getScriptProperties();
-  var expectedSecret = props.getProperty("PDF_BRIDGE_SECRET") || props.getProperty("GOOGLE_BRIDGE_SECRET");
-  if (!expectedSecret || data.secret !== expectedSecret) {
+  var allowedSecrets = [
+    props.getProperty("GOOGLE_BRIDGE_SECRET"),
+    props.getProperty("PDF_BRIDGE_SECRET")
+  ];
+
+  for (var i = 0; i < allowedSecrets.length; i++) {
+    var allowedSecret = (allowedSecrets[i] || "").toString().trim();
+    if (allowedSecret && incomingSecret === allowedSecret) return true;
+  }
+  return false;
+}
+
+function handleGeneratedPdfUpload_(data) {
+  if (!isBridgeSecretAuthorized_(data.secret)) {
     return jsonOut({ success: false, error: "Yetkisiz PDF köprüsü." });
   }
 
@@ -1832,9 +1847,7 @@ function handleGeneratedPdfUpload_(data) {
 }
 
 function handleBridgeEmail_(data) {
-  var props = PropertiesService.getScriptProperties();
-  var expectedSecret = props.getProperty("PDF_BRIDGE_SECRET") || props.getProperty("GOOGLE_BRIDGE_SECRET");
-  if (!expectedSecret || data.secret !== expectedSecret) {
+  if (!isBridgeSecretAuthorized_(data.secret)) {
     return jsonOut({ success: false, error: "Yetkisiz e-posta köprüsü." });
   }
 
