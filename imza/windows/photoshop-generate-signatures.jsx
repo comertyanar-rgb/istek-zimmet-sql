@@ -145,6 +145,106 @@ function getDataSetNames(datasetFile) {
   return names;
 }
 
+function requireCampusImage(row, setName) {
+  var campusImagePath = String(row.CampusImage || "");
+  if (!campusImagePath) {
+    throw new Error("CampusImage is empty for data set: " + setName);
+  }
+
+  var campusImageFile = new File(campusImagePath);
+  if (!campusImageFile.exists) {
+    throw new Error(
+      "CampusImage file was not found for data set " +
+        setName +
+        ": " +
+        campusImageFile.fsName
+    );
+  }
+}
+
+function findLayerByName(container, expectedName) {
+  var normalizedExpected = normalizeTextForCheck(expectedName);
+
+  for (var i = 0; i < container.artLayers.length; i++) {
+    if (normalizeTextForCheck(container.artLayers[i].name) === normalizedExpected) {
+      return container.artLayers[i];
+    }
+  }
+
+  for (var j = 0; j < container.layerSets.length; j++) {
+    var match = findLayerByName(container.layerSets[j], expectedName);
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function unitPixels(value) {
+  return value && value.as ? value.as("px") : Number(value);
+}
+
+function getLayerBounds(layer) {
+  var bounds = layer.bounds;
+  return {
+    left: unitPixels(bounds[0]),
+    top: unitPixels(bounds[1]),
+    right: unitPixels(bounds[2]),
+    bottom: unitPixels(bounds[3])
+  };
+}
+
+function replaceCampusImage(doc, campusImagePath) {
+  var targetLayer = findLayerByName(doc, "kampus");
+  if (!targetLayer) {
+    throw new Error("Campus image layer named 'kampus' was not found in the PSD template.");
+  }
+
+  var targetBounds = getLayerBounds(targetLayer);
+  var targetWidth = targetBounds.right - targetBounds.left;
+  var targetHeight = targetBounds.bottom - targetBounds.top;
+  if (targetWidth <= 0 || targetHeight <= 0) {
+    throw new Error("Campus image layer has invalid bounds.");
+  }
+
+  var sourceDoc = null;
+  try {
+    sourceDoc = app.open(new File(campusImagePath));
+    sourceDoc.selection.selectAll();
+    sourceDoc.selection.copy(true);
+  } finally {
+    if (sourceDoc) {
+      sourceDoc.close(SaveOptions.DONOTSAVECHANGES);
+    }
+  }
+
+  app.activeDocument = doc;
+  doc.activeLayer = targetLayer;
+  var replacementLayer = doc.paste();
+  var replacementBounds = getLayerBounds(replacementLayer);
+  var replacementWidth = replacementBounds.right - replacementBounds.left;
+  var replacementHeight = replacementBounds.bottom - replacementBounds.top;
+  if (replacementWidth <= 0 || replacementHeight <= 0) {
+    throw new Error("Campus image replacement has invalid bounds.");
+  }
+
+  var scale = Math.min(targetWidth / replacementWidth, targetHeight / replacementHeight) * 100;
+  if (Math.abs(scale - 100) > 0.01) {
+    replacementLayer.resize(scale, scale, AnchorPosition.MIDDLECENTER);
+  }
+
+  replacementBounds = getLayerBounds(replacementLayer);
+  replacementWidth = replacementBounds.right - replacementBounds.left;
+  replacementHeight = replacementBounds.bottom - replacementBounds.top;
+  replacementLayer.translate(
+    targetBounds.left + (targetWidth - replacementWidth) / 2 - replacementBounds.left,
+    targetBounds.top + (targetHeight - replacementHeight) / 2 - replacementBounds.top
+  );
+  replacementLayer.name = "kampus";
+  targetLayer.remove();
+}
+
 function normalizeTextForCheck(value) {
   return String(value || "")
     .replace(/[\r\n]+/g, " ")
@@ -292,24 +392,39 @@ try {
   for (var i = 0; i < rows.length; i++) {
     var row = rows[i];
     var setName = row.filename;
-    var doc = app.open(templateFile);
-    fillSignatureTextLayers(doc, row);
-    app.refresh();
+    requireCampusImage(row, setName);
 
-    if (!documentContainsText(doc, row.email) && !documentContainsText(doc, row.ad)) {
-      throw new Error(
-        "Dataset was found but was not applied to the visible text layers: " +
-          setName +
-          " / " +
-          row.ad +
-          " / " +
-          row.email
-      );
+    var doc = null;
+    try {
+      doc = app.open(templateFile);
+
+      replaceCampusImage(doc, row.CampusImage);
+      fillSignatureTextLayers(doc, row);
+      app.refresh();
+
+      if (!documentContainsText(doc, row.email) && !documentContainsText(doc, row.ad)) {
+        throw new Error(
+          "Dataset was found but was not applied to the visible text layers: " +
+            setName +
+            " / " +
+            row.ad +
+            " / " +
+            row.email
+        );
+      }
+
+      var saveFile = new File(outputFolder.fsName + "/" + setName + ".jpg");
+      doc.saveAs(saveFile, jpegSaveOptions(), true, Extension.LOWERCASE);
+      doc.close(SaveOptions.DONOTSAVECHANGES);
+      doc = null;
+    } catch (rowError) {
+      if (doc) {
+        try {
+          doc.close(SaveOptions.DONOTSAVECHANGES);
+        } catch (closeError) {}
+      }
+      throw rowError;
     }
-
-    var saveFile = new File(outputFolder.fsName + "/" + setName + ".jpg");
-    doc.saveAs(saveFile, jpegSaveOptions(), true, Extension.LOWERCASE);
-    doc.close(SaveOptions.DONOTSAVECHANGES);
   }
 
   writeTextFile(SIGNATURE_JOB.doneFile, "ok");
