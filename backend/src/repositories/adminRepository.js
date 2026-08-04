@@ -59,8 +59,26 @@ function mapPersonnel(row) {
   };
 }
 
+function mapSignatureTitle(row) {
+  return {
+    id: Number(row.TitleId),
+    titleTr: row.TitleTr || '',
+    titleEn: row.TitleEn || '',
+    templateKey: row.TemplateKey || '1',
+    active: Boolean(row.IsActive),
+    createdAt: row.CreatedAt || '',
+    updatedAt: row.UpdatedAt || ''
+  };
+}
+
 export async function fetchAdminOverviewForUser() {
-  const [authorizedResult, campusesResult, personnelResult, logCountResult] = await Promise.all([
+  const [
+    authorizedResult,
+    campusesResult,
+    personnelResult,
+    signatureTitlesResult,
+    logCountResult
+  ] = await Promise.all([
     query(`
       SELECT
         au.Email,
@@ -106,6 +124,18 @@ export async function fetchAdminOverviewForUser() {
         ON overrides.PersonId = p.PersonId AND overrides.IsActive = 1
       ORDER BY p.FullName
     `),
+    query(`
+      SELECT
+        TitleId,
+        TitleTr,
+        TitleEn,
+        TemplateKey,
+        IsActive,
+        CreatedAt,
+        UpdatedAt
+      FROM dbo.SignatureTitles
+      ORDER BY IsActive DESC, TitleTr
+    `),
     query(`SELECT COUNT_BIG(*) AS LogCount FROM dbo.SystemLogs`)
   ]);
 
@@ -118,6 +148,7 @@ export async function fetchAdminOverviewForUser() {
       active: Boolean(row.IsActive)
     })),
     personnel: personnelResult.recordset.map(mapPersonnel),
+    signatureTitles: signatureTitlesResult.recordset.map(mapSignatureTitle),
     logs: [],
     auditTotal: Number(logCountResult.recordset[0]?.LogCount || 0)
   };
@@ -388,5 +419,76 @@ export async function clearPersonnelOverrideForAdmin(user, data) {
     );
 
     return { personId };
+  });
+}
+
+export async function saveSignatureTitleForAdmin(user, data) {
+  const parsedId = Number.parseInt(data.titleId, 10);
+  const titleId = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : null;
+  const titleTr = cleanText(data.titleTr, 240);
+  const titleEn = cleanText(data.titleEn, 240);
+  const templateKey = cleanText(data.templateKey, 20)
+    .replace(/^imza-template-/i, '')
+    .replace(/^template-/i, '')
+    .trim();
+  const active = data.active !== false;
+
+  if (!titleTr) throw new Error('Türkçe ünvan zorunludur.');
+  if (!['1', '2', '3', '4'].includes(templateKey)) {
+    throw new Error('İmza şablonu yalnızca 1, 2, 3 veya 4 olabilir.');
+  }
+
+  return withTransaction(async (execute) => {
+    const previousResult = titleId
+      ? await execute(
+          `
+            SELECT TitleTr, TitleEn, TemplateKey, IsActive
+            FROM dbo.SignatureTitles
+            WHERE TitleId = @titleId
+          `,
+          { titleId: { type: sql.Int, value: titleId } }
+        )
+      : null;
+    const previous = previousResult?.recordset?.[0] || null;
+
+    const result = await execute(
+      `
+        EXEC dbo.AdminSaveSignatureTitle
+          @ActorEmail = @actorEmail,
+          @TitleId = @titleId,
+          @TitleTr = @titleTr,
+          @TitleEn = @titleEn,
+          @TemplateKey = @templateKey,
+          @IsActive = @isActive
+      `,
+      {
+        actorEmail: { type: sql.NVarChar(320), value: user.email },
+        titleId: { type: sql.Int, value: titleId },
+        titleTr: { type: sql.NVarChar(240), value: titleTr },
+        titleEn: { type: sql.NVarChar(240), value: titleEn || null },
+        templateKey: { type: sql.NVarChar(20), value: templateKey },
+        isActive: { type: sql.Bit, value: active }
+      }
+    );
+
+    const saved = result.recordset[0];
+    const changeType = previous ? 'güncellendi' : 'eklendi';
+    const previousSummary = previous
+      ? ` / önceki: ${previous.TitleTr} | ${previous.TitleEn || '-'} | şablon ${
+          previous.TemplateKey || 'otomatik'
+        } | ${previous.IsActive ? 'Aktif' : 'Pasif'}`
+      : '';
+
+    await appendSystemLog(
+      'YÖNETİM İMZA ÜNVANI',
+      user,
+      `${titleTr} ${changeType} -> ${titleEn || 'İngilizce karşılık yok'}, şablon ${templateKey}, ${
+        active ? 'Aktif' : 'Pasif'
+      }${previousSummary}`,
+      clientInfo(data),
+      execute
+    );
+
+    return { title: mapSignatureTitle(saved) };
   });
 }

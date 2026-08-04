@@ -27,9 +27,31 @@ test('süper yönetici aksiyonlarını bilinen ve güvenli istekler olarak kabul
       reason: 'Kampüs kaydı düzeltildi.',
     },
     { action: 'adminClearPersonnelOverride', personId: '123' },
+    {
+      action: 'adminSaveSignatureTitle',
+      titleId: 12,
+      titleTr: 'Bilgi İşlem Uzmanı',
+      titleEn: 'IT Specialist',
+      templateKey: '2',
+      active: true,
+    },
   ];
 
   for (const request of requests) {
     assert.equal(validateActionRequest({ ...request }).action, request.action);
   }
+});
+
+test('imza ünvanı yönetim isteğinde geçersiz şablonu reddeder', () => {
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'adminSaveSignatureTitle',
+        titleTr: 'Bilgi İşlem Uzmanı',
+        titleEn: 'IT Specialist',
+        templateKey: '7',
+        active: true,
+      }),
+    /şablonu yalnızca 1, 2, 3 veya 4/i
+  );
 });

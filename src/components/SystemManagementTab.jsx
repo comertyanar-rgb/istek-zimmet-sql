@@ -6,8 +6,10 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  FileSignature,
   Loader2,
   Pencil,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
@@ -64,6 +66,14 @@ const emptyOverrideForm = {
   campusId: '',
   status: '',
   reason: '',
+};
+
+const emptySignatureTitleForm = {
+  titleId: null,
+  titleTr: '',
+  titleEn: '',
+  templateKey: '1',
+  active: true,
 };
 
 function formatDateTime(value) {
@@ -142,6 +152,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
     users: [],
     campuses: [],
     personnel: [],
+    signatureTitles: [],
     logs: [],
     auditTotal: 0,
   });
@@ -153,6 +164,9 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
   const [personnelPage, setPersonnelPage] = useState(1);
   const [userForm, setUserForm] = useState(null);
   const [overrideForm, setOverrideForm] = useState(null);
+  const [signatureTitleForm, setSignatureTitleForm] = useState(null);
+  const [signatureSearch, setSignatureSearch] = useState('');
+  const [signatureActiveFilter, setSignatureActiveFilter] = useState('all');
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditTotal, setAuditTotal] = useState(0);
   const [auditTotalPages, setAuditTotalPages] = useState(1);
@@ -175,6 +189,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         users: result.users || [],
         campuses: result.campuses || [],
         personnel: result.personnel || [],
+        signatureTitles: result.signatureTitles || [],
         logs: result.logs || [],
         auditTotal: Number(result.auditTotal || 0),
       });
@@ -253,6 +268,16 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
       ).includes(needle);
     });
   }, [overview.personnel, overrideOnly, search]);
+
+  const filteredSignatureTitles = useMemo(() => {
+    const needle = toTrLower(signatureSearch);
+    return overview.signatureTitles.filter((title) => {
+      if (signatureActiveFilter === 'active' && !title.active) return false;
+      if (signatureActiveFilter === 'passive' && title.active) return false;
+      if (!needle) return true;
+      return toTrLower(`${title.titleTr} ${title.titleEn}`).includes(needle);
+    });
+  }, [overview.signatureTitles, signatureActiveFilter, signatureSearch]);
 
   const personnelTotalPages = Math.max(1, Math.ceil(filteredPersonnel.length / PAGE_SIZE));
   const visiblePersonnel = filteredPersonnel.slice(
@@ -341,6 +366,28 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
     }
   };
 
+  const saveSignatureTitle = async () => {
+    if (!signatureTitleForm) return;
+    setSaving(true);
+    try {
+      await postApiAction({
+        action: 'adminSaveSignatureTitle',
+        authToken: currentUser.token,
+        ...signatureTitleForm,
+      });
+      setSignatureTitleForm(null);
+      await loadOverview(false);
+      showAppAlert('İmza ünvanı kaydedildi.', {
+        type: 'success',
+        title: 'Ünvan güncellendi',
+      });
+    } catch (error) {
+      showAppAlert(error.message, { type: 'error', title: 'Ünvan kaydedilemedi' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const openUserForm = (user = null) => {
     setUserForm(
       user
@@ -363,6 +410,20 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
       reason: person.overrideReason || '',
       person,
     });
+  };
+
+  const openSignatureTitleForm = (title = null) => {
+    setSignatureTitleForm(
+      title
+        ? {
+            titleId: title.id,
+            titleTr: title.titleTr,
+            titleEn: title.titleEn,
+            templateKey: title.templateKey || '1',
+            active: title.active,
+          }
+        : { ...emptySignatureTitleForm }
+    );
   };
 
   if (loading) {
@@ -390,6 +451,13 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               overview.personnel.filter((item) => item.hasOverride).length,
             ],
             [
+              'signatureTitles',
+              FileSignature,
+              'İmza Ünvanları',
+              'Ünvan',
+              overview.signatureTitles.length,
+            ],
+            [
               'audit',
               ScrollText,
               'Denetim Kayıtları',
@@ -412,7 +480,7 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
               <Icon className="h-4 w-4 shrink-0" />
               <span className="truncate sm:hidden">{mobileLabel}</span>
               <span className="hidden truncate sm:inline">{label}</span>
-              <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+              <span className="hidden rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 sm:inline-flex">
                 {count}
               </span>
             </button>
@@ -627,6 +695,110 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
         </section>
       )}
 
+      {activeSection === 'signatureTitles' && (
+        <section>
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">İmza ünvanları</h2>
+              <p className="text-xs text-slate-500">
+                Türkçe ve İngilizce ünvan karşılıkları ile imza şablonları.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => openSignatureTitleForm()}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#0066b1] px-4 text-sm font-bold text-white shadow-md hover:bg-[#005595]"
+            >
+              <Plus className="h-4 w-4" /> Ünvan ekle
+            </button>
+          </div>
+
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row">
+            <label className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 shadow-sm">
+              <Search className="h-4 w-4 shrink-0 text-slate-400" />
+              <input
+                value={signatureSearch}
+                onChange={(event) => setSignatureSearch(event.target.value)}
+                placeholder="Türkçe veya İngilizce ünvan ara"
+                className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+              />
+              {signatureSearch && (
+                <button
+                  type="button"
+                  onClick={() => setSignatureSearch('')}
+                  title="Aramayı temizle"
+                >
+                  <X className="h-4 w-4 text-slate-400" />
+                </button>
+              )}
+            </label>
+            <select
+              value={signatureActiveFilter}
+              onChange={(event) => setSignatureActiveFilter(event.target.value)}
+              className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 shadow-sm outline-none"
+              aria-label="Ünvan durumu"
+            >
+              <option value="all">Tüm durumlar</option>
+              <option value="active">Aktif</option>
+              <option value="passive">Pasif</option>
+            </select>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+            <div className="hidden grid-cols-[minmax(210px,1fr)_minmax(210px,1fr)_100px_90px_48px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-500 md:grid">
+              <span>Türkçe ünvan</span>
+              <span>İngilizce ünvan</span>
+              <span>Şablon</span>
+              <span>Durum</span>
+              <span />
+            </div>
+            {filteredSignatureTitles.map((title) => (
+              <div
+                key={title.id}
+                className="grid grid-cols-[minmax(0,1fr)_40px] gap-x-3 gap-y-2 border-b border-slate-100 px-3 py-3 last:border-b-0 md:grid-cols-[minmax(210px,1fr)_minmax(210px,1fr)_100px_90px_48px] md:items-center md:gap-3 md:px-4"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-slate-900">{title.titleTr}</p>
+                  <p className="mt-0.5 text-xs text-slate-500 md:hidden">
+                    {title.titleEn || 'İngilizce karşılık yok'}
+                  </p>
+                </div>
+                <div className="hidden min-w-0 text-xs text-slate-600 md:block">
+                  {title.titleEn || '-'}
+                </div>
+                <div className="col-span-2 flex items-center gap-2 md:col-span-1">
+                  <span className="inline-flex rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-bold text-[#0066b1]">
+                    Şablon {title.templateKey || '1'}
+                  </span>
+                  <StatusChip active={title.active} className="md:hidden" />
+                </div>
+                <div className="hidden md:block">
+                  <StatusChip active={title.active} />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => openSignatureTitleForm(title)}
+                  className="col-start-2 row-start-1 flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 text-[#0066b1] shadow-sm hover:bg-blue-50 md:col-start-auto md:row-start-auto"
+                  title="Ünvanı düzenle"
+                  aria-label={`${title.titleTr} ünvanını düzenle`}
+                >
+                  <Pencil className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+            {filteredSignatureTitles.length === 0 && (
+              <div className="px-4 py-12 text-center text-sm font-bold text-slate-400">
+                Arama ölçütlerine uygun imza ünvanı bulunamadı.
+              </div>
+            )}
+          </div>
+
+          <p className="mt-3 text-xs text-slate-500">
+            {filteredSignatureTitles.length} / {overview.signatureTitles.length} ünvan
+          </p>
+        </section>
+      )}
+
       {activeSection === 'audit' && (
         <section>
           <div className="mb-4 flex flex-col gap-3">
@@ -802,6 +974,102 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
             </div>
           )}
         </section>
+      )}
+
+      {signatureTitleForm && (
+        <ModalFrame
+          title={signatureTitleForm.titleId ? 'İmza ünvanını düzenle' : 'İmza ünvanı ekle'}
+          onClose={() => setSignatureTitleForm(null)}
+        >
+          <div className="space-y-4 p-5">
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-bold text-slate-600">
+                Türkçe ünvan
+              </span>
+              <input
+                value={signatureTitleForm.titleTr}
+                onChange={(event) =>
+                  setSignatureTitleForm((form) => ({ ...form, titleTr: event.target.value }))
+                }
+                maxLength={240}
+                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-[#0066b1] focus:ring-2 focus:ring-blue-100"
+                placeholder="Örn. Bilgi İşlem Uzmanı"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-bold text-slate-600">
+                İngilizce ünvan
+              </span>
+              <input
+                value={signatureTitleForm.titleEn}
+                onChange={(event) =>
+                  setSignatureTitleForm((form) => ({ ...form, titleEn: event.target.value }))
+                }
+                maxLength={240}
+                className="h-11 w-full rounded-lg border border-slate-200 px-3 text-sm outline-none focus:border-[#0066b1] focus:ring-2 focus:ring-blue-100"
+                placeholder="Örn. IT Specialist"
+              />
+            </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-bold text-slate-600">
+                  İmza şablonu
+                </span>
+                <select
+                  value={signatureTitleForm.templateKey}
+                  onChange={(event) =>
+                    setSignatureTitleForm((form) => ({
+                      ...form,
+                      templateKey: event.target.value,
+                    }))
+                  }
+                  className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[#0066b1]"
+                >
+                  <option value="1">Şablon 1</option>
+                  <option value="2">Şablon 2</option>
+                  <option value="3">Şablon 3</option>
+                  <option value="4">Şablon 4</option>
+                </select>
+              </label>
+              <label className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 sm:mt-[22px] sm:h-11 sm:py-0">
+                <span className="text-sm font-bold text-slate-800">Aktif</span>
+                <input
+                  type="checkbox"
+                  checked={signatureTitleForm.active}
+                  onChange={(event) =>
+                    setSignatureTitleForm((form) => ({
+                      ...form,
+                      active: event.target.checked,
+                    }))
+                  }
+                  className="h-5 w-5 rounded border-slate-300 text-[#0066b1]"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="flex gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4">
+            <button
+              type="button"
+              onClick={() => setSignatureTitleForm(null)}
+              className="h-11 flex-1 rounded-lg border border-slate-200 bg-white text-sm font-bold text-slate-700"
+            >
+              Vazgeç
+            </button>
+            <button
+              type="button"
+              onClick={saveSignatureTitle}
+              disabled={saving || !signatureTitleForm.titleTr.trim()}
+              className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-[#0066b1] text-sm font-bold text-white shadow-md disabled:opacity-50"
+            >
+              {saving ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4" />
+              )}
+              Kaydet
+            </button>
+          </div>
+        </ModalFrame>
       )}
 
       {userForm && (

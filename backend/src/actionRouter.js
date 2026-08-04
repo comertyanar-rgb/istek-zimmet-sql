@@ -8,7 +8,8 @@ import {
   fetchAdminAuditLogsForUser,
   fetchAdminOverviewForUser,
   saveAuthorizedUserForAdmin,
-  savePersonnelOverrideForAdmin
+  savePersonnelOverrideForAdmin,
+  saveSignatureTitleForAdmin
 } from './repositories/adminRepository.js';
 import { isSuperAdminEmail, requireSuperAdmin } from './superAdmin.js';
 import {
@@ -164,6 +165,12 @@ export async function handleAction(data, context = {}) {
   if (action === 'adminClearPersonnelOverride') {
     requireSuperAdmin(currentUser, config.superAdminEmails);
     const payload = await clearPersonnelOverrideForAdmin(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'adminSaveSignatureTitle') {
+    requireSuperAdmin(currentUser, config.superAdminEmails);
+    const payload = await saveSignatureTitleForAdmin(currentUser, data);
     return success(payload);
   }
 

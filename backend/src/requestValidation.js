@@ -24,6 +24,7 @@ const KNOWN_ACTIONS = new Set([
   'adminSaveAuthorizedUser',
   'adminSavePersonnelOverride',
   'adminClearPersonnelOverride',
+  'adminSaveSignatureTitle',
   'fetchData',
   'fetchHardwareHistory',
   'fetchPersonDocumentHistory',
@@ -166,6 +167,31 @@ function validateActionSpecificShape(data) {
 
   if (data.action === 'createSheet' && !Array.isArray(data.data)) {
     throw new RequestValidationError('Dışa aktarım verisi liste biçiminde olmalıdır.');
+  }
+
+  if (data.action === 'adminSaveSignatureTitle') {
+    if (
+      typeof data.titleTr !== 'string' ||
+      !data.titleTr.trim() ||
+      data.titleTr.length > 240
+    ) {
+      throw new RequestValidationError('Türkçe ünvan 1-240 karakter olmalıdır.');
+    }
+    if (data.titleEn !== undefined && (typeof data.titleEn !== 'string' || data.titleEn.length > 240)) {
+      throw new RequestValidationError('İngilizce ünvan en fazla 240 karakter olmalıdır.');
+    }
+    if (!['1', '2', '3', '4'].includes(String(data.templateKey || ''))) {
+      throw new RequestValidationError('İmza şablonu yalnızca 1, 2, 3 veya 4 olabilir.');
+    }
+    if (data.titleId !== null && data.titleId !== undefined) {
+      const titleId = Number(data.titleId);
+      if (!Number.isInteger(titleId) || titleId <= 0) {
+        throw new RequestValidationError('İmza ünvanı kimliği geçersiz.');
+      }
+    }
+    if (data.active !== undefined && typeof data.active !== 'boolean') {
+      throw new RequestValidationError('İmza ünvanı durumu geçersiz.');
+    }
   }
 
   if (data.action === 'bulkAddHardware') {

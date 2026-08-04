@@ -84,6 +84,7 @@ const actionRateLimits = {
   adminSaveAuthorizedUser: { windowMs: 10 * 60 * 1000, max: 60 },
   adminSavePersonnelOverride: { windowMs: 10 * 60 * 1000, max: 60 },
   adminClearPersonnelOverride: { windowMs: 10 * 60 * 1000, max: 60 },
+  adminSaveSignatureTitle: { windowMs: 10 * 60 * 1000, max: 60 },
   syncGLPI: { windowMs: 10 * 60 * 1000, max: 30 },
   syncPersonnel: { windowMs: 10 * 60 * 1000, max: 120 },
   fetchADPasswordJobs: { windowMs: 10 * 60 * 1000, max: 180 },
