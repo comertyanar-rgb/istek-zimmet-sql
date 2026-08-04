@@ -7738,7 +7738,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         <div className="border-t border-slate-200/80 p-3 flex items-center gap-3">
                           <div className="flex-1 min-w-0">
                             <p className="text-[10px] text-blue-500 mb-1 font-bold uppercase tracking-wider">
-                              Kullanıcı Adı
+                              AD Kullanıcı Adı
                             </p>
                             <p className="font-black text-gray-900 text-[13px] truncate">
                               {viewedPersonAdLogin || 'Tanımlı değil'}
@@ -7774,9 +7774,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                       {/* Departman / İmza Kutucuğu */}
                       <div className={`p-3 rounded-xl border ${
-                        viewedPerson.signatureLink || !isSignatureEligiblePerson(viewedPerson)
-                          ? 'bg-slate-50 border-slate-100'
-                          : 'bg-amber-50/70 border-amber-200'
+                        viewedPerson.signatureLink
+                          ? 'bg-emerald-50/40 border-emerald-300 sm:bg-slate-50 sm:border-slate-100'
+                          : isSignatureEligiblePerson(viewedPerson)
+                            ? 'bg-amber-50/70 border-amber-300 sm:border-amber-200'
+                            : 'bg-slate-50 border-slate-100'
                       }`}>
                         <div className="flex items-center justify-between gap-3">
                           <div className="min-w-0 flex-1">
@@ -7785,7 +7787,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 Departman / Görev
                               </p>
                               {(viewedPerson.signatureLink || isSignatureEligiblePerson(viewedPerson)) && (
-                                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black border ${
+                                <span className={`hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[9px] font-black border ${
                                   viewedPerson.signatureLink
                                     ? 'bg-green-50 text-green-700 border-green-200'
                                     : 'bg-amber-100 text-amber-800 border-amber-200'
@@ -7794,9 +7796,24 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 </span>
                               )}
                             </div>
-                            <p className="font-bold text-gray-800 text-[14px] break-words leading-tight">
-                              {viewedPerson.department || '-'}
-                            </p>
+                            {viewedPerson.signatureLink ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!openSafeExternalUrl(viewedPerson.signatureLink)) {
+                                    showAppAlert('İmza bağlantısı güvenli olmadığı için açılamadı.');
+                                  }
+                                }}
+                                className="block max-w-full text-left font-bold text-gray-800 text-[14px] break-words leading-tight hover:text-[#0066b1] hover:underline underline-offset-2 transition-colors"
+                                title="İmza linkini aç"
+                              >
+                                {viewedPerson.department || '-'}
+                              </button>
+                            ) : (
+                              <p className="font-bold text-gray-800 text-[14px] break-words leading-tight">
+                                {viewedPerson.department || '-'}
+                              </p>
+                            )}
                             {viewedPerson.signatureStatus && (
                               <p className="text-[10px] text-gray-500 font-bold mt-1">
                                 İmza durumu: {viewedPerson.signatureStatus}
@@ -7816,21 +7833,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             >
                               <FileSignature className="w-3.5 h-3.5" />
                               {viewedPerson.signatureLink ? 'Yenile' : 'Oluştur'}
-                            </button>
-                          )}
-                          {viewedPerson.signatureLink && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!openSafeExternalUrl(viewedPerson.signatureLink)) {
-                                  showAppAlert('İmza bağlantısı güvenli olmadığı için açılamadı.');
-                                }
-                              }}
-                              className="h-8 w-8 rounded-lg bg-white border border-gray-200 text-gray-600 hover:text-[#0066b1] hover:border-blue-200 transition-colors inline-flex items-center justify-center"
-                              title="İmza linkini aç"
-                              aria-label="İmza linkini aç"
-                            >
-                              <ExternalLink className="w-3.5 h-3.5" />
                             </button>
                           )}
                           </div>
