@@ -10,7 +10,7 @@
 param(
   [string]$PersonnelExportUrl = $(if ($env:PERSONNEL_EXPORT_URL) { $env:PERSONNEL_EXPORT_URL } else { $env:ZIMMET_PERSONNEL_EXPORT_URL }),
   [string]$ZimmetApiUrl = $(if ($env:ZIMMET_API_URL) { $env:ZIMMET_API_URL } else { "http://localhost:8787/api/action" }),
-  [int]$BatchSize = 500,
+  [int]$BatchSize = 5000,
   [string]$LogPath = $(if ($env:PERSONNEL_SYNC_LOG) { $env:PERSONNEL_SYNC_LOG } else { "" }),
   [switch]$DryRun,
   [switch]$LogSuccess
@@ -51,8 +51,8 @@ if ([string]::IsNullOrWhiteSpace($ZimmetApiUrl)) {
 if ([string]::IsNullOrWhiteSpace($SyncSecret)) {
   throw "PERSONNEL_SYNC_SECRET/ZIMMET_PERSONNEL_SYNC_SECRET ortam değişkeni boş."
 }
-if ($BatchSize -lt 1 -or $BatchSize -gt 1000) {
-  throw "BatchSize 1 ile 1000 arasında olmalı."
+if ($BatchSize -lt 1 -or $BatchSize -gt 5000) {
+  throw "BatchSize 1 ile 5000 arasında olmalı."
 }
 
 function Get-ArraySlice {
@@ -147,6 +147,7 @@ if ($DryRun) {
 
 $inserted = 0
 $updated = 0
+$unchanged = 0
 $skipped = 0
 $warningCount = 0
 $maxWarningDetails = 200
@@ -173,6 +174,7 @@ for ($start = 0; $start -lt $items.Count; $start += $BatchSize) {
 
   $inserted += Get-IntValue $result.inserted
   $updated += Get-IntValue $result.updated
+  $unchanged += Get-IntValue $result.unchanged
   $skipped += Get-IntValue $result.skipped
   $batchWarnings = @($result.warnings)
   if ($null -ne $result.warningCount) {
@@ -192,6 +194,7 @@ $summary = [pscustomobject]@{
   exportCount = $items.Count
   inserted = $inserted
   updated = $updated
+  unchanged = $unchanged
   skipped = $skipped
   warningCount = $warningCount
   warningsTruncated = $warningCount -gt $warnings.Count
@@ -199,7 +202,7 @@ $summary = [pscustomobject]@{
 }
 
 if ($LogSuccess -or $inserted -gt 0 -or $skipped -gt 0 -or $warningCount -gt 0) {
-  Write-SyncLog "OK exportCount=$($items.Count) inserted=$inserted updated=$updated skipped=$skipped warnings=$warningCount"
+  Write-SyncLog "OK exportCount=$($items.Count) inserted=$inserted updated=$updated unchanged=$unchanged skipped=$skipped warnings=$warningCount"
 }
 
 $summary

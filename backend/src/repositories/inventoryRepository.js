@@ -602,6 +602,7 @@ export async function syncPersonnelFromAgent(secret, data = {}) {
       count: 0,
       inserted: 0,
       updated: 0,
+      unchanged: 0,
       skipped: 0,
       warningCount: 0,
       warningsTruncated: false,
@@ -612,6 +613,7 @@ export async function syncPersonnelFromAgent(secret, data = {}) {
 
   let inserted = 0;
   let updated = 0;
+  let unchanged = 0;
   let skipped = 0;
   let warningCount = 0;
   const warnings = [];
@@ -711,7 +713,17 @@ export async function syncPersonnelFromAgent(secret, data = {}) {
           MERGE dbo.Personnel AS target
           USING SourceRows AS source
             ON target.PersonId = source.PersonId
-          WHEN MATCHED THEN
+          WHEN MATCHED AND (
+            (NULLIF(source.FullName, N'') IS NOT NULL AND ISNULL(target.FullName, N'') COLLATE Latin1_General_100_BIN2 <> source.FullName COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.Email, N'') IS NOT NULL AND ISNULL(target.Email, N'') COLLATE Latin1_General_100_BIN2 <> source.Email COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.Department, N'') IS NOT NULL AND ISNULL(target.Department, N'') COLLATE Latin1_General_100_BIN2 <> source.Department COLLATE Latin1_General_100_BIN2)
+            OR (source.CampusId IS NOT NULL AND (target.CampusId IS NULL OR target.CampusId <> source.CampusId))
+            OR (NULLIF(source.Status, N'') IS NOT NULL AND ISNULL(target.Status, N'') COLLATE Latin1_General_100_BIN2 <> source.Status COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.PhotoUrl, N'') IS NOT NULL AND ISNULL(target.PhotoUrl, N'') COLLATE Latin1_General_100_BIN2 <> source.PhotoUrl COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.AdUsername, N'') IS NOT NULL AND ISNULL(target.AdUsername, N'') COLLATE Latin1_General_100_BIN2 <> source.AdUsername COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.Phone, N'') IS NOT NULL AND ISNULL(target.Phone, N'') COLLATE Latin1_General_100_BIN2 <> source.Phone COLLATE Latin1_General_100_BIN2)
+            OR (NULLIF(source.SignatureUrl, N'') IS NOT NULL AND ISNULL(target.SignatureUrl, N'') COLLATE Latin1_General_100_BIN2 <> source.SignatureUrl COLLATE Latin1_General_100_BIN2)
+          ) THEN
             UPDATE SET
               FullName = COALESCE(NULLIF(source.FullName, N''), target.FullName),
               Email = COALESCE(NULLIF(source.Email, N''), target.Email),
@@ -751,19 +763,24 @@ export async function syncPersonnelFromAgent(secret, data = {}) {
       }
     }
 
-    await appendSystemLog(
-      'PERSONEL SYNC',
-      { email: 'Personnel Sync Agent' },
-      `${inserted} yeni, ${updated} güncel, ${skipped} atlandı, ${warningCount} uyarı.`,
-      data.clientIp || data.machine || '',
-      execute
-    );
+    unchanged = Math.max(0, mergeRows.length - inserted - updated);
+
+    if (inserted > 0 || updated > 0 || skipped > 0 || warningCount > 0) {
+      await appendSystemLog(
+        'PERSONEL SYNC',
+        { email: 'Personnel Sync Agent' },
+        `${inserted} yeni, ${updated} güncellendi, ${unchanged} değişmedi, ${skipped} atlandı, ${warningCount} uyarı.`,
+        data.clientIp || data.machine || '',
+        execute
+      );
+    }
   });
 
   return {
     count: inserted + updated,
     inserted,
     updated,
+    unchanged,
     skipped,
     warningCount,
     warningsTruncated: warningCount > warnings.length,
