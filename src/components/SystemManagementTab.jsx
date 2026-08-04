@@ -439,52 +439,54 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
 
   return (
     <div className="app-tab-panel system-management-tab">
-      <div className="mb-4 flex items-center gap-2">
-        <div className="flex min-w-0 flex-1 rounded-lg bg-slate-100 p-1 sm:max-w-2xl">
-          {[
-            ['access', ShieldCheck, 'Yetkili Kullanıcılar', 'Yetki', overview.users.length],
-            [
-              'personnel',
-              Users,
-              'Personel Düzeltmeleri',
-              'Personel',
-              overview.personnel.filter((item) => item.hasOverride).length,
-            ],
-            [
-              'signatureTitles',
-              FileSignature,
-              'İmza Ünvanları',
-              'Ünvan',
-              overview.signatureTitles.length,
-            ],
-            [
-              'audit',
-              ScrollText,
-              'Denetim Kayıtları',
-              'Kayıt',
-              overview.auditTotal,
-            ],
-          ].map(([key, Icon, label, mobileLabel, count]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActiveSection(key)}
-              title={label}
-              aria-label={label}
-              className={`flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-1.5 py-2.5 text-[11px] font-bold transition-colors sm:px-2 sm:text-sm ${
-                activeSection === key
-                  ? 'bg-white text-[#0066b1] shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span className="truncate sm:hidden">{mobileLabel}</span>
-              <span className="hidden truncate sm:inline">{label}</span>
-              <span className="hidden rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 sm:inline-flex">
-                {count}
-              </span>
-            </button>
-          ))}
+      <div className="mb-4 flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1 overflow-x-auto rounded-lg bg-slate-100 p-1">
+          <div className="flex min-w-max sm:min-w-full">
+            {[
+              ['access', ShieldCheck, 'Yetkili Kullanıcılar', 'Yetki', overview.users.length],
+              [
+                'personnel',
+                Users,
+                'Personel Düzeltmeleri',
+                'Personel',
+                overview.personnel.filter((item) => item.hasOverride).length,
+              ],
+              [
+                'signatureTitles',
+                FileSignature,
+                'İmza Ünvanları',
+                'Ünvan',
+                overview.signatureTitles.length,
+              ],
+              [
+                'audit',
+                ScrollText,
+                'Denetim Kayıtları',
+                'Kayıt',
+                overview.auditTotal,
+              ],
+            ].map(([key, Icon, label, mobileLabel, count]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActiveSection(key)}
+                title={label}
+                aria-label={label}
+                className={`flex min-w-[92px] flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-2.5 text-[11px] font-bold transition-colors sm:min-w-[170px] sm:px-3 sm:text-sm ${
+                  activeSection === key
+                    ? 'bg-white text-[#0066b1] shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span className="whitespace-nowrap sm:hidden">{mobileLabel}</span>
+                <span className="hidden whitespace-nowrap sm:inline">{label}</span>
+                <span className="hidden shrink-0 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600 sm:inline-flex">
+                  {count}
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
         <RefreshButton
           onRefresh={activeSection === 'audit' ? loadAuditLogs : () => loadOverview(true)}
