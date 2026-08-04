@@ -7705,51 +7705,95 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       </div>
                     </div>
 
-                    {/* 2. İLETİŞİM & GÖREV KARTLARI (Alt Alta, Boşluklu, Çizgili) */}
+                    {/* 2. HESAP & GÖREV BİLGİLERİ */}
                     <div className="flex flex-col gap-3 mt-4">
-                      {/* E-Posta Kutucugu */}
-                      <div
-                        onClick={(e) => {
-                          if (!viewedPerson.email) return;
-                          e.stopPropagation();
-                          navigator.clipboard.writeText(viewedPerson.email);
-                          setCopiedEmail(true);
-                          setTimeout(() => setCopiedEmail(false), 2000);
-                        }}
-                        className={`bg-slate-50 p-4 rounded-xl border border-slate-100 flex flex-col justify-center transition-colors relative ${
-                          viewedPerson.email
-                            ? 'cursor-pointer hover:bg-blue-50 group'
-                            : ''
-                        }`}
-                        title={
-                          viewedPerson.email ? 'Kopyalamak için tıkla' : ''
-                        }
-                      >
-                        <p className="text-[10px] text-gray-400 mb-1.5 font-bold uppercase tracking-wider group-hover:text-blue-500 transition-colors">
-                          E-Posta Adresi
-                        </p>
-                        <p className="font-bold text-blue-600 text-[14px] truncate leading-tight group-hover:text-blue-800 transition-colors">
-                          {copiedEmail ? (
-                            <span className="text-green-600 flex items-center gap-1.5">
-                              <CheckCircle2 className="w-4 h-4" /> Kopyalandı
-                            </span>
-                          ) : (
-                            viewedPerson.email || '-'
-                          )}
-                        </p>
+                      <div className="overflow-hidden rounded-xl border border-slate-100 bg-slate-50">
+                        <div
+                          onClick={(e) => {
+                            if (!viewedPerson.email) return;
+                            e.stopPropagation();
+                            navigator.clipboard.writeText(viewedPerson.email);
+                            setCopiedEmail(true);
+                            setTimeout(() => setCopiedEmail(false), 2000);
+                          }}
+                          className={`p-3 transition-colors ${
+                            viewedPerson.email ? 'cursor-pointer hover:bg-blue-50' : ''
+                          }`}
+                          title={viewedPerson.email ? 'Kopyalamak için tıkla' : ''}
+                        >
+                          <p className="text-[10px] text-gray-400 mb-1 font-bold uppercase tracking-wider">
+                            E-Posta Adresi
+                          </p>
+                          <p className="font-bold text-blue-600 text-[13px] truncate leading-tight">
+                            {copiedEmail ? (
+                              <span className="text-green-600 flex items-center gap-1.5">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Kopyalandı
+                              </span>
+                            ) : (
+                              viewedPerson.email || '-'
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="border-t border-slate-200/80 p-3 flex items-center gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] text-blue-500 mb-1 font-bold uppercase tracking-wider">
+                              Kullanıcı Adı
+                            </p>
+                            <p className="font-black text-gray-900 text-[13px] truncate">
+                              {viewedPersonAdLogin || 'Tanımlı değil'}
+                            </p>
+                            {latestAdPasswordJobView && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-black ${latestAdPasswordJobView.tone}`}>
+                                  {latestAdPasswordJobView.active && <Loader2 className="w-3 h-3 animate-spin" />}
+                                  {latestAdPasswordJobView.label}
+                                </span>
+                                <span className="text-[10px] text-gray-500 font-semibold truncate">
+                                  {latestAdPasswordJob?.updatedAt || latestAdPasswordJob?.createdAt || ''}
+                                </span>
+                              </div>
+                            )}
+                            {latestAdPasswordJob?.error && (
+                              <p className="text-[10px] text-red-600 font-bold mt-1 line-clamp-2">
+                                {latestAdPasswordJob.error}
+                              </p>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowAdPasswordResetModal(true)}
+                            disabled={!viewedPersonAdLogin || hasActiveAdPasswordJob}
+                            title={!viewedPersonAdLogin ? 'Kullanıcı adı tanımlı değil.' : hasActiveAdPasswordJob ? 'Bu personel için bekleyen bir şifre işlemi var.' : 'Şifre değiştir'}
+                            className="shrink-0 h-8 px-2.5 rounded-lg bg-[#0066b1] text-white text-[11px] font-black shadow-sm hover:bg-[#005595] transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
+                          >
+                            {hasActiveAdPasswordJob ? 'İşleniyor' : 'Şifre Değiştir'}
+                          </button>
+                        </div>
                       </div>
 
-                      {/* Departman / İmza Kutucugu */}
-                      <div className={`p-4 rounded-xl border flex flex-col gap-3 ${
+                      {/* Departman / İmza Kutucuğu */}
+                      <div className={`p-3 rounded-xl border ${
                         viewedPerson.signatureLink || !isSignatureEligiblePerson(viewedPerson)
                           ? 'bg-slate-50 border-slate-100'
                           : 'bg-amber-50/70 border-amber-200'
                       }`}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-gray-400 mb-1.5 font-bold uppercase tracking-wider">
-                              Departman / Görev
-                            </p>
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
+                                Departman / Görev
+                              </p>
+                              {(viewedPerson.signatureLink || isSignatureEligiblePerson(viewedPerson)) && (
+                                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black border ${
+                                  viewedPerson.signatureLink
+                                    ? 'bg-green-50 text-green-700 border-green-200'
+                                    : 'bg-amber-100 text-amber-800 border-amber-200'
+                                }`}>
+                                  {viewedPerson.signatureLink ? 'İmza var' : 'İmza yok'}
+                                </span>
+                              )}
+                            </div>
                             <p className="font-bold text-gray-800 text-[14px] break-words leading-tight">
                               {viewedPerson.department || '-'}
                             </p>
@@ -7759,18 +7803,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               </p>
                             )}
                           </div>
-                          {(viewedPerson.signatureLink || isSignatureEligiblePerson(viewedPerson)) && (
-                            <span className={`shrink-0 px-2 py-1 rounded-full text-[10px] font-black border ${
-                              viewedPerson.signatureLink
-                                ? 'bg-green-50 text-green-700 border-green-200'
-                                : 'bg-amber-100 text-amber-800 border-amber-200'
-                            }`}>
-                              {viewedPerson.signatureLink ? 'İmza var' : 'İmza yok'}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex gap-2">
+                          <div className="shrink-0 flex items-center gap-1.5">
                           {isSignatureEligiblePerson(viewedPerson) && (
                             <button
                               type="button"
@@ -7778,10 +7811,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 if (!signatureTitles.length || !signatureCampuses.length) fetchSignatureMeta(true);
                                 setSignatureModalPerson(viewedPerson);
                               }}
-                              className="flex-1 h-10 rounded-xl bg-[#0066b1] text-white text-xs font-black shadow-sm hover:bg-[#005595] transition-colors inline-flex items-center justify-center gap-2"
+                              className="h-8 px-2.5 rounded-lg bg-[#0066b1] text-white text-[11px] font-black shadow-sm hover:bg-[#005595] transition-colors inline-flex items-center justify-center gap-1.5"
+                              title={viewedPerson.signatureLink ? 'İmzayı yenile' : 'İmza oluştur'}
                             >
-                              <FileSignature className="w-4 h-4" />
-                              {viewedPerson.signatureLink ? 'İmzayı Yenile' : 'İmza Oluştur'}
+                              <FileSignature className="w-3.5 h-3.5" />
+                              {viewedPerson.signatureLink ? 'Yenile' : 'Oluştur'}
                             </button>
                           )}
                           {viewedPerson.signatureLink && (
@@ -7792,51 +7826,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   showAppAlert('İmza bağlantısı güvenli olmadığı için açılamadı.');
                                 }
                               }}
-                              className={`${isSignatureEligiblePerson(viewedPerson) ? 'h-10 px-3' : 'h-10 flex-1 px-3'} rounded-xl bg-white border border-gray-200 text-gray-600 hover:text-[#0066b1] hover:border-blue-200 transition-colors inline-flex items-center justify-center gap-2 text-xs font-black`}
+                              className="h-8 w-8 rounded-lg bg-white border border-gray-200 text-gray-600 hover:text-[#0066b1] hover:border-blue-200 transition-colors inline-flex items-center justify-center"
                               title="İmza linkini aç"
+                              aria-label="İmza linkini aç"
                             >
-                              <ExternalLink className="w-4 h-4" />
-                              {!isSignatureEligiblePerson(viewedPerson) && 'İmzayı Aç'}
+                              <ExternalLink className="w-3.5 h-3.5" />
                             </button>
                           )}
+                          </div>
                         </div>
-                      </div>
-
-                      {/* AD Şifre Sıfırlama */}
-                      <div className="bg-blue-50/60 p-4 rounded-xl border border-blue-100 flex items-center gap-3">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-[10px] text-blue-500 mb-1.5 font-bold uppercase tracking-wider">
-                            Kullanıcı Adı
-                          </p>
-                          <p className="font-black text-gray-900 text-[14px] truncate">
-                            {viewedPersonAdLogin || 'Tanımlı değil'}
-                          </p>
-                          {latestAdPasswordJobView && (
-                            <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-black ${latestAdPasswordJobView.tone}`}>
-                                {latestAdPasswordJobView.active && <Loader2 className="w-3 h-3 animate-spin" />}
-                                {latestAdPasswordJobView.label}
-                              </span>
-                              <span className="text-[10px] text-gray-500 font-semibold truncate">
-                                {latestAdPasswordJob?.updatedAt || latestAdPasswordJob?.createdAt || ''}
-                              </span>
-                            </div>
-                          )}
-                          {latestAdPasswordJob?.error && (
-                            <p className="text-[10px] text-red-600 font-bold mt-1 line-clamp-2">
-                              {latestAdPasswordJob.error}
-                            </p>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowAdPasswordResetModal(true)}
-                          disabled={!viewedPersonAdLogin || hasActiveAdPasswordJob}
-                          title={!viewedPersonAdLogin ? 'Kullanıcı adı tanımlı değil.' : hasActiveAdPasswordJob ? 'Bu personel için bekleyen bir şifre işlemi var.' : 'Şifre değiştir'}
-                          className="shrink-0 px-3 py-2 rounded-xl bg-[#0066b1] text-white text-xs font-black shadow-sm hover:bg-[#005595] transition-colors disabled:opacity-45 disabled:cursor-not-allowed"
-                        >
-                          {hasActiveAdPasswordJob ? 'İşleniyor' : 'Şifre Değiştir'}
-                        </button>
                       </div>
                     </div>
 

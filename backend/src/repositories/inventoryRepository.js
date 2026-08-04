@@ -2093,6 +2093,7 @@ export async function enqueueAdPasswordResetForUser(user, data) {
 export async function fetchAdPasswordQueueForUser(user, data = {}) {
   await ensureAdPasswordQueueTable();
   const limit = Math.min(Math.max(Number(data.limit || 25), 1), 100);
+  const email = normalizeEmail(user.email);
   const result = await query(
     `
       SELECT TOP (@limit)
@@ -2109,20 +2110,17 @@ export async function fetchAdPasswordQueueForUser(user, data = {}) {
         q.ErrorMessage,
         q.UpdatedAt
       FROM dbo.ADPasswordQueue q
-      LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
       LEFT JOIN dbo.QueueNotificationDismissals d
         ON d.QueueKind = N'ad-password'
        AND d.QueuePublicId = q.PublicId
        AND d.UserEmail = @email
       WHERE d.DismissalId IS NULL
-        AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @campusCore)
+        AND q.RequestedBy = @email
       ORDER BY q.CreatedAt DESC
     `,
     {
       limit: { type: sql.Int, value: limit },
-      isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
-      email: { type: sql.NVarChar(320), value: user.email },
-      campusCore: { type: sql.NVarChar(160), value: core(user.campus) }
+      email: { type: sql.NVarChar(320), value: email }
     }
   );
 
@@ -2736,11 +2734,8 @@ export async function cancelSignatureJobForUser(user, data = {}) {
           j.Status,
           j.PersonId,
           j.PersonName,
-          j.RequestedBy,
-          c.CoreName AS PersonCampusCore
+          j.RequestedBy
         FROM dbo.SignatureJobs j WITH (UPDLOCK, HOLDLOCK)
-        LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
-        LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
         WHERE j.PublicId = @queueId
       `,
       {
@@ -2750,13 +2745,8 @@ export async function cancelSignatureJobForUser(user, data = {}) {
     const job = lookup.recordset[0];
     if (!job) throw new Error('İptal edilecek imza işi bulunamadı.');
 
-    const isHq =
-      user.role === 'HQ IT' ||
-      ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
     const isRequester = normalizeEmail(job.RequestedBy) === normalizeEmail(user.email);
-    const isSameCampus =
-      Boolean(job.PersonCampusCore) && core(job.PersonCampusCore) === core(user.campus);
-    if (!isHq && !isRequester && !isSameCampus) {
+    if (!isRequester) {
       throw new Error('Bu imza işini iptal etme yetkiniz yok.');
     }
 
@@ -2818,7 +2808,7 @@ export async function cancelSignatureJobForUser(user, data = {}) {
 export async function fetchSignatureQueueForUser(user, data = {}) {
   await ensureSignatureJobsTable();
   const limit = Math.min(Math.max(Number(data.limit || 20), 1), 100);
-  const isHq = user.role === 'HQ IT' || ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
+  const email = normalizeEmail(user.email);
 
   const result = await query(
     `
@@ -2847,18 +2837,12 @@ export async function fetchSignatureQueueForUser(user, data = {}) {
        AND d.QueuePublicId = j.PublicId
        AND d.UserEmail = @email
       WHERE d.DismissalId IS NULL
-        AND (
-          @isHq = 1
-          OR j.RequestedBy = @email
-          OR c.CoreName = @userCore
-        )
+        AND j.RequestedBy = @email
       ORDER BY COALESCE(j.FinishedAt, j.UpdatedAt, j.CreatedAt) DESC
     `,
     {
       limit: { type: sql.Int, value: limit },
-      isHq: { type: sql.Bit, value: isHq ? 1 : 0 },
-      email: { type: sql.NVarChar(320), value: user.email },
-      userCore: { type: sql.NVarChar(160), value: core(user.campus) }
+      email: { type: sql.NVarChar(320), value: email }
     }
   );
 
@@ -4162,6 +4146,7 @@ export async function saveZimmetOrReturnForUser(user, data) {
 
 export async function fetchOperationQueueForUser(user, data = {}) {
   const limit = Math.min(Math.max(Number(data.limit || 20), 1), 100);
+  const email = normalizeEmail(user.email);
   const result = await query(
     `
       ;WITH QueueRows AS (
@@ -4186,7 +4171,8 @@ export async function fetchOperationQueueForUser(user, data = {}) {
          AND d.QueuePublicId = q.PublicId
          AND d.UserEmail = @email
         WHERE d.DismissalId IS NULL
-          AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
+          AND q.RequestedBy = @email
+          AND q.ActionType NOT IN (N'RECONCILE_GLPI', N'reconcileGLPI')
         ORDER BY q.CreatedAt DESC
       )
       SELECT
@@ -4228,9 +4214,7 @@ export async function fetchOperationQueueForUser(user, data = {}) {
     `,
     {
       limit: { type: sql.Int, value: limit },
-      isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
-      email: { type: sql.NVarChar(320), value: user.email },
-      userCore: { type: sql.NVarChar(160), value: core(user.campus) }
+      email: { type: sql.NVarChar(320), value: email }
     }
   );
 
@@ -4319,9 +4303,6 @@ export async function dismissQueueNotificationsForUser(user, data = {}) {
   }
 
   const email = cleanText(user.email, 320).toLocaleLowerCase('en-US');
-  const isHq = user.role === 'HQ IT';
-  const isSignatureHq =
-    isHq || ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
 
   const result = await withTransaction((execute) =>
     execute(
@@ -4346,9 +4327,9 @@ export async function dismissQueueNotificationsForUser(user, data = {}) {
           INNER JOIN dbo.OperationQueue q
             ON r.QueueKind = N'operation'
            AND q.PublicId = r.QueuePublicId
-          LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
           WHERE q.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
-            AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
+            AND q.RequestedBy = @email
+            AND q.ActionType NOT IN (N'RECONCILE_GLPI', N'reconcileGLPI')
 
           UNION ALL
 
@@ -4357,9 +4338,8 @@ export async function dismissQueueNotificationsForUser(user, data = {}) {
           INNER JOIN dbo.ADPasswordQueue q
             ON r.QueueKind = N'ad-password'
            AND q.PublicId = r.QueuePublicId
-          LEFT JOIN dbo.Campuses c ON c.CampusId = q.CampusId
           WHERE q.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
-            AND (@isHq = 1 OR q.RequestedBy = @email OR c.CoreName = @userCore)
+            AND q.RequestedBy = @email
 
           UNION ALL
 
@@ -4368,14 +4348,8 @@ export async function dismissQueueNotificationsForUser(user, data = {}) {
           INNER JOIN dbo.SignatureJobs j
             ON r.QueueKind = N'signature'
            AND j.PublicId = r.QueuePublicId
-          LEFT JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = j.PersonId
-          LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
           WHERE j.Status IN (N'TAMAMLANDI', N'HATA', N'IPTAL')
-            AND (
-              @isSignatureHq = 1
-              OR j.RequestedBy = @email
-              OR c.CoreName = @userCore
-            )
+            AND j.RequestedBy = @email
         ),
         DistinctAccessible AS (
           SELECT DISTINCT QueueKind, QueuePublicId
@@ -4410,10 +4384,7 @@ export async function dismissQueueNotificationsForUser(user, data = {}) {
       `,
       {
         itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(uniqueItems) },
-        isHq: { type: sql.Bit, value: isHq ? 1 : 0 },
-        isSignatureHq: { type: sql.Bit, value: isSignatureHq ? 1 : 0 },
-        email: { type: sql.NVarChar(320), value: email },
-        userCore: { type: sql.NVarChar(160), value: core(user.campus) }
+        email: { type: sql.NVarChar(320), value: email }
       }
     )
   );

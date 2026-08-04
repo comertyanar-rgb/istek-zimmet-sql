@@ -198,10 +198,17 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
         signatureData = { jobs: [] };
       }
 
-      const operationJobs = (operationData.jobs || []).map((job) => ({
-        ...job,
-        kind: 'operation',
-      }));
+      const operationJobs = (operationData.jobs || [])
+        .filter((job) => {
+          const action = String(job.action || job.actionType || '')
+            .replace(/[^a-z]/gi, '')
+            .toUpperCase();
+          return action !== 'RECONCILEGLPI';
+        })
+        .map((job) => ({
+          ...job,
+          kind: 'operation',
+        }));
       const adJobs = (adData.jobs || []).map((job) => ({
         ...job,
         kind: 'ad-password',
