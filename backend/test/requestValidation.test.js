@@ -95,6 +95,156 @@ test('toplu donanım içe aktarmada 1000 satır sınırını uygular', () => {
   );
 });
 
+test('T.C. ile personel aramasında tam 11 hane ister', () => {
+  const payload = {
+    action: 'lookupPersonnelByNationalId',
+    authToken: 'x'.repeat(43),
+    nationalId: '10000000146'
+  };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'lookupPersonnelByNationalId',
+        authToken: 'x'.repeat(43),
+        nationalId: '1000000014'
+      }),
+    (error) => error instanceof RequestValidationError && /11 haneli/i.test(error.message)
+  );
+});
+
+test('ilk migrasyon zimmetinde listeyi ve açık onayı zorunlu tutar', () => {
+  const payload = {
+    action: 'bulkInitialAssignment',
+    authToken: 'x'.repeat(43),
+    confirmMigration: true,
+    items: [{ rowNumber: 2, serial: 'SN-001', personEmail: 'personel@istek.k12.tr' }]
+  };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'bulkInitialAssignment',
+        confirmMigration: false,
+        items: [{ serial: 'SN-001', personEmail: 'personel@istek.k12.tr' }]
+      }),
+    (error) => error instanceof RequestValidationError && /açıkça onaylanmalıdır/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'bulkInitialAssignment',
+        confirmMigration: true,
+        items: []
+      }),
+    (error) => error instanceof RequestValidationError && /1-5000/i.test(error.message)
+  );
+});
+
+test('ilk migrasyon zimmetinde 5000 satır sınırını uygular', () => {
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'bulkInitialAssignment',
+        confirmMigration: true,
+        items: Array.from({ length: 5001 }, (_, index) => ({
+          serial: `SN-${index}`,
+          personEmail: `personel${index}@istek.k12.tr`
+        }))
+      }),
+    (error) => error instanceof RequestValidationError && /en fazla 5000/i.test(error.message)
+  );
+});
+
+test('ilk migrasyon zimmetinde uzun veya yanlış tipte alanları reddeder', () => {
+  const base = {
+    action: 'bulkInitialAssignment',
+    authToken: 'x'.repeat(43),
+    confirmMigration: true
+  };
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...base,
+        items: [{ rowNumber: 2, serial: 'S'.repeat(162), personEmail: 'personel@istek.k12.tr' }]
+      }),
+    (error) => error instanceof RequestValidationError && /geçersiz seri no/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...base,
+        items: [{ rowNumber: 2, serial: 12345, personEmail: 'personel@istek.k12.tr' }]
+      }),
+    (error) => error instanceof RequestValidationError && /geçersiz seri no/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...base,
+        items: [{ rowNumber: 2, serial: 'SN-001', personEmail: `${'a'.repeat(310)}@istek.k12.tr` }]
+      }),
+    (error) => error instanceof RequestValidationError && /personel e-posta/i.test(error.message)
+  );
+
+  const drivePayload = {
+    ...base,
+    items: [
+      {
+        rowNumber: 2,
+        serial: 'SN-001',
+        personEmail: 'personel@istek.k12.tr',
+        driveLink: 'https://drive.google.com/file/d/test/view'
+      }
+    ]
+  };
+  assert.equal(validateActionRequest(drivePayload), drivePayload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...base,
+        items: [
+          {
+            rowNumber: 2,
+            serial: 'SN-001',
+            personEmail: 'personel@istek.k12.tr',
+            driveLink: 'https://example.com/belge.pdf'
+          }
+        ]
+      }),
+    (error) => error instanceof RequestValidationError && /Google Drive veya Google Docs/i.test(error.message)
+  );
+});
+
+test('dışa aktarım biçimini doğrular', () => {
+  const payload = { action: 'createSheet', data: [{ Ad: 'Cömert' }], format: 'xlsx' };
+  assert.equal(validateActionRequest(payload), payload);
+
+  const templatePayload = {
+    action: 'createSheet',
+    data: [],
+    templateHeaders: ['Seri No *', 'Marka *', 'Model *'],
+    format: 'xlsx'
+  };
+  assert.equal(validateActionRequest(templatePayload), templatePayload);
+
+  assert.throws(
+    () => validateActionRequest({ action: 'createSheet', data: [{ Ad: 'Cömert' }], format: 'csv' }),
+    (error) => error instanceof RequestValidationError && /biçimi geçersiz/i.test(error.message)
+  );
+  assert.throws(
+    () => validateActionRequest({ action: 'createSheet', data: [], templateHeaders: [''] }),
+    (error) => error instanceof RequestValidationError && /şablon başlıkları/i.test(error.message)
+  );
+});
+
 test('imza işi iptalinde kuyruk kimliğini zorunlu tutar', () => {
   const payload = { action: 'cancelSignatureJob', authToken: 'x'.repeat(43), queueId: 'SIG-TEST-001' };
   assert.equal(validateActionRequest(payload), payload);

@@ -519,14 +519,20 @@ Transferlerde `Kullanıcı` alanında `GÖNDEREN:...` metni tutulduğu için `sq
 
 ## Export Dosyalari
 
-`createSheet` aksiyonu artık Google Sheet oluşturmak yerine CSV dosyası üretir. İndirme bağlantısı HMAC ile imzalanır, 15 dakika geçerlidir ve eski geçici dosyalar 24 saat sonra otomatik temizlenir.
+`createSheet` aksiyonu `format` alanına göre iki güvenli çıktı üretir:
 
-Canlı ortamda `.env` içinde `API_PUBLIC_URL` mutlaka HTTPS API adresi olmalıdır:
+- `xlsx`: Başlığı kalın, ilk satırı sabitlenmiş, filtreli ve bantlı bir Excel çalışma kitabı oluşturur. İndirme bağlantısı HMAC ile imzalanır, bir saat geçerlidir ve eski geçici dosyalar 24 saat sonra otomatik temizlenir.
+- `google-sheet`: Aynı biçimlendirilmiş tabloyu Google Apps Script köprüsü üzerinden oluşturur ve oturum açan kullanıcıya düzenleme yetkisi verir.
+
+Boş `data` ile birlikte `templateHeaders` gönderildiğinde toplu içe aktarma için yalnız başlıkları bulunan biçimlendirilmiş bir XLSX şablonu üretilir.
+
+Canlı ortamda geçici export klasörü `.env` içinde uygulama dizini dışında kalıcı bir konuma alınmalıdır:
 
 ```env
-API_PUBLIC_URL=https://zimmet-api.example.org
 GENERATED_EXPORT_DIR=C:\ZimmetApi\exports
 ```
+
+Google Sheets dışa aktarımı için Apps Script tarafındaki `Code.full.gs` yeniden dağıtılmalı; backend `.env` içindeki `GOOGLE_BRIDGE_URL` ve `GOOGLE_BRIDGE_SECRET` değerleri bu dağıtımla eşleşmelidir.
 
 Cloudflare Tunnel veya başka bir reverse proxy kullanılıyorsa gerçek istemci IP'sinin sunucu tarafında güvenilir biçimde alınması için:
 

@@ -898,6 +898,7 @@ html[data-theme='dark'] .bg-green-50\/70,
 html[data-theme='dark'] .bg-green-100,
 html[data-theme='dark'] .bg-green-200,
 html[data-theme='dark'] .bg-emerald-50,
+html[data-theme='dark'] .bg-emerald-50\/40,
 html[data-theme='dark'] .bg-emerald-50\/60,
 html[data-theme='dark'] .bg-emerald-100,
 html[data-theme='dark'] .bg-\[\#d1fae5\] {
@@ -908,7 +909,8 @@ html[data-theme='dark'] .border-green-50,
 html[data-theme='dark'] .border-green-100,
 html[data-theme='dark'] .border-green-200,
 html[data-theme='dark'] .border-emerald-100,
-html[data-theme='dark'] .border-emerald-200 {
+html[data-theme='dark'] .border-emerald-200,
+html[data-theme='dark'] .border-emerald-300 {
   border-color: rgba(74, 222, 128, 0.34) !important;
 }
 
@@ -936,8 +938,23 @@ html[data-theme='dark'] .border-amber-300 {
 
 html[data-theme='dark'] .text-amber-600,
 html[data-theme='dark'] .text-amber-700,
-html[data-theme='dark'] .text-amber-800 {
+html[data-theme='dark'] .text-amber-800,
+html[data-theme='dark'] .text-amber-900 {
   color: #f8c75d !important;
+}
+
+html[data-theme='dark'] .bulk-initial-warning {
+  border-color: rgba(251, 191, 36, 0.48) !important;
+  background-color: #2d2413 !important;
+  color: #fde68a !important;
+}
+
+html[data-theme='dark'] .operation-queue-count-badge {
+  background: #facc15 !important;
+  color: #111827 !important;
+  border: 1px solid #fef3c7;
+  box-shadow: 0 0 0 2px #0f3c5c, 0 3px 8px rgba(0, 0, 0, 0.42) !important;
+  font-variant-numeric: tabular-nums;
 }
 
 html[data-theme='dark'] .bg-red-50,

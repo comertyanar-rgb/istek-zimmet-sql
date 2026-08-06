@@ -181,6 +181,11 @@ export function assertConfig() {
   if (!process.env.APP_SECRET || config.appSecret.length < 32 || config.appSecret === 'development-only-change-me') {
     missing.push('APP_SECRET (en az 32 karakter)');
   }
+  if (!config.personnelIdHmacSecret || config.personnelIdHmacSecret.length < 32) {
+    missing.push('PERSONNEL_ID_HMAC_SECRET (en az 32 karakter)');
+  } else if (config.personnelIdHmacSecret === config.appSecret) {
+    missing.push('PERSONNEL_ID_HMAC_SECRET, APP_SECRET değerinden farklı olmalı');
+  }
   if (config.session.cookieEnabled && config.nodeEnv === 'production' && !config.session.cookieSecure) {
     missing.push('SESSION_COOKIE_SECURE=true (production cookie modu)');
   }

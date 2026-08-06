@@ -4,13 +4,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sql, query, withTransaction } from '../db.js';
 import { consumeOtpApproval } from '../otpService.js';
-import { uploadFileThroughGoogleBridge } from '../googleBridge.js';
+import {
+  createSpreadsheetThroughGoogleBridge,
+  uploadFileThroughGoogleBridge
+} from '../googleBridge.js';
 import { config } from '../config.js';
+import { createStyledWorkbookBuffer } from '../exportWorkbook.js';
 import {
   createExportDownloadToken,
   pruneExpiredExportFiles,
 } from '../exportTokens.js';
 import { decodeCanonicalBase64, MAX_UPLOADED_FILE_BYTES } from '../uploadedFileValidation.js';
+import {
+  hashNationalId,
+  isValidTurkishNationalId,
+  normalizeNationalId
+} from '../personnelContactImport.js';
 
 export const core = (value) =>
   String(value || '')
@@ -83,6 +92,7 @@ function cleanText(value, max = 1000) {
 }
 
 const BULK_HARDWARE_MAX_ITEMS = 1000;
+const BULK_INITIAL_ASSIGNMENT_MAX_ITEMS = 5000;
 const BULK_HARDWARE_TYPE_ALIASES = new Map([
   ['laptop', 'Laptop'],
   ['notebook', 'Laptop'],
@@ -194,10 +204,6 @@ function sanitizeExcelCell(value) {
   if (value === null || value === undefined) return "-";
   const text = String(value);
   return /^[=+\-@]/.test(text) ? String.fromCharCode(39) + text : text;
-}
-
-function escapeCsvCell(value) {
-  return String.fromCharCode(34) + sanitizeExcelCell(value).replace(/"/g, String.fromCharCode(34, 34)) + String.fromCharCode(34);
 }
 
 function normalizePhone(value) {
@@ -818,6 +824,74 @@ export async function updatePersonnelPhoneForUser(user, personId, phone) {
   await appendSystemLog('PERSONEL TELEFON GÜNCELLE', user, `${row.FullName || cleanPersonId} için telefon güncellendi.`, '');
   return { phone: cleanPhone };
 }
+
+export async function lookupPersonnelByNationalIdForUser(user, data) {
+  const nationalId = normalizeNationalId(data.nationalId);
+  if (!isValidTurkishNationalId(nationalId)) {
+    throw new Error('Geçerli bir T.C. kimlik numarası girin.');
+  }
+
+  const nationalIdHash = hashNationalId(nationalId, config.personnelIdHmacSecret);
+  const isHq = user.role === 'HQ IT';
+  const result = await query(
+    `
+      SELECT TOP (1)
+        p.PersonId,
+        p.FullName,
+        p.Email,
+        p.Department,
+        p.Status,
+        p.PhotoUrl,
+        p.AdUsername,
+        p.Phone,
+        p.SignatureUrl,
+        p.SignatureStatus,
+        p.SignatureId,
+        p.SignatureTitleTr,
+        p.SignatureTitleEn,
+        p.SignatureTemplateKey,
+        c.Name AS Campus
+      FROM dbo.Personnel source
+      INNER JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = source.PersonId
+      LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+      WHERE source.NationalIdHash = @nationalIdHash
+        ${isHq ? '' : 'AND c.CoreName = @userCore'}
+    `,
+    {
+      nationalIdHash: { type: sql.Char(64), value: nationalIdHash },
+      ...(!isHq
+        ? { userCore: { type: sql.NVarChar(160), value: core(user.campus) } }
+        : {})
+    }
+  );
+
+  const row = result.recordset[0];
+  if (!row) return { person: null };
+
+  return {
+    person: {
+      id: row.PersonId,
+      name: row.FullName,
+      campus: row.Campus || 'Bilinmiyor',
+      email: row.Email || '',
+      department: row.Department || 'Personel',
+      status: row.Status || 'Aktif',
+      picture: row.PhotoUrl || null,
+      adUsername: row.AdUsername || '',
+      phone: row.Phone || '',
+      signatureLink: row.SignatureUrl || '',
+      signatureStatus: row.SignatureStatus || '',
+      signatureId: row.SignatureId || '',
+      signatureTitle: row.SignatureTitleTr || '',
+      signatureTitleEn: row.SignatureTitleEn || '',
+      signatureTemplateVariant: row.SignatureTemplateKey || '',
+      signatureMissing: !row.SignatureUrl,
+      documents: [],
+      documentsLoaded: false
+    }
+  };
+}
+
 export async function fetchDataForUser(user, options = {}) {
   const requestedSince = options?.since ? new Date(options.since) : null;
   const deltaSince =
@@ -1458,6 +1532,294 @@ export async function bulkAddHardwareForUser(user, data) {
   };
 }
 
+export async function bulkInitialAssignmentForUser(user, data) {
+  const items = Array.isArray(data.items) ? data.items : [];
+  if (data.confirmMigration !== true) {
+    throw new Error('İlk migrasyon zimmeti açıkça onaylanmalıdır.');
+  }
+  if (items.length === 0) throw new Error('Toplu zimmet için doldurulmuş satır bulunamadı.');
+  if (items.length > BULK_INITIAL_ASSIGNMENT_MAX_ITEMS) {
+    throw new Error(
+      `Tek işlemde en fazla ${BULK_INITIAL_ASSIGNMENT_MAX_ITEMS} cihaz zimmetlenebilir.`
+    );
+  }
+
+  const seenSerials = new Map();
+  const requested = items.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`Excel satır ${index + 2}: Kayıt biçimi geçersiz.`);
+    }
+
+    const rowNumber = Number.isInteger(Number(item.rowNumber))
+      ? Math.max(2, Number(item.rowNumber))
+      : index + 2;
+    const rawSerial = String(item.serial ?? '').replace(/^'/, '').trim();
+    if (rawSerial.length > 160) {
+      throw new Error(`Excel satır ${rowNumber}: Seri no 160 karakterden uzun olamaz.`);
+    }
+    const serial = rawSerial;
+    if (!serial) throw new Error(`Excel satır ${rowNumber}: Seri no boş olamaz.`);
+
+    const serialKey = normalizeSerialKey(serial);
+    if (seenSerials.has(serialKey)) {
+      throw new Error(
+        `Excel satır ${rowNumber}: "${serial}" seri numarası satır ${seenSerials.get(serialKey)} ile tekrar ediyor.`
+      );
+    }
+    seenSerials.set(serialKey, rowNumber);
+
+    const rawPersonEmail = String(item.personEmail ?? '').trim();
+    if (rawPersonEmail.length > 320) {
+      throw new Error(`Excel satır ${rowNumber}: Personel e-posta adresi 320 karakterden uzun olamaz.`);
+    }
+    const personEmail = rawPersonEmail.toLocaleLowerCase('tr-TR');
+    if (!personEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(personEmail)) {
+      throw new Error(`Excel satır ${rowNumber}: Geçerli bir personel e-posta adresi girin.`);
+    }
+
+    const rawDriveLink = String(item.driveLink ?? '').trim();
+    let driveLink = null;
+    if (rawDriveLink) {
+      if (rawDriveLink.length > 2048) {
+        throw new Error(`Excel satır ${rowNumber}: Drive linki 2048 karakterden uzun olamaz.`);
+      }
+      let driveUrl;
+      try {
+        driveUrl = new URL(rawDriveLink);
+      } catch {
+        throw new Error(`Excel satır ${rowNumber}: Drive linki geçerli bir HTTPS adresi olmalıdır.`);
+      }
+      if (
+        driveUrl.protocol !== 'https:' ||
+        !['drive.google.com', 'docs.google.com'].includes(driveUrl.hostname.toLowerCase())
+      ) {
+        throw new Error(
+          `Excel satır ${rowNumber}: Yalnızca Google Drive veya Google Docs bağlantısı kullanılabilir.`
+        );
+      }
+      driveLink = driveUrl.toString();
+    }
+
+    return { rowNumber, serial, serialKey, personEmail, driveLink };
+  });
+
+  const hardwareRows = await findHardwareRows(
+    user,
+    requested.map((item) => item.serial)
+  );
+  const hardwareBySerial = new Map(
+    hardwareRows.map((row) => [normalizeSerialKey(row.SerialNo), row])
+  );
+  const emails = [...new Set(requested.map((item) => item.personEmail))];
+  const personnelResult = await query(
+    `
+      SELECT
+        p.PersonId,
+        p.FullName,
+        p.Email,
+        p.Status,
+        p.CampusId,
+        c.Name AS Campus
+      FROM OPENJSON(@emailsJson)
+        WITH (Email NVARCHAR(320) '$') requested
+      INNER JOIN dbo.vw_EffectivePersonnel p ON p.Email = requested.Email
+      LEFT JOIN dbo.Campuses c ON c.CampusId = p.CampusId
+    `,
+    {
+      emailsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(emails) }
+    }
+  );
+  const personnelByEmail = new Map(
+    personnelResult.recordset.map((row) => [normalizeEmail(row.Email), row])
+  );
+
+  const prepared = requested.map((item) => {
+    const hardware = hardwareBySerial.get(item.serialKey);
+    const person = personnelByEmail.get(item.personEmail);
+    if (!person) {
+      throw new Error(
+        `Excel satır ${item.rowNumber}: "${item.personEmail}" e-posta adresli personel bulunamadı.`
+      );
+    }
+    if (normalizePersonnelStatus(person.Status) !== 'Aktif') {
+      throw new Error(
+        `Excel satır ${item.rowNumber}: "${person.FullName}" aktif bir personel değil.`
+      );
+    }
+    if (!hardware) {
+      throw new Error(`Excel satır ${item.rowNumber}: "${item.serial}" cihazı bulunamadı.`);
+    }
+    if (core(hardware.Campus) !== core(person.Campus)) {
+      throw new Error(
+        `Excel satır ${item.rowNumber}: Cihaz (${hardware.Campus || 'Bilinmiyor'}) ile personel (${person.Campus || 'Bilinmiyor'}) aynı kampüste değil.`
+      );
+    }
+
+    const status = String(hardware.HardwareStatus || '')
+      .toUpperCase()
+      .replace(/İ/g, 'I');
+    if (!['DEPODA', 'AKTIF'].includes(status)) {
+      throw new Error(
+        `Excel satır ${item.rowNumber}: "${item.serial}" cihazının durumu ${hardware.HardwareStatus || 'Bilinmiyor'}; yalnızca Depoda veya sahipsiz Aktif cihazlar aktarılabilir.`
+      );
+    }
+
+    const assignedPersonId = cleanText(hardware.AssignedPersonId, 160);
+    if (assignedPersonId && assignedPersonId !== String(person.PersonId)) {
+      throw new Error(
+        `Excel satır ${item.rowNumber}: "${item.serial}" cihazı başka bir personele zimmetli.`
+      );
+    }
+
+    return {
+      rowNumber: item.rowNumber,
+      hardwareId: hardware.HardwareId,
+      serial: hardware.SerialNo,
+      personId: String(person.PersonId),
+      personName: cleanText(person.FullName, 240),
+      personEmail: item.personEmail,
+      driveLink: item.driveLink
+    };
+  });
+
+  const transactionResult = await withTransaction(
+    async (execute) => {
+      const result = await execute(
+        `
+          DECLARE @Items TABLE (
+            RowNumber INT NOT NULL,
+            HardwareId INT NOT NULL PRIMARY KEY,
+            SerialNo NVARCHAR(160) NOT NULL UNIQUE,
+            PersonId NVARCHAR(160) NOT NULL,
+            PersonName NVARCHAR(240) NOT NULL,
+            PersonEmail NVARCHAR(320) NOT NULL,
+            DriveLink NVARCHAR(2048) NULL
+          );
+
+          INSERT INTO @Items (RowNumber, HardwareId, SerialNo, PersonId, PersonName, PersonEmail, DriveLink)
+          SELECT RowNumber, HardwareId, SerialNo, PersonId, PersonName, PersonEmail, DriveLink
+          FROM OPENJSON(@itemsJson)
+            WITH (
+              RowNumber INT '$.rowNumber',
+              HardwareId INT '$.hardwareId',
+              SerialNo NVARCHAR(160) '$.serial',
+              PersonId NVARCHAR(160) '$.personId',
+              PersonName NVARCHAR(240) '$.personName',
+              PersonEmail NVARCHAR(320) '$.personEmail',
+              DriveLink NVARCHAR(2048) '$.driveLink'
+            );
+
+          IF (SELECT COUNT(*) FROM @Items) <> @expectedCount
+            THROW 51000, N'Migrasyon listesi doğrulanamadı.', 1;
+
+          DECLARE @lockedHardwareCount INT;
+          SELECT @lockedHardwareCount = COUNT(*)
+          FROM dbo.Hardware h WITH (UPDLOCK, HOLDLOCK)
+          INNER JOIN @Items i ON i.HardwareId = h.HardwareId;
+
+          IF @lockedHardwareCount <> @expectedCount
+            THROW 51000, N'Cihazlardan biri işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+
+          DECLARE @lockedPersonnelCount INT;
+          SELECT @lockedPersonnelCount = COUNT(*)
+          FROM dbo.Personnel p WITH (UPDLOCK, HOLDLOCK)
+          INNER JOIN (SELECT DISTINCT PersonId FROM @Items) i ON i.PersonId = p.PersonId;
+
+          IF @lockedPersonnelCount <> (SELECT COUNT(DISTINCT PersonId) FROM @Items)
+            THROW 51000, N'Personel kayıtlarından biri işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+
+          IF EXISTS (
+            SELECT 1
+            FROM @Items i
+            INNER JOIN dbo.Hardware h ON h.HardwareId = i.HardwareId
+            INNER JOIN dbo.vw_EffectivePersonnel p ON p.PersonId = i.PersonId
+            LEFT JOIN dbo.Campuses hardwareCampus ON hardwareCampus.CampusId = h.CampusId
+            WHERE h.SerialNo <> i.SerialNo
+              OR LOWER(LTRIM(RTRIM(ISNULL(p.Email, N'')))) <> i.PersonEmail
+              OR ISNULL(CONVERT(NVARCHAR(36), h.CampusId), N'') <>
+                 ISNULL(CONVERT(NVARCHAR(36), p.CampusId), N'')
+              OR UPPER(REPLACE(ISNULL(p.Status, N''), N'İ', N'I')) NOT IN (N'AKTIF', N'ACTIVE')
+              OR UPPER(REPLACE(ISNULL(h.HardwareStatus, N''), N'İ', N'I')) NOT IN (N'DEPODA', N'AKTIF')
+              OR (h.AssignedPersonId IS NOT NULL AND h.AssignedPersonId <> i.PersonId)
+              OR (@isHq = 0 AND ISNULL(hardwareCampus.CoreName, N'') <> @userCore)
+          )
+            THROW 51000, N'Cihaz veya personel verisi işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+
+          DECLARE @Updated TABLE (
+            HardwareId INT NOT NULL PRIMARY KEY,
+            SerialNo NVARCHAR(160) NOT NULL,
+            DriveLink NVARCHAR(2048) NULL
+          );
+
+          UPDATE h
+          SET
+            HardwareStatus = N'AKTIF',
+            AssignedPersonId = i.PersonId,
+            DriveLink = COALESCE(i.DriveLink, h.DriveLink),
+            UpdatedAt = SYSUTCDATETIME()
+          OUTPUT INSERTED.HardwareId, INSERTED.SerialNo, INSERTED.DriveLink
+            INTO @Updated (HardwareId, SerialNo, DriveLink)
+          FROM dbo.Hardware h
+          INNER JOIN @Items i ON i.HardwareId = h.HardwareId
+          WHERE h.HardwareStatus <> N'AKTIF'
+             OR ISNULL(h.AssignedPersonId, N'') <> i.PersonId
+             OR (i.DriveLink IS NOT NULL AND ISNULL(h.DriveLink, N'') <> i.DriveLink);
+
+          INSERT INTO dbo.HardwareHistory (
+            HardwareId,
+            EventType,
+            PersonId,
+            PersonName,
+            DriveLink,
+            EventDate,
+            DetailsJson,
+            CreatedBy
+          )
+          SELECT
+            updated.HardwareId,
+            N'İlk Migrasyon Zimmeti',
+            item.PersonId,
+            item.PersonName,
+            updated.DriveLink,
+            SYSUTCDATETIME(),
+            N'{"source":"excel-initial-migration"}',
+            @createdBy
+          FROM @Updated updated
+          INNER JOIN @Items item ON item.HardwareId = updated.HardwareId;
+
+          SELECT
+            (SELECT COUNT(*) FROM @Updated) AS AssignedCount,
+            @expectedCount - (SELECT COUNT(*) FROM @Updated) AS SkippedCount;
+        `,
+        {
+          itemsJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(prepared) },
+          expectedCount: { type: sql.Int, value: prepared.length },
+          isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
+          userCore: { type: sql.NVarChar(160), value: core(user.campus) },
+          createdBy: { type: sql.NVarChar(320), value: cleanText(user.email, 320) || null }
+        }
+      );
+
+      const assigned = Number(result.recordset[0]?.AssignedCount || 0);
+      const skipped = Number(result.recordset[0]?.SkippedCount || 0);
+      await appendSystemLog(
+        'İLK MİGRASYON ZİMMET',
+        user,
+        `${assigned} cihaz Excel ile zimmetlendi; ${skipped} mevcut eşleşme değişmeden bırakıldı.`,
+        data.clientIp || '',
+        execute
+      );
+      return { assigned, skipped };
+    },
+    sql.ISOLATION_LEVEL.SERIALIZABLE
+  );
+
+  return {
+    ...transactionResult,
+    total: prepared.length
+  };
+}
+
 export async function updateHardwareForUser(user, data) {
   const rows = await findHardwareRows(user, [data.hardwareId]);
   const updates = data.updates || {};
@@ -1793,10 +2155,15 @@ export async function recordInventoryScanForUser(user, data) {
 
 export async function createSheetForUser(user, data) {
   const exportData = Array.isArray(data.data) ? data.data : [];
-  if (!exportData.length) throw new Error('Aktarılacak veri bulunamadı.');
+  const templateHeaders = Array.isArray(data.templateHeaders)
+    ? data.templateHeaders.map((header) => cleanText(header, 240)).filter(Boolean)
+    : [];
+  if (!exportData.length && !templateHeaders.length) {
+    throw new Error('Aktarılacak veri veya şablon başlığı bulunamadı.');
+  }
   if (exportData.length > 10000) throw new Error('Tek seferde en fazla 10.000 kayıt dışa aktarılabilir.');
 
-  const rawHeaders = Object.keys(exportData[0] || {});
+  const rawHeaders = exportData.length ? Object.keys(exportData[0] || {}) : templateHeaders;
   if (!rawHeaders.length) throw new Error('Dışa aktarılacak sütun bulunamadı.');
   if (rawHeaders.length > 100) throw new Error('Tek seferde en fazla 100 sütun dışa aktarılabilir.');
   if (Buffer.byteLength(JSON.stringify(exportData), 'utf8') > 8 * 1024 * 1024) {
@@ -1808,9 +2175,34 @@ export async function createSheetForUser(user, data) {
     rawHeaders.map((header) => sanitizeExcelCell(item?.[header]))
   );
 
-  const csv = String.fromCharCode(0xfeff) + [headers, ...rows]
-    .map((row) => row.map((cell) => escapeCsvCell(cell)).join(";"))
-    .join(String.fromCharCode(10));
+  const sheetName = cleanText(data.sheetName, 180) || 'Dışa Aktarım';
+  const exportFormat = String(data.format || 'xlsx').toLocaleLowerCase('tr-TR');
+
+  if (exportFormat === 'google-sheet') {
+    const spreadsheet = await createSpreadsheetThroughGoogleBridge({
+      sheetName,
+      headers,
+      rows,
+      editorEmail: cleanText(user.email, 320)
+    });
+    if (!spreadsheet.url) throw new Error('Google Sheet bağlantısı oluşturulamadı.');
+
+    await appendSystemLog(
+      'EXPORT GOOGLE SHEETS',
+      user,
+      `${rows.length} kayıt Google Sheets'e aktarıldı.`,
+      data.clientIp || ''
+    );
+    return { url: spreadsheet.url, count: rows.length, format: 'google-sheet' };
+  }
+
+  if (exportFormat !== 'xlsx') throw new Error('Desteklenmeyen dışa aktarım biçimi.');
+
+  const workbookBuffer = await createStyledWorkbookBuffer({
+    sheetName,
+    headers,
+    rows
+  });
 
   const baseDir =
     config.exports.dir ||
@@ -1821,20 +2213,19 @@ export async function createSheetForUser(user, data) {
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
   const randomPart = crypto.randomBytes(8).toString('hex');
   const fileName = safeFileName(
-    `${data.sheetName || 'Dışa Aktarım'}-${stamp}-${randomPart}.csv`,
-    `disa-aktarim-${stamp}-${randomPart}.csv`
+    `${sheetName}-${stamp}-${randomPart}.xlsx`,
+    `disa-aktarim-${stamp}-${randomPart}.xlsx`
   );
   const filePath = path.join(baseDir, fileName);
-  await fs.writeFile(filePath, csv, "utf8");
+  await fs.writeFile(filePath, workbookBuffer);
 
-  const publicBase = String(config.publicBaseUrl || `http://localhost:${config.port}`).replace(/\/+$/, '');
-  const downloadToken = createExportDownloadToken(fileName);
+  const downloadToken = createExportDownloadToken(fileName, 60 * 60);
   const url =
-    `${publicBase}/exports/${encodeURIComponent(fileName)}` +
+    `/exports/${encodeURIComponent(fileName)}` +
     `?expires=${downloadToken.expiresAt}&signature=${downloadToken.signature}`;
-  await appendSystemLog('EXPORT CSV', user, `${rows.length} kayıt aktarıldı: ${fileName}`, data.clientIp || '');
+  await appendSystemLog('EXPORT XLSX', user, `${rows.length} kayıt aktarıldı: ${fileName}`, data.clientIp || '');
 
-  return { url, fileName, count: rows.length };
+  return { url, fileName, count: rows.length, format: 'xlsx' };
 }
 
 export async function manualAssignOrUploadMissingDocumentForUser(user, data) {

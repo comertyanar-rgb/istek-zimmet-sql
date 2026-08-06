@@ -1871,6 +1871,78 @@ function handleBridgeEmail_(data) {
   return jsonOut({ success: true });
 }
 
+function createFormattedSpreadsheet_(data, editorEmail) {
+  var headers = Array.isArray(data.headers) ? data.headers : [];
+  var rows = Array.isArray(data.rows) ? data.rows : [];
+  if (headers.length === 0 || headers.length > 100) {
+    throw new Error("Google Sheet başlıkları eksik veya geçersiz.");
+  }
+  if (rows.length > 10000) {
+    throw new Error("Tek seferde en fazla 10.000 kayıt Google Sheets'e aktarılabilir.");
+  }
+
+  var safeHeaders = headers.map(function(header) {
+    var value = sanitizeExcel(String(header || "").trim());
+    if (!value) throw new Error("Google Sheet başlıkları boş olamaz.");
+    return value;
+  });
+  var safeRows = rows.map(function(row) {
+    var source = Array.isArray(row) ? row : [];
+    return safeHeaders.map(function(_, index) {
+      var value = index < source.length ? source[index] : "";
+      if (value === null || value === undefined) return "";
+      return sanitizeExcel(value);
+    });
+  });
+
+  var spreadsheetName = String(data.sheetName || "Dışa Aktarım")
+    .replace(/[\\/?%*:|"<>]/g, "-")
+    .trim()
+    .substring(0, 180) || "Dışa Aktarım";
+  var newSS = SpreadsheetApp.create(spreadsheetName);
+  var sheet = newSS.getSheets()[0];
+  sheet.setName("Aktarılan Liste");
+  sheet.getRange(1, 1, 1, safeHeaders.length).setValues([safeHeaders]);
+  if (safeRows.length > 0) {
+    sheet.getRange(2, 1, safeRows.length, safeHeaders.length).setValues(safeRows);
+  }
+
+  var tableRange = sheet.getRange(1, 1, Math.max(1, safeRows.length + 1), safeHeaders.length);
+  if (safeRows.length > 0) {
+    tableRange.applyRowBanding(SpreadsheetApp.BandingTheme.BLUE, true, false);
+    tableRange.createFilter();
+  }
+  sheet.getRange(1, 1, 1, safeHeaders.length)
+    .setFontWeight("bold")
+    .setBackground("#0066b1")
+    .setFontColor("#ffffff")
+    .setVerticalAlignment("middle");
+  sheet.setRowHeight(1, 30);
+  sheet.setFrozenRows(1);
+  sheet.autoResizeColumns(1, safeHeaders.length);
+  for (var col = 1; col <= safeHeaders.length; col++) {
+    var width = sheet.getColumnWidth(col);
+    sheet.setColumnWidth(col, Math.max(110, Math.min(width + 16, 360)));
+  }
+
+  var editor = String(editorEmail || "").trim().toLowerCase();
+  if (editor && editor.indexOf("@") > 0) newSS.addEditor(editor);
+  SpreadsheetApp.flush();
+  return {
+    success: true,
+    url: newSS.getUrl(),
+    spreadsheetId: newSS.getId(),
+    count: safeRows.length
+  };
+}
+
+function handleBridgeSpreadsheet_(data) {
+  if (!isBridgeSecretAuthorized_(data.secret)) {
+    return jsonOut({ success: false, error: "Yetkisiz Google Sheets köprüsü." });
+  }
+  return jsonOut(createFormattedSpreadsheet_(data, data.editorEmail));
+}
+
 function handleBridgeHealth_(data) {
   if (!isBridgeSecretAuthorized_(data.secret)) {
     return jsonOut({ success: false, error: "Yetkisiz Google köprüsü." });
@@ -2308,6 +2380,7 @@ function doPost(e) {
     syncGLPI: true,
     uploadGeneratedPdf: true,
     sendBridgeEmail: true,
+    createBridgeSpreadsheet: true,
     verifyGoogleBridge: true,
     exportPersonnelForSync: true,
     enqueueOperation: true,
@@ -2337,6 +2410,10 @@ function doPost(e) {
 
     if (data.action === "sendBridgeEmail") {
       return handleBridgeEmail_(data);
+    }
+
+    if (data.action === "createBridgeSpreadsheet") {
+      return handleBridgeSpreadsheet_(data);
     }
 
     if (data.action === "verifyGoogleBridge") {
@@ -2607,18 +2684,21 @@ function doPost(e) {
 
     if (data.action === 'createSheet') {
       if (!data.data || data.data.length === 0) throw new Error("Veri yok.");
-      var newSS = SpreadsheetApp.create(sanitizeExcel(data.sheetName || "Dışa Aktarım"));
-      var sheet = newSS.getSheets()[0];
       var exportHeadersRaw = Object.keys(data.data[0]);
       var exportHeaders = exportHeadersRaw.map(function(h) { return sanitizeExcel(h); });
-      sheet.appendRow(exportHeaders);
       var rowsExport = data.data.map(function(obj) {
-        return exportHeadersRaw.map(function(h) { return sanitizeExcel(obj[h]) || "-"; });
+        return exportHeadersRaw.map(function(h) {
+          var value = obj[h];
+          return value === null || value === undefined ? "" : sanitizeExcel(value);
+        });
       });
-      sheet.getRange(2, 1, rowsExport.length, exportHeaders.length).setValues(rowsExport);
-      newSS.addEditor(sessionEmail);
-      appendSecureLog(ss, "EXPORT SHEETS", sessionEmail, rowsExport.length + " kayıt aktarıldı", "-", newSS.getUrl(), data.clientIp);
-      return jsonOut({ success: true, url: newSS.getUrl() });
+      var createdSheet = createFormattedSpreadsheet_({
+        sheetName: data.sheetName,
+        headers: exportHeaders,
+        rows: rowsExport
+      }, sessionEmail);
+      appendSecureLog(ss, "EXPORT SHEETS", sessionEmail, rowsExport.length + " kayıt aktarıldı", "-", createdSheet.url, data.clientIp);
+      return jsonOut(createdSheet);
     }
 
     if (data.action === 'addHardware') {

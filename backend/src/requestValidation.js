@@ -33,6 +33,8 @@ const KNOWN_ACTIONS = new Set([
   'createSheet',
   'addHardware',
   'bulkAddHardware',
+  'lookupPersonnelByNationalId',
+  'bulkInitialAssignment',
   'updateHardware',
   'bulkUpdateGroup',
   'bulkStatusUpdate',
@@ -67,6 +69,7 @@ const ACTION_ARRAY_LIMITS = {
   syncPersonnel: { items: 5000 },
   createSheet: { data: 10_000 },
   bulkAddHardware: { items: 1000 },
+  bulkInitialAssignment: { items: 5000 },
   dismissQueueNotifications: { items: 100 }
 };
 
@@ -165,8 +168,23 @@ function validateActionSpecificShape(data) {
     throw new RequestValidationError('İptal edilecek imza kuyruğu kimliği geçersiz.');
   }
 
-  if (data.action === 'createSheet' && !Array.isArray(data.data)) {
-    throw new RequestValidationError('Dışa aktarım verisi liste biçiminde olmalıdır.');
+  if (data.action === 'createSheet') {
+    if (!Array.isArray(data.data)) {
+      throw new RequestValidationError('Dışa aktarım verisi liste biçiminde olmalıdır.');
+    }
+    if (
+      data.templateHeaders !== undefined &&
+      (!Array.isArray(data.templateHeaders) ||
+        data.templateHeaders.length > 100 ||
+        data.templateHeaders.some(
+          (header) => typeof header !== 'string' || !header.trim() || header.length > 240
+        ))
+    ) {
+      throw new RequestValidationError('Şablon başlıkları geçersiz.');
+    }
+    if (data.format !== undefined && !['xlsx', 'google-sheet'].includes(data.format)) {
+      throw new RequestValidationError('Dışa aktarım biçimi geçersiz.');
+    }
   }
 
   if (data.action === 'adminSaveSignatureTitle') {
@@ -200,6 +218,64 @@ function validateActionSpecificShape(data) {
     }
     if (data.items.some((item) => !isPlainObject(item))) {
       throw new RequestValidationError('Donanım içe aktarma listesinde geçersiz bir kayıt var.');
+    }
+  }
+
+  if (data.action === 'lookupPersonnelByNationalId') {
+    if (typeof data.nationalId !== 'string' || !/^\d{11}$/.test(data.nationalId)) {
+      throw new RequestValidationError('T.C. kimlik numarası 11 haneli olmalıdır.');
+    }
+  }
+
+  if (data.action === 'bulkInitialAssignment') {
+    if (!Array.isArray(data.items) || data.items.length === 0 || data.items.length > 5000) {
+      throw new RequestValidationError(
+        'İlk migrasyon zimmeti 1-5000 kayıt içeren bir liste olmalıdır.'
+      );
+    }
+    for (const item of data.items) {
+      if (
+        !isPlainObject(item) ||
+        typeof item.serial !== 'string' ||
+        item.serial.trim().length === 0 ||
+        item.serial.length > 161 ||
+        typeof item.personEmail !== 'string' ||
+        item.personEmail.trim().length === 0 ||
+        item.personEmail.length > 320
+      ) {
+        throw new RequestValidationError(
+          'İlk migrasyon zimmet listesinde geçersiz seri no veya personel e-posta alanı var.'
+        );
+      }
+      if (
+        item.rowNumber !== undefined &&
+        (!Number.isInteger(Number(item.rowNumber)) || Number(item.rowNumber) < 2)
+      ) {
+        throw new RequestValidationError('İlk migrasyon zimmet listesinde satır numarası geçersiz.');
+      }
+      if (item.driveLink !== undefined && typeof item.driveLink !== 'string') {
+        throw new RequestValidationError('İlk migrasyon zimmet listesinde Drive linki geçersiz.');
+      }
+      if (typeof item.driveLink === 'string' && item.driveLink.trim()) {
+        if (item.driveLink.length > 2048) {
+          throw new RequestValidationError('Drive linki en fazla 2048 karakter olabilir.');
+        }
+        let driveUrl;
+        try {
+          driveUrl = new URL(item.driveLink.trim());
+        } catch {
+          throw new RequestValidationError('Drive linki geçerli bir HTTPS adresi olmalıdır.');
+        }
+        if (
+          driveUrl.protocol !== 'https:' ||
+          !['drive.google.com', 'docs.google.com'].includes(driveUrl.hostname.toLowerCase())
+        ) {
+          throw new RequestValidationError('Yalnızca Google Drive veya Google Docs bağlantısı kullanılabilir.');
+        }
+      }
+    }
+    if (data.confirmMigration !== true) {
+      throw new RequestValidationError('İlk migrasyon işlemi açıkça onaylanmalıdır.');
     }
   }
 

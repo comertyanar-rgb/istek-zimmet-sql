@@ -20,7 +20,7 @@ function bridgeAuthorizationError(serviceLabel) {
 
 function normalizeBridgeError(message, serviceLabel) {
   const bridgeError = String(message || '').trim();
-  if (/yetkisiz\s+(?:pdf|dosya|e-posta)\s+k[öo]pr[üu]s[üu]/i.test(bridgeError)) {
+  if (/yetkisiz\s+.*k[öo]pr[üu]s[üu]/i.test(bridgeError)) {
     return bridgeAuthorizationError(serviceLabel);
   }
   return bridgeError;
@@ -166,4 +166,57 @@ export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, repl
   }
 
   return { delivery: 'email', response: data };
+}
+
+export async function createSpreadsheetThroughGoogleBridge({
+  sheetName,
+  headers,
+  rows,
+  editorEmail
+}) {
+  if (!config.googleBridge.url || !config.googleBridge.secret) {
+    throw new Error(
+      'Google Sheets köprüsü ayarlı değil. GOOGLE_BRIDGE_URL ve GOOGLE_BRIDGE_SECRET tanımlayın.'
+    );
+  }
+
+  const response = await fetchWithTimeout(
+    config.googleBridge.url,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        action: 'createBridgeSpreadsheet',
+        secret: config.googleBridge.secret,
+        sheetName,
+        headers,
+        rows,
+        editorEmail
+      })
+    },
+    { timeoutMs: 120000, label: 'Google Sheets köprüsü' }
+  );
+
+  const responseText = await response.text();
+  let data;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    data = { success: false, error: responseText };
+  }
+
+  if (!response.ok || !data.success) {
+    throw new Error(
+      normalizeBridgeError(
+        data.error || `Google Sheets köprüsü hata döndürdü: ${response.status}`,
+        'Google Sheets'
+      )
+    );
+  }
+
+  return {
+    url: data.url || data.spreadsheetUrl || '',
+    spreadsheetId: data.spreadsheetId || '',
+    response: data
+  };
 }

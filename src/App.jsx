@@ -27,7 +27,6 @@ import {
   ArrowUp,
   ArrowDown,
   Filter,
-  MoreVertical,
   Plus,
   ChevronLeft,
   ChevronRight,
@@ -49,6 +48,7 @@ import {
 import { BRANDS_MODELS, CAMPUS_CODES, TYPE_BRANDS } from './constants/inventory.js';
 import { toTrLower } from './utils/text.js';
 import { openSafeExternalUrl, toSafeDriveEmbedUrl, toSafeExternalUrl } from './utils/safeUrls.js';
+import { downloadGeneratedExport } from './utils/exportDownload.js';
 import { ClipboardCopy } from './components/ClipboardCopy.jsx';
 import { Pagination } from './components/Pagination.jsx';
 import { AssignmentFloatingAction } from './components/AssignmentFloatingAction.jsx';
@@ -253,6 +253,10 @@ const SystemManagementTab = lazyNamed(
 const BulkHardwareImportModal = lazyNamed(
   () => import('./components/BulkHardwareImportModal.jsx'),
   'BulkHardwareImportModal'
+);
+const BulkInitialAssignmentModal = lazyNamed(
+  () => import('./components/BulkInitialAssignmentModal.jsx'),
+  'BulkInitialAssignmentModal'
 );
 
 const LazyPanelFallback = ({ label = 'Yükleniyor...' }) => (
@@ -921,6 +925,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
   // --- YENİ Donanım EKLEME STATES ---
   const [showAddHardwareModal, setShowAddHardwareModal] = useState(false);
   const [showBulkHardwareImportModal, setShowBulkHardwareImportModal] = useState(false);
+  const [showBulkInitialAssignmentModal, setShowBulkInitialAssignmentModal] = useState(false);
   const [newHardwareForm, setNewHardwareForm] = useState({
     type: 'Laptop',
     brand: 'Lenovo',
@@ -1154,6 +1159,55 @@ setTimeout(() => setSuccessMessage(null), 2500);
   const [assignSearchQuery, setAssignSearchQuery] = useState('');
   const [campusFilter, setCampusFilter] = useState('All');
   const [personSearch, setPersonSearch] = useState('');
+  const [nationalIdLookupPerson, setNationalIdLookupPerson] = useState(null);
+  const [isNationalIdLookupLoading, setIsNationalIdLookupLoading] = useState(false);
+  const [nationalIdLookupError, setNationalIdLookupError] = useState('');
+  const nationalIdLookupRequestRef = useRef(0);
+
+  useEffect(() => {
+    const nationalId = personSearch.trim();
+    const requestId = nationalIdLookupRequestRef.current + 1;
+    nationalIdLookupRequestRef.current = requestId;
+
+    if (!/^\d{11}$/.test(nationalId) || !currentUser?.token) {
+      setNationalIdLookupPerson(null);
+      setNationalIdLookupError('');
+      setIsNationalIdLookupLoading(false);
+      return undefined;
+    }
+
+    setNationalIdLookupPerson(null);
+    setNationalIdLookupError('');
+    setIsNationalIdLookupLoading(true);
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const result = await postApiAction({
+          action: 'lookupPersonnelByNationalId',
+          authToken: currentUser.token,
+          nationalId,
+        });
+        if (nationalIdLookupRequestRef.current !== requestId) return;
+
+        const person = result.person || null;
+        setNationalIdLookupPerson(person);
+        if (person) {
+          setPersonnel((previous) => mergeRecordsById(previous, [person]));
+        } else {
+          setNationalIdLookupError('Bu T.C. kimlik numarasıyla erişebileceğiniz bir personel bulunamadı.');
+        }
+      } catch (error) {
+        if (nationalIdLookupRequestRef.current !== requestId) return;
+        setNationalIdLookupError(error.message || 'T.C. kimlik numarasıyla personel aranamadı.');
+      } finally {
+        if (nationalIdLookupRequestRef.current === requestId) {
+          setIsNationalIdLookupLoading(false);
+        }
+      }
+    }, 300);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [currentUser?.token, personSearch]);
 
   // Filtreler veya arama degistiginde Pagination'i 1. sayfaya sıfırla
   useEffect(() => {
@@ -1710,8 +1764,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
     };
   }, [currentUser?.token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // --- CSV VE GOOGLE SHEETS EXPORT FONKSİYONLARI ---
-  // --- CSV VE GOOGLE SHEETS EXPORT FONKSİYONLARI ---
+  // --- EXCEL VE GOOGLE SHEETS DIŞA AKTARIMI ---
   const getFormattedDataForExport = (data, type) => {
     if (type === 'hardware') {
       return data.map((item) => ({
@@ -1760,35 +1813,38 @@ setTimeout(() => setSuccessMessage(null), 2500);
     }
   };
 
-  const escapeCsvCell = (value) => {
-    const text = String(value ?? '');
-    const safeText = /^[=+\-@]/.test(text) ? String.fromCharCode(39) + text : text;
-    return String.fromCharCode(34) + safeText.replace(/"/g, '""') + String.fromCharCode(34);
-  };
-
-  const handleExportCsv = (data, filename, type) => {
+  const handleExportExcel = async (data, filename, type) => {
     if (data.length === 0) return showAppAlert('Dışa aktarılacak veri bulunamadı.');
-    const formattedData = getFormattedDataForExport(data, type);
-    const headers = Object.keys(formattedData[0] || {});
-    const rows = formattedData.map((item) => headers.map((header) => escapeCsvCell(item[header])).join(';'));
-    const csv = '\uFEFF' + headers.map(escapeCsvCell).join(';') + '\n' + rows.join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename + '_' + new Date().toLocaleDateString('tr-TR') + '.csv';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+
+    setIsGenerating(true);
+    try {
+      const result = await postApiAction(
+        {
+          authToken: currentUser.token,
+          action: 'createSheet',
+          format: 'xlsx',
+          sheetName: `${filename.replace(/_/g, ' ')} (${new Date().toLocaleDateString('tr-TR')})`,
+          data: getFormattedDataForExport(data, type),
+        },
+        { timeoutMs: 120000 }
+      );
+      await downloadGeneratedExport(result.url, `${filename}.xlsx`);
+    } catch (error) {
+      await showAppAlert(`Excel dosyası oluşturulamadı: ${error.message}`, {
+        type: 'error',
+        title: 'Dışa aktarma hatası',
+      });
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleCreateGoogleSheet = async (data, type) => {
-    if (data.length === 0) return showAppAlert('Aktarılacak veri bulunamadı..');
+    if (data.length === 0) return showAppAlert('Aktarılacak veri bulunamadı.');
 
     // YENİ: window.confirm yerine şık Modal açıyoruz
     setConfirmDialog({
-      message: `Seçilen ${data.length} adet kayıtla yeni bir Excel dışa aktarım dosyası oluşturulacak. Bu işlem birkaç saniye sürebilir. Onaylıyor musunuz?`,
+      message: `Seçilen ${data.length} kayıtla yeni bir Google Sheet oluşturulacak ve düzenleme yetkisi hesabınıza verilecek. Devam edilsin mi?`,
       type: 'info',
       onConfirm: async () => {
         setConfirmDialog(null); // Modali kapat
@@ -1800,6 +1856,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             {
               authToken: currentUser.token,
               action: 'createSheet',
+              format: 'google-sheet',
               sheetName: `Dışa Aktarım - ${
                 type === 'hardware' ? 'Donanım' : 'Personel'
               } (${new Date().toLocaleDateString('tr-TR')})`,
@@ -3244,6 +3301,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setViewingPersonId(null); // Personel profilini kapat
     setShowAddHardwareModal(false); // Donanım ekleme modalini kapat
     setShowBulkHardwareImportModal(false); // Toplu donanım ekleme modalini kapat
+    setShowBulkInitialAssignmentModal(false); // İlk migrasyon zimmet modalini kapat
     
     // Zimmet, iade ve transfer el yazısı beyanlarını sıfırla.
     setItSignature(null);
@@ -3258,6 +3316,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
     setSelectedPerson('');
     setSelectedHardware([]);
     setPersonSearch('');
+    setNationalIdLookupPerson(null);
+    setNationalIdLookupError('');
+    setIsNationalIdLookupLoading(false);
     setAssignSearchQuery('');
     setAssignFilterType('All');
     setAssignFilterStatus('All');
@@ -3809,6 +3870,17 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               role="menuitem"
                               onClick={() => {
                                 setShowAddHardwareMenu(false);
+                                setShowBulkInitialAssignmentModal(true);
+                              }}
+                              className="flex w-full items-center gap-3 border-t border-gray-100 px-4 py-3 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
+                            >
+                              <FileSpreadsheet className="h-4 w-4 shrink-0 text-[#0066b1]" />
+                              <span>İlk Migrasyon Zimmeti</span>
+                            </button>
+                            <button
+                              role="menuitem"
+                              onClick={() => {
+                                setShowAddHardwareMenu(false);
                                 setMissingGlpiSearchQuery('');
                                 setMissingGlpiFilterType('All');
                                 setMissingGlpiFilterCampus('All');
@@ -3881,20 +3953,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         selectedHardwareIdSet.has(h.id)
                                       )
                                     : sortedHardware;
-                                handleExportCsv(
+                                handleExportExcel(
                                   exportData,
                                   'Donanım_Listesi',
                                   'hardware'
                                 );
                               }}
+                              disabled={isGenerating}
                               className="w-full px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-3 transition-colors text-left"
                               style={{ whiteSpace: 'nowrap' }}
                             >
                               <Download className="w-4 h-4 text-blue-500 shrink-0" />
                               <span>
                                 {selectedBulkHardware.length > 0
-                                  ? `Seçili (${selectedBulkHardware.length}) İndir`
-                                  : 'CSV Olarak İndir'}
+                                  ? `Seçili (${selectedBulkHardware.length}) Excel Olarak İndir`
+                                  : 'Excel Olarak İndir'}
                               </span>
                             </button>
                             <button
@@ -4795,7 +4868,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       <Filter className="w-4 h-4" />
                     </button>
 
-                    {/* 3 Nokta Butonu */}
+                    {/* Dışa Aktar Butonu */}
                     <div className="responsive-tab-toolbar__action responsive-tab-toolbar__actions-start relative shrink-0">
                       <button
                         onClick={() => setShowPersonnelMenu(!showPersonnelMenu)}
@@ -4804,9 +4877,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             ? 'bg-blue-50 border-blue-300 text-[#0066b1]'
                             : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
                         }`}
-                        title="Daha Fazla Seçenek"
+                        title="Dışa Aktar"
                       >
-                        <MoreVertical className="w-4 h-4" />
+                        <Download className="w-4 h-4" />
                       </button>
 
                       {showPersonnelMenu && (
@@ -4838,20 +4911,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         selectedPersonnelIdSet.has(p.id)
                                       )
                                     : sortedPersonnel;
-                                handleExportCsv(
+                                handleExportExcel(
                                   exportData,
                                   'Personel_Listesi',
                                   'personnel'
                                 );
                               }}
+                              disabled={isGenerating}
                               className="w-full px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-3 transition-colors text-left"
                               style={{ whiteSpace: 'nowrap' }}
                             >
                               <Download className="w-4 h-4 text-blue-500 shrink-0" />
                               <span>
                                 {selectedBulkPersonnel.length > 0
-                                  ? `Seçili (${selectedBulkPersonnel.length}) CSV Olarak İndir`
-                                  : 'CSV Olarak İndir'}
+                                  ? `Seçili (${selectedBulkPersonnel.length}) Excel Olarak İndir`
+                                  : 'Excel Olarak İndir'}
                               </span>
                             </button>
                             <button
@@ -6750,7 +6824,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       <div className="flex items-center w-full px-4 py-2.5 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#8bcdc5] focus-within:border-[#0066b1] transition-all mb-4">
                         <input
                           type="text"
-                          placeholder="Personel ara..."
+                          placeholder="Ad, e-posta veya 11 haneli T.C. ile ara..."
                           className="flex-1 bg-transparent outline-none min-w-0 text-sm"
                           value={personSearch}
                           onChange={(e) => setPersonSearch(e.target.value)}
@@ -6770,18 +6844,49 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
                       <div className="space-y-3">
                         {(() => {
-                          const filtered = campusPersonnel.filter((p) =>
-                            toTrLower(p.name).includes(toTrLower(personSearch))
-                          );
+                          const trimmedSearch = personSearch.trim();
+                          const isNumericSearch = /^\d+$/.test(trimmedSearch);
+                          const isExactNationalIdSearch = /^\d{11}$/.test(trimmedSearch);
+                          const normalizedSearch = toTrLower(trimmedSearch);
+                          const filtered = isExactNationalIdSearch
+                            ? nationalIdLookupPerson
+                              ? [nationalIdLookupPerson]
+                              : []
+                            : isNumericSearch
+                              ? []
+                              : campusPersonnel.filter((p) =>
+                                  [p.name, p.email, p.department].some((value) =>
+                                    toTrLower(value || '').includes(normalizedSearch)
+                                  )
+                                );
                           const displayList = filtered.slice(0, 30);
                           return (
                             <>
+                              {isExactNationalIdSearch && isNationalIdLookupLoading && (
+                                <div className="flex items-center justify-center gap-2 rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm font-semibold text-[#0066b1]">
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Personel güvenli şekilde aranıyor...
+                                </div>
+                              )}
+                              {isNumericSearch && !isExactNationalIdSearch && (
+                                <div className="rounded-lg border border-dashed border-gray-200 p-4 text-center text-sm text-gray-500">
+                                  T.C. kimlik numarasını 11 hane olarak girin.
+                                </div>
+                              )}
+                              {isExactNationalIdSearch && !isNationalIdLookupLoading && nationalIdLookupError && (
+                                <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 text-center text-sm font-semibold text-amber-800">
+                                  {nationalIdLookupError}
+                                </div>
+                              )}
                               {displayList.map((p) => (
                                 <label
                                   key={p.id}
                                   onClick={(e) => {
                                     e.preventDefault();
                                     setSelectedPerson(p.id);
+                                    setPersonSearch('');
+                                    setNationalIdLookupPerson(null);
+                                    setNationalIdLookupError('');
                                     setTimeout(() => setAssignStep(2), 150);
                                   }}
                                   className={`flex items-start gap-3 md:gap-4 p-4 border-2 rounded-xl cursor-pointer transition-all ${
@@ -6835,7 +6940,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   </div>
                                 </label>
                               ))}
-                              {filtered.length === 0 && (
+                              {filtered.length === 0 &&
+                                !isNumericSearch &&
+                                !isNationalIdLookupLoading && (
                                 <div className="text-center p-4 text-sm text-gray-500 border border-dashed rounded-lg">
                                   Personel bulunamadı.
                                 </div>
@@ -7402,6 +7509,27 @@ setTimeout(() => setSuccessMessage(null), 2500);
               </Suspense>
             )}
 
+            {showBulkInitialAssignmentModal && (
+              <Suspense fallback={<LazyInlineFallback label="Migrasyon zimmeti hazırlanıyor..." />}>
+                <BulkInitialAssignmentModal
+                  currentUser={currentUser}
+                  existingHardware={hardware}
+                  existingPersonnel={personnel}
+                  onClose={() => setShowBulkInitialAssignmentModal(false)}
+                  onImported={async (result) => {
+                    await fetchVeritabani(false);
+                    const skippedMessage = result.skipped
+                      ? ` ${result.skipped} mevcut eşleşme değişmeden bırakıldı.`
+                      : '';
+                    setSuccessMessage(
+                      `${result.assigned} cihaz personele zimmetlendi.${skippedMessage}`
+                    );
+                    setTimeout(() => setSuccessMessage(null), 4000);
+                  }}
+                />
+              </Suspense>
+            )}
+
             {/* YENİ Donanım EKLE MODAL */}
             {showAddHardwareModal && (
               <div
@@ -7738,7 +7866,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         <div className="border-t border-slate-200/80 p-3 flex items-center gap-3">
                           <div className="flex-1 min-w-0">
                             <p className="text-[10px] text-blue-500 mb-1 font-bold uppercase tracking-wider">
-                              AD Kullanıcı Adı
+                              AD Kullanıcı adı
                             </p>
                             <p className="font-black text-gray-900 text-[13px] truncate">
                               {viewedPersonAdLogin || 'Tanımlı değil'}
@@ -7775,9 +7903,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       {/* Departman / İmza Kutucuğu */}
                       <div className={`p-3 rounded-xl border ${
                         viewedPerson.signatureLink
-                          ? 'bg-emerald-50/40 border-emerald-300 sm:bg-slate-50 sm:border-slate-100'
+                          ? 'bg-emerald-50/40 border-emerald-300'
                           : isSignatureEligiblePerson(viewedPerson)
-                            ? 'bg-amber-50/70 border-amber-300 sm:border-amber-200'
+                            ? 'bg-amber-50/70 border-amber-300'
                             : 'bg-slate-50 border-slate-100'
                       }`}>
                         <div className="flex items-center justify-between gap-3">
@@ -7786,15 +7914,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                                 Departman / Görev
                               </p>
-                              {(viewedPerson.signatureLink || isSignatureEligiblePerson(viewedPerson)) && (
-                                <span className={`hidden sm:inline-flex px-1.5 py-0.5 rounded-full text-[9px] font-black border ${
-                                  viewedPerson.signatureLink
-                                    ? 'bg-green-50 text-green-700 border-green-200'
-                                    : 'bg-amber-100 text-amber-800 border-amber-200'
-                                }`}>
-                                  {viewedPerson.signatureLink ? 'İmza var' : 'İmza yok'}
-                                </span>
-                              )}
                             </div>
                             {viewedPerson.signatureLink ? (
                               <button
@@ -8896,6 +9015,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         !returningData &&
         !showAddHardwareModal &&
         !showBulkHardwareImportModal &&
+        !showBulkInitialAssignmentModal &&
         !transferModalObj &&  
         !showNewTransferModal && 
         !confirmDialog && 

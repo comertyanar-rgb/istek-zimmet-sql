@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { postApiAction } from '../services/apiClient.js';
 import { showAppAlert } from '../services/uiMessageService.js';
+import { downloadGeneratedExport } from '../utils/exportDownload.js';
 
 const MAX_IMPORT_ITEMS = 1000;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -240,27 +241,16 @@ async function readImportFile(file) {
   throw new Error('Yalnızca .xlsx veya .csv dosyaları yüklenebilir.');
 }
 
-function downloadTemplate(isHq) {
-  const headers = [
-    'Seri No',
+function getTemplateHeaders(isHq) {
+  return [
+    'Seri No *',
     'Cihaz Tipi',
-    'Marka',
-    'Model',
+    'Marka *',
+    'Model *',
     'Bilgisayar İsmi',
     'Notlar',
     ...(isHq ? ['Kampüs'] : []),
   ];
-  const blob = new Blob([`\uFEFF${headers.join(';')}\r\n`], {
-    type: 'text/csv;charset=utf-8',
-  });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = 'Toplu_Donanim_Sablonu.csv';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
 }
 
 export function BulkHardwareImportModal({
@@ -275,6 +265,7 @@ export function BulkHardwareImportModal({
   const [fileError, setFileError] = useState('');
   const [isReading, setIsReading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
   const [showOnlyErrors, setShowOnlyErrors] = useState(false);
   const [page, setPage] = useState(1);
 
@@ -354,6 +345,31 @@ export function BulkHardwareImportModal({
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    setIsDownloadingTemplate(true);
+    try {
+      const result = await postApiAction(
+        {
+          action: 'createSheet',
+          authToken: currentUser?.token,
+          format: 'xlsx',
+          sheetName: 'Toplu Donanım Şablonu',
+          data: [],
+          templateHeaders: getTemplateHeaders(isHq),
+        },
+        { timeoutMs: 120000 }
+      );
+      await downloadGeneratedExport(result.url, 'Toplu_Donanim_Sablonu.xlsx');
+    } catch (error) {
+      await showAppAlert(`Şablon indirilemedi: ${error.message}`, {
+        type: 'error',
+        title: 'İndirme hatası',
+      });
+    } finally {
+      setIsDownloadingTemplate(false);
+    }
+  };
+
   return (
     <div
       className="app-modal-backdrop fixed inset-0 z-[999999] flex items-center justify-center bg-black/60 p-2 backdrop-blur-sm sm:p-5"
@@ -386,16 +402,18 @@ export function BulkHardwareImportModal({
         <div className="flex-1 overflow-y-auto bg-slate-50/70 p-4 sm:p-5">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
             <div className="rounded-xl border border-blue-200 bg-blue-50/80 px-3.5 py-3 text-xs leading-relaxed text-blue-900">
-              <strong>Zorunlu sütunlar:</strong> Seri No, Marka ve Model. Cihaz Tipi boşsa Laptop kabul edilir.
+              <strong>Zorunlu sütunlar:</strong> Seri No <strong>*</strong>, Marka <strong>*</strong> ve Model <strong>*</strong>.
+              Cihaz Tipi boşsa Laptop kabul edilir.
               Seri numaralarının bozulmaması için Excel’de bu sütunu <strong>Metin</strong> biçiminde tutun.
             </div>
             <button
               type="button"
-              onClick={() => downloadTemplate(isHq)}
+              onClick={handleDownloadTemplate}
+              disabled={isDownloadingTemplate || isSubmitting}
               className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-4 text-sm font-bold text-[#0066b1] shadow-sm transition-colors hover:bg-blue-50"
             >
-              <Download className="h-4 w-4" />
-              Şablonu İndir
+              {isDownloadingTemplate ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {isDownloadingTemplate ? 'Hazırlanıyor...' : 'Şablonu İndir'}
             </button>
           </div>
 

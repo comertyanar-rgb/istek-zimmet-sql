@@ -15,6 +15,7 @@ import { isSuperAdminEmail, requireSuperAdmin } from './superAdmin.js';
 import {
   addHardwareForUser,
   bulkAddHardwareForUser,
+  bulkInitialAssignmentForUser,
   bulkStatusUpdateForUser,
   bulkUpdateGroupForUser,
   cancelSignatureJobForUser,
@@ -40,6 +41,7 @@ import {
   getAuthorizedUser,
   getOtpRecipientForUser,
   importMissingGlpiDevicesForUser,
+  lookupPersonnelByNationalIdForUser,
   manualAssignOrUploadMissingDocumentForUser,
   processGlpiReconcileQueue,
   recordInventoryScanForUser,
@@ -315,6 +317,16 @@ export async function handleAction(data, context = {}) {
 
   if (action === 'bulkAddHardware') {
     const payload = await bulkAddHardwareForUser(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'lookupPersonnelByNationalId') {
+    const payload = await lookupPersonnelByNationalIdForUser(currentUser, data);
+    return success(payload);
+  }
+
+  if (action === 'bulkInitialAssignment') {
+    const payload = await bulkInitialAssignmentForUser(currentUser, data);
     return success(payload);
   }
 

@@ -5,6 +5,7 @@ node_modules/
 .codex-tmp/
 dist/
 backend/generated-pdfs/
+backend/src/generated-exports/
 tmp/
 
 .env

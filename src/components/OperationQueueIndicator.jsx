@@ -772,7 +772,7 @@ export const OperationQueueIndicator = ({
         )}
         {!isMobile && <span>İşlem Kuyruğu</span>}
         {summary.active > 0 && (
-          <span className="absolute -top-2 -right-2 min-w-[20px] h-5 px-1 rounded-full bg-amber-400 text-[#005595] text-[10px] font-black flex items-center justify-center shadow-sm">
+          <span className="operation-queue-count-badge absolute -top-2 -right-2 min-w-[20px] h-5 px-1 rounded-full bg-amber-400 text-[#005595] text-[10px] font-black flex items-center justify-center shadow-sm">
             {summary.active}
           </span>
         )}

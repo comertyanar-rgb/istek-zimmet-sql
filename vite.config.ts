@@ -31,6 +31,10 @@ export default defineConfig({
           Origin: 'http://localhost:5173',
         },
       },
+      '/exports': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+      },
     },
   },
   plugins: [

@@ -75,6 +75,8 @@ const actionRateLimits = {
   verifyLogin: { windowMs: 5 * 60 * 1000, max: 60 },
   sendOTP: { windowMs: 10 * 60 * 1000, max: 120 },
   verifyOTP: { windowMs: 10 * 60 * 1000, max: 300 },
+  lookupPersonnelByNationalId: { windowMs: 10 * 60 * 1000, max: 30 },
+  bulkInitialAssignment: { windowMs: 10 * 60 * 1000, max: 10 },
   enqueueADPasswordReset: { windowMs: 10 * 60 * 1000, max: 60 },
   createPersonnelSignature: { windowMs: 10 * 60 * 1000, max: 60 },
   cancelSignatureJob: { windowMs: 10 * 60 * 1000, max: 120 },
@@ -100,6 +102,7 @@ const actionBodyLimits = {
   manualAssign: 22 * 1024 * 1024,
   uploadMissingDocument: 22 * 1024 * 1024,
   createSheet: 10 * 1024 * 1024,
+  bulkInitialAssignment: 4 * 1024 * 1024,
   syncGLPI: 12 * 1024 * 1024,
   syncPersonnel: 12 * 1024 * 1024
 };
