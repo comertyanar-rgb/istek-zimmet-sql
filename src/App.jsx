@@ -375,6 +375,8 @@ function getAdPasswordJobView(status) {
 
 export default function App() {
   const { theme, toggleTheme } = useAppTheme();
+  const serviceWorkerRegistrationRef = useRef(null);
+  const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
 
   // PWA güncellemeleri kullanıcı onayıyla uygulanır; açık işlem sırasında sayfa yenilenmez.
   const {
@@ -382,12 +384,102 @@ export default function App() {
     updateServiceWorker,
   } = useRegisterSW({
     onRegistered(r) {
-      // Service worker başarıyla kaydedildi
+      serviceWorkerRegistrationRef.current = r || null;
     },
     onRegisterError(error) {
       console.log('SW registration error', error);
     },
   });
+
+  const handleCheckForUpdates = async () => {
+    if (isCheckingForUpdate) return;
+
+    if (!('serviceWorker' in navigator)) {
+      void showAppAlert('Bu tarayıcı uygulama güncellemelerini denetlemeyi desteklemiyor.', {
+        type: 'warning',
+        title: 'Güncelleme denetlenemedi',
+      });
+      return;
+    }
+
+    if (!navigator.onLine) {
+      void showAppAlert('Güncellemeleri denetlemek için internet bağlantısı gerekiyor.', {
+        type: 'warning',
+        title: 'Bağlantı yok',
+      });
+      return;
+    }
+
+    setIsCheckingForUpdate(true);
+
+    try {
+      let registration = serviceWorkerRegistrationRef.current;
+      if (!registration) {
+        registration = await navigator.serviceWorker.getRegistration();
+        serviceWorkerRegistrationRef.current = registration || null;
+      }
+
+      if (!registration) {
+        throw new Error('Uygulama güncelleme servisi henüz hazır değil. Uygulamayı kapatıp yeniden açın.');
+      }
+
+      if (needRefresh || registration.waiting) {
+        setNeedRefresh(true);
+        return;
+      }
+
+      const updateDetected = new Promise((resolve) => {
+        let settled = false;
+        let timeoutId;
+
+        const finish = (found) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve(Boolean(found));
+        };
+
+        const watchInstallingWorker = () => {
+          const worker = registration.installing;
+          if (!worker) return;
+
+          const handleStateChange = () => {
+            if (worker.state === 'installed') {
+              finish(Boolean(navigator.serviceWorker.controller || registration.waiting));
+            } else if (worker.state === 'redundant') {
+              finish(false);
+            }
+          };
+
+          worker.addEventListener('statechange', handleStateChange);
+          handleStateChange();
+        };
+
+        registration.addEventListener('updatefound', watchInstallingWorker, { once: true });
+        timeoutId = setTimeout(() => finish(Boolean(registration.waiting)), 4000);
+      });
+
+      await registration.update();
+      const hasUpdate = Boolean(registration.waiting) || (await updateDetected);
+
+      if (hasUpdate) {
+        setNeedRefresh(true);
+      } else {
+        void showAppAlert('Kullandığınız sürüm güncel.', {
+          type: 'success',
+          title: 'Güncelleme denetimi tamamlandı',
+          dedupeKey: 'pwa-update-current',
+        });
+      }
+    } catch (error) {
+      void showAppAlert(error?.message || 'Güncellemeler şu anda denetlenemedi.', {
+        type: 'error',
+        title: 'Güncelleme denetlenemedi',
+      });
+    } finally {
+      setIsCheckingForUpdate(false);
+    }
+  };
   // --- EASTER EGG STATES ---
   const [logoClickCount, setLogoClickCount] = useState(0);
   const [showEasterEgg, setShowEasterEgg] = useState(false);
@@ -3603,8 +3695,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 theme={theme}
                 onToggleTheme={toggleTheme}
                 onRefresh={() => fetchVeritabani(true)}
+                onCheckForUpdates={handleCheckForUpdates}
                 onLogout={handleLogout}
                 isRefreshing={isRefreshing}
+                isCheckingForUpdate={isCheckingForUpdate}
                 variant="mobile"
               />
             </div>
@@ -3714,8 +3808,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 theme={theme}
                 onToggleTheme={toggleTheme}
                 onRefresh={() => fetchVeritabani(true)}
+                onCheckForUpdates={handleCheckForUpdates}
                 onLogout={handleLogout}
                 isRefreshing={isRefreshing}
+                isCheckingForUpdate={isCheckingForUpdate}
                 variant="desktop"
                 className="user-settings-menu--profile-card"
               />

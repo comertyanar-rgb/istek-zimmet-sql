@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { LogOut, Moon, RefreshCw, Settings, Sun } from 'lucide-react';
+import { CloudDownload, LogOut, Moon, RefreshCw, Settings, Sun } from 'lucide-react';
 
 const MENU_WIDTH = 220;
 const VIEWPORT_GUTTER = 12;
@@ -9,8 +9,10 @@ export function UserSettingsMenu({
   theme,
   onToggleTheme,
   onRefresh,
+  onCheckForUpdates,
   onLogout,
   isRefreshing = false,
+  isCheckingForUpdate = false,
   variant = 'desktop',
   className = '',
 }) {
@@ -103,6 +105,20 @@ export function UserSettingsMenu({
                 aria-hidden="true"
               />
               <span>Verileri yenile</span>
+            </button>
+
+            <button
+              type="button"
+              role="menuitem"
+              className="user-settings-action"
+              onClick={() => runAndClose(onCheckForUpdates)}
+              disabled={isCheckingForUpdate}
+            >
+              <CloudDownload
+                className={`h-4 w-4 ${isCheckingForUpdate ? 'animate-pulse' : ''}`}
+                aria-hidden="true"
+              />
+              <span>{isCheckingForUpdate ? 'Güncellemeler denetleniyor' : 'Güncellemeleri denetle'}</span>
             </button>
 
             <button
