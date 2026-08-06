@@ -377,11 +377,11 @@ export default function App() {
   const { theme, toggleTheme } = useAppTheme();
   const serviceWorkerRegistrationRef = useRef(null);
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
+  const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
 
   // PWA güncellemeleri kullanıcı onayıyla uygulanır; açık işlem sırasında sayfa yenilenmez.
   const {
     needRefresh: [needRefresh, setNeedRefresh],
-    updateServiceWorker,
   } = useRegisterSW({
     onRegistered(r) {
       serviceWorkerRegistrationRef.current = r || null;
@@ -423,10 +423,14 @@ export default function App() {
         throw new Error('Uygulama güncelleme servisi henüz hazır değil. Uygulamayı kapatıp yeniden açın.');
       }
 
-      if (needRefresh || registration.waiting) {
+      if (registration.waiting) {
         setNeedRefresh(true);
         return;
       }
+
+      // Önceki denetimden kalmış bir UI durumu gerçek bir güncelleme değildir.
+      // Elle denetimde yalnızca registration.waiting doğruluk kaynağıdır.
+      if (needRefresh) setNeedRefresh(false);
 
       const updateDetected = new Promise((resolve) => {
         let settled = false;
@@ -445,7 +449,9 @@ export default function App() {
 
           const handleStateChange = () => {
             if (worker.state === 'installed') {
-              finish(Boolean(navigator.serviceWorker.controller || registration.waiting));
+              // Safari/iPadOS'ta "installed" olayı registration.waiting alanından
+              // hemen önce gelebiliyor. Kartı ancak etkinleştirilebilir worker hazırsa aç.
+              setTimeout(() => finish(Boolean(registration.waiting)), 300);
             } else if (worker.state === 'redundant') {
               finish(false);
             }
@@ -478,6 +484,53 @@ export default function App() {
       });
     } finally {
       setIsCheckingForUpdate(false);
+    }
+  };
+
+  const handleApplyAppUpdate = async () => {
+    if (isApplyingUpdate) return;
+    setIsApplyingUpdate(true);
+
+    try {
+      let registration = serviceWorkerRegistrationRef.current;
+      if (!registration) {
+        registration = await navigator.serviceWorker.getRegistration();
+        serviceWorkerRegistrationRef.current = registration || null;
+      }
+
+      if (!registration) {
+        throw new Error('Uygulama güncelleme servisi bulunamadı.');
+      }
+
+      // Kullanıcı karta çok hızlı dokunursa iPadOS waiting alanını birkaç yüz
+      // milisaniye sonra doldurabilir. Kısa süre bekleyip gerçek workerı al.
+      for (let attempt = 0; attempt < 30 && !registration.waiting; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+
+      const waitingWorker = registration.waiting;
+      if (!waitingWorker) {
+        setNeedRefresh(false);
+        throw new Error('Hazır bir yeni sürüm bulunamadı. Güncellemeleri yeniden denetleyin.');
+      }
+
+      let reloadTimer;
+      const reloadApp = () => {
+        clearTimeout(reloadTimer);
+        window.location.reload();
+      };
+
+      navigator.serviceWorker.addEventListener('controllerchange', reloadApp, { once: true });
+      waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+
+      // Bazı iPadOS sürümleri controllerchange olayını geç iletebiliyor.
+      reloadTimer = setTimeout(reloadApp, 5000);
+    } catch (error) {
+      setIsApplyingUpdate(false);
+      void showAppAlert(error?.message || 'Yeni sürüm etkinleştirilemedi.', {
+        type: 'error',
+        title: 'Güncelleme uygulanamadı',
+      });
     }
   };
   // --- EASTER EGG STATES ---
@@ -3836,11 +3889,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
             >
               Sonra
             </button>
-            <button 
-              onClick={() => updateServiceWorker(true)} 
-              className="px-4 py-2 text-xs font-bold bg-white text-blue-600 hover:bg-blue-50 rounded-lg shadow-sm transition-colors"
+            <button
+              type="button"
+              onClick={handleApplyAppUpdate}
+              disabled={isApplyingUpdate}
+              className="px-4 py-2 text-xs font-bold bg-white text-blue-600 hover:bg-blue-50 rounded-lg shadow-sm transition-colors disabled:cursor-wait disabled:opacity-70"
             >
-              Hemen Yenile
+              {isApplyingUpdate ? 'Yükleniyor...' : 'Hemen Yenile'}
             </button>
           </div>
         </div>
