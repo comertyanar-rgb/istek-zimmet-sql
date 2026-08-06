@@ -10,6 +10,7 @@ const QUEUE_MUTATION_ACTIONS = new Set([
   'returnZimmetServerSide',
   'startTransferServerSide',
   'completeTransferServerSide',
+  'createSheet',
 ]);
 
 const DEFAULT_TIMEOUT_MS = 60000;

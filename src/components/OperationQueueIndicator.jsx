@@ -34,6 +34,7 @@ const actionLabel = (action) => {
   if (action === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF';
   if (action === 'AD_PASSWORD_RESET') return 'Bilgisayar/Wi‑Fi Şifresi';
   if (action === 'SIGNATURE_CREATE') return 'İmza Oluşturma';
+  if (action === 'EXPORT_GOOGLE_SHEET') return 'Google Sheets dışa aktarımı';
   return action || 'İşlem';
 };
 
@@ -55,6 +56,10 @@ const jobSubtitle = (job, payload) => {
 
   if (job.action === 'reconcileGLPI' || job.action === 'RECONCILE_GLPI') {
     return 'GLPI cihaz eşleşmeleri güncelleniyor';
+  }
+
+  if (job.action === 'EXPORT_GOOGLE_SHEET') {
+    return payload?.pdfName || 'Dışa aktarım';
   }
 
   return job.detail || '';

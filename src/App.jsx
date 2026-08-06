@@ -441,7 +441,6 @@ export default function App() {
   // Gerçek IP, güvenlik amacıyla backend tarafından bağlantı üzerinden kaydedilir.
   const clientIp = 'Sunucu tarafından kaydedilecek';
   const [successMessage, setSuccessMessage] = useState(null); // İşlem başarılı olduğunda yeşil tik ile çıkacak mesaj
-  const [generatedSheetUrl, setGeneratedSheetUrl] = useState(null); // YENİ: Sheets Linki İçin Modal State
 
   const headerRef = useRef(null);
   const floatingBtnsRef = useRef(null);
@@ -1866,14 +1865,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
           );
 
           const safeExportUrl = toSafeExternalUrl(result.url);
-          if (safeExportUrl) {
-            // Başarılıysa linki ekrana Modal olarak bas (Pop-up engeline takılmamak için)
-            setGeneratedSheetUrl(safeExportUrl);
-          } else {
-            showAppAlert('Hata: Dışa aktarım dosyası oluşturulamadı. ' + (result.error || ''));
+          if (!safeExportUrl) {
+            throw new Error(result.error || 'Dışa aktarım bağlantısı oluşturulamadı.');
           }
         } catch (err) {
-          showAppAlert('İşlem başarısız: ' + err.message);
+          await showAppAlert('İşlem başarısız: ' + err.message, {
+            type: 'error',
+            title: 'Dışa aktarma hatası',
+          });
         } finally {
           setIsGenerating(false);
         }
@@ -5337,19 +5336,21 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     String(person?.name || 'U').charAt(0)
                                   )}
                                 </div>
-                                <div>
-                                  <span className="font-bold text-gray-900 group-hover:text-blue-600 block transition-colors">
-                                    {person.name}
-                                  </span>
+                                <div className="min-w-0">
+                                  <div className="flex min-w-0 items-center gap-2">
+                                    <span className="min-w-0 truncate font-bold text-gray-900 group-hover:text-blue-600 transition-colors">
+                                      {person.name}
+                                    </span>
+                                    {isSignatureEligiblePerson(person) && !person.signatureLink && (
+                                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">
+                                        <FileSignature className="w-3 h-3" />
+                                        İmza yok
+                                      </span>
+                                    )}
+                                  </div>
                                   {isHQ && (
                                     <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider block mt-0.5 group-hover:text-gray-500 transition-colors">
                                       {person.campus}
-                                    </span>
-                                  )}
-                                  {isSignatureEligiblePerson(person) && !person.signatureLink && (
-                                    <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-black">
-                                      <FileSignature className="w-3 h-3" />
-                                      İmza yok
                                     </span>
                                   )}
                                 </div>
@@ -5501,15 +5502,17 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 </span>
                               )}
                             </div>
-                            <p className="text-xs text-gray-500 font-medium truncate mt-0.5">
-                              {person.department || 'Personel'}
-                            </p>
-                            {isSignatureEligiblePerson(person) && !person.signatureLink && (
-                              <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-black w-fit">
-                                <FileSignature className="w-3 h-3" />
-                                İmza yok
-                              </span>
-                            )}
+                            <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                              <p className="min-w-0 flex-1 truncate text-xs font-medium text-gray-500">
+                                {person.department || 'Personel'}
+                              </p>
+                              {isSignatureEligiblePerson(person) && !person.signatureLink && (
+                                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">
+                                  <FileSignature className="w-3 h-3" />
+                                  İmza yok
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
 
@@ -9250,7 +9253,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                   successMessage ? 'opacity-0 -translate-y-4 pointer-events-none' : 'opacity-100 translate-y-0'
                 }`}
               >
-                <h3 className="text-xl font-black mb-1.5 text-gray-800">İşlem Tamamlaniyor...</h3>
+                <h3 className="text-xl font-black mb-1.5 text-gray-800">İşlem Tamamlanıyor...</h3>
                 <p className="text-[13px] text-gray-500 font-medium leading-tight px-2">
                   Lütfen sekmeyi kapatmayın, sistem güncelleniyor.
                 </p>
@@ -9334,44 +9337,6 @@ setTimeout(() => setSuccessMessage(null), 2500);
           </div>
         </div>
       )}
-      {/* YENİ: DIŞA AKTARIM DOSYASI OLUŞTURULDU MODALI (Pop-up Engeline Takılmamak İçin) */}
-      {generatedSheetUrl && (
-        <div
-          className="app-modal-backdrop fixed inset-0 flex flex-col items-center justify-center bg-slate-900/60 backdrop-blur-sm"
-          style={{ zIndex: 9999999999 }}
-        >
-          <div className="app-modal-panel bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center max-w-sm w-full text-center">
-            <div className="w-20 h-20 rounded-full flex items-center justify-center mb-5 bg-green-100 text-green-600 border-4 border-green-50 shadow-inner">
-              <Table className="w-10 h-10" />
-            </div>
-            
-            <h3 className="text-xl font-black text-gray-900 mb-2">Tablonuz Hazir!</h3>
-            <p className="text-sm text-gray-500 font-medium leading-relaxed mb-6">
-              Seçtiğiniz veriler başarıyla Excel dosyası olarak hazırlandı.
-            </p>
-            
-            <div className="flex w-full flex-col gap-3">
-              <a
-                href={generatedSheetUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setGeneratedSheetUrl(null)} // Tiklayinca modali kapat
-                className="w-full py-3.5 bg-green-600 text-white font-black rounded-xl shadow-md hover:bg-green-700 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-              >
-                <ExternalLink className="w-5 h-5" /> Dosyayı Aç
-              </a>
-              
-              <button
-                onClick={() => setGeneratedSheetUrl(null)}
-                className="w-full py-3 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition-colors"
-              >
-                Kapat
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* EASTER EGG MODAL EKRANI */}
       {showEasterEgg && (
         <div className="fixed inset-0 flex items-center justify-center animate-in zoom-in duration-200" style={{ zIndex: 999999999999, backgroundColor: 'rgba(0,0,0,0.95)' }}>

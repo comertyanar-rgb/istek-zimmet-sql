@@ -19,6 +19,29 @@ function displayLength(value) {
     .reduce((maximum, part) => Math.max(maximum, part.length), 0);
 }
 
+function isIdentifierColumn(header) {
+  const normalized = String(header || '')
+    .toLocaleLowerCase('tr-TR')
+    .replace(/[.*()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return [
+    'seri no',
+    'seri numara',
+    'serial no',
+    'serial number',
+    'tc kimlik',
+    't c kimlik',
+    'telefon',
+    'phone',
+    'google id',
+    'user id',
+    'personel id',
+    'glpi id',
+  ].some((label) => normalized.includes(label));
+}
+
 export async function createStyledWorkbookBuffer({ sheetName, headers, rows }) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'İSTEK Demirbaş Yönetimi';
@@ -28,8 +51,19 @@ export async function createStyledWorkbookBuffer({ sheetName, headers, rows }) {
     views: [{ state: 'frozen', ySplit: 1 }]
   });
 
+  const identifierColumns = new Set(
+    headers.flatMap((header, index) => (isIdentifierColumn(header) ? [index] : []))
+  );
   worksheet.addRow(headers);
-  rows.forEach((row) => worksheet.addRow(row));
+  rows.forEach((row) => {
+    worksheet.addRow(
+      row.map((value, index) =>
+        identifierColumns.has(index) && value !== null && value !== undefined
+          ? String(value)
+          : value
+      )
+    );
+  });
 
   const lastColumn = Math.max(headers.length, 1);
   worksheet.autoFilter = {
@@ -54,8 +88,11 @@ export async function createStyledWorkbookBuffer({ sheetName, headers, rows }) {
   for (let rowNumber = 2; rowNumber <= rows.length + 1; rowNumber += 1) {
     const row = worksheet.getRow(rowNumber);
     row.height = 21;
-    row.eachCell({ includeEmpty: true }, (cell) => {
+    row.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
       cell.alignment = { vertical: 'middle', wrapText: true };
+      if (identifierColumns.has(columnNumber - 1)) {
+        cell.numFmt = '@';
+      }
       cell.border = {
         top: { style: 'thin', color: { argb: BORDER_COLOR } },
         left: { style: 'thin', color: { argb: BORDER_COLOR } },

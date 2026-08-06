@@ -40,3 +40,20 @@ test('boş içe aktarma şablonu başlık biçimini ve filtreyi korur', async ()
   assert.equal(worksheet.views[0].ySplit, 1);
   assert.equal(worksheet.autoFilter, 'A1:C1');
 });
+
+test('seri numarası gibi kimlik sütunlarını bilimsel gösterime çevirmeden metin tutar', async () => {
+  const serial = '22029900000000000000';
+  const buffer = await createStyledWorkbookBuffer({
+    sheetName: 'Donanım Listesi',
+    headers: ['Seri No', 'Marka'],
+    rows: [[serial, 'ASUS']]
+  });
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const worksheet = workbook.worksheets[0];
+
+  assert.equal(worksheet.getCell('A2').value, serial);
+  assert.equal(worksheet.getCell('A2').numFmt, '@');
+  assert.equal(worksheet.getCell('B2').value, 'ASUS');
+});

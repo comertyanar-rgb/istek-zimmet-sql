@@ -2193,7 +2193,49 @@ export async function createSheetForUser(user, data) {
       `${rows.length} kayıt Google Sheets'e aktarıldı.`,
       data.clientIp || ''
     );
-    return { url: spreadsheet.url, count: rows.length, format: 'google-sheet' };
+
+    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+    const queuePublicId = `EXPORT-${stamp}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    await query(
+      `
+        INSERT INTO dbo.OperationQueue (
+          PublicId, ActionType, Status, PayloadJson, ResultJson,
+          RequestedBy, CampusId, StartedAt, FinishedAt
+        )
+        VALUES (
+          @publicId, N'EXPORT_GOOGLE_SHEET', N'TAMAMLANDI', @payloadJson, @resultJson,
+          @requestedBy, @campusId, SYSUTCDATETIME(), SYSUTCDATETIME()
+        )
+      `,
+      {
+        publicId: { type: sql.NVarChar(80), value: queuePublicId },
+        payloadJson: {
+          type: sql.NVarChar(sql.MAX),
+          value: JSON.stringify({
+            documentType: 'google-sheet',
+            pdfName: sheetName,
+            requestedBy: normalizeEmail(user.email)
+          })
+        },
+        resultJson: {
+          type: sql.NVarChar(sql.MAX),
+          value: JSON.stringify({
+            url: spreadsheet.url,
+            resultLabel: 'Google Sheet hazır',
+            count: rows.length
+          })
+        },
+        requestedBy: { type: sql.NVarChar(320), value: normalizeEmail(user.email) },
+        campusId: { type: sql.UniqueIdentifier, value: user.campusId || null }
+      }
+    );
+
+    return {
+      url: spreadsheet.url,
+      count: rows.length,
+      format: 'google-sheet',
+      queueId: queuePublicId
+    };
   }
 
   if (exportFormat !== 'xlsx') throw new Error('Desteklenmeyen dışa aktarım biçimi.');

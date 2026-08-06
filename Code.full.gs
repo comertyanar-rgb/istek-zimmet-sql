@@ -1871,6 +1871,32 @@ function handleBridgeEmail_(data) {
   return jsonOut({ success: true });
 }
 
+function isPlainTextExportHeader_(header) {
+  var normalized = String(header || "")
+    .toLocaleLowerCase("tr-TR")
+    .replace(/[.*()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  var labels = [
+    "seri no",
+    "seri numara",
+    "serial no",
+    "serial number",
+    "tc kimlik",
+    "t c kimlik",
+    "telefon",
+    "phone",
+    "google id",
+    "user id",
+    "personel id",
+    "glpi id"
+  ];
+  for (var i = 0; i < labels.length; i++) {
+    if (normalized.indexOf(labels[i]) > -1) return true;
+  }
+  return false;
+}
+
 function createFormattedSpreadsheet_(data, editorEmail) {
   var headers = Array.isArray(data.headers) ? data.headers : [];
   var rows = Array.isArray(data.rows) ? data.rows : [];
@@ -1888,9 +1914,10 @@ function createFormattedSpreadsheet_(data, editorEmail) {
   });
   var safeRows = rows.map(function(row) {
     var source = Array.isArray(row) ? row : [];
-    return safeHeaders.map(function(_, index) {
+    return safeHeaders.map(function(header, index) {
       var value = index < source.length ? source[index] : "";
       if (value === null || value === undefined) return "";
+      if (isPlainTextExportHeader_(header)) return sanitizeExcel(String(value));
       return sanitizeExcel(value);
     });
   });
@@ -1904,6 +1931,11 @@ function createFormattedSpreadsheet_(data, editorEmail) {
   sheet.setName("Aktarılan Liste");
   sheet.getRange(1, 1, 1, safeHeaders.length).setValues([safeHeaders]);
   if (safeRows.length > 0) {
+    for (var textCol = 0; textCol < safeHeaders.length; textCol++) {
+      if (isPlainTextExportHeader_(safeHeaders[textCol])) {
+        sheet.getRange(2, textCol + 1, safeRows.length, 1).setNumberFormat("@");
+      }
+    }
     sheet.getRange(2, 1, safeRows.length, safeHeaders.length).setValues(safeRows);
   }
 
