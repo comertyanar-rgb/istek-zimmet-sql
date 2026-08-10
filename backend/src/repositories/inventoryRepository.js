@@ -4479,7 +4479,7 @@ export async function saveZimmetOrReturnForUser(user, data) {
     isReturn ? 'Teslim eden personel' : 'Teslim alan personel',
     isReturn
       ? 'Donanımı belirtilen durumda teslim ettim.'
-      : 'Okudum, eksiksiz teslim aldım ve onaylıyorum.'
+      : 'Eksiksiz teslim aldım, onaylıyorum.'
   );
   consumeOtpApproval(data.personOtpHash, {
     requesterEmail: user.email,

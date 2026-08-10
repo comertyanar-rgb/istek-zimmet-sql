@@ -86,6 +86,7 @@ async function claimPdfJobs(maxJobs, leaseToken, { includeFailed = false } = {})
         INSERTED.PublicId,
         INSERTED.ActionType,
         INSERTED.PayloadJson,
+        INSERTED.ResultJson,
         INSERTED.AttemptCount
       FROM dbo.OperationQueue q
       INNER JOIN NextJobs n ON n.QueueId = q.QueueId;
@@ -173,78 +174,106 @@ async function markJobFailed(job, leaseToken, error) {
   return affectedRows(result) === 1;
 }
 
-function historyEventTypeForPdf(actionType) {
-  if (actionType === 'GENERATE_ZIMMET_PDF') return 'Zimmet PDF Belgesi Oluşturuldu';
-  if (actionType === 'GENERATE_RETURN_PDF') return 'İade PDF Belgesi Oluşturuldu';
-  if (actionType === 'GENERATE_TRANSFER_PDF') return 'Transfer PDF Belgesi Oluşturuldu';
-  return 'PDF Belgesi Oluşturuldu';
+function deliveryCheckpointFromResult(resultJson) {
+  const checkpoint = parseJson(resultJson, null);
+  if (!checkpoint || checkpoint.stage !== 'DELIVERED' || !checkpoint.url) return null;
+  return {
+    url: String(checkpoint.url),
+    pdfHash: String(checkpoint.pdfHash || ''),
+    delivery: String(checkpoint.delivery || 'google'),
+    response: { reused: true, checkpoint: true }
+  };
 }
 
-async function attachPdfToHardware(payload, uploadResult, job) {
+async function persistDeliveryCheckpoint(queueId, leaseToken, uploadResult) {
+  const checkpoint = {
+    stage: 'DELIVERED',
+    url: uploadResult.url || '',
+    pdfHash: uploadResult.pdfHash || '',
+    delivery: uploadResult.delivery || '',
+    deliveredAt: new Date().toISOString()
+  };
+  const result = await query(
+    `
+      UPDATE dbo.OperationQueue
+      SET ResultJson = @resultJson,
+          LeaseExpiresAt = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME())
+      WHERE QueueId = @queueId
+        AND Status = N'ISLENIYOR'
+        AND LeaseToken = @leaseToken
+    `,
+    {
+      queueId: { type: sql.BigInt, value: queueId },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
+      resultJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(checkpoint) },
+      leaseSeconds: { type: sql.Int, value: Math.max(60, Number(config.queue.leaseSeconds || 1800)) }
+    }
+  );
+  if (affectedRows(result) !== 1) throw new Error('PDF teslim sonucu saklanırken lease sahipliği kaybedildi.');
+}
+
+async function recoverDeliveryFromHardware(payload, job) {
   const hardware = Array.isArray(payload.hardware) ? payload.hardware : [];
-  const eventType = historyEventTypeForPdf(job.ActionType);
-  for (const item of hardware) {
-    if (!item?.hardwareId) continue;
+  const ids = [...new Set(
+    hardware
+      .map((item) => Number(item?.hardwareId))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  )];
+  if (!ids.length) return null;
 
-    await query(
-      `
-        UPDATE dbo.Hardware
-        SET DriveLink = @driveLink,
-            UpdatedAt = SYSUTCDATETIME()
-        WHERE HardwareId = @hardwareId
-      `,
-      {
-        driveLink: { type: sql.NVarChar(1000), value: uploadResult.url || null },
-        hardwareId: { type: sql.Int, value: item.hardwareId }
-      }
-    );
+  const result = await query(
+    `
+      SELECT
+        hardware.HardwareId,
+        hardware.DriveLink,
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM dbo.HardwareHistory history
+          WHERE history.HardwareId = hardware.HardwareId
+            AND CASE
+                  WHEN ISJSON(history.DetailsJson) = 1
+                    THEN JSON_VALUE(history.DetailsJson, '$.queueId')
+                  ELSE NULL
+                END = @queuePublicId
+        ) THEN 1 ELSE 0 END AS HasQueueHistory
+      FROM dbo.Hardware hardware
+      WHERE hardware.HardwareId IN (${ids.map((_, index) => `@id${index}`).join(',')})
+    `,
+    {
+      queuePublicId: { type: sql.NVarChar(80), value: job.PublicId },
+      ...Object.fromEntries(ids.map((id, index) => [`id${index}`, { type: sql.Int, value: id }]))
+    }
+  );
 
-    await query(
-      `
-        UPDATE dbo.HardwareHistory
-        SET EventType = @eventType,
-            PersonId = COALESCE(@personId, PersonId),
-            PersonName = COALESCE(@personName, PersonName),
-            DriveLink = @driveLink,
-            DetailsJson = @detailsJson,
-            CreatedBy = COALESCE(@createdBy, CreatedBy)
-        WHERE HistoryId = (
-          SELECT TOP (1) HistoryId
-          FROM dbo.HardwareHistory
-          WHERE HardwareId = @hardwareId
-            AND CASE WHEN ISJSON(DetailsJson) = 1 THEN JSON_VALUE(DetailsJson, '$.queueId') ELSE NULL END = @queuePublicId
-          ORDER BY EventDate DESC, HistoryId DESC
-        )
+  const rows = result.recordset || [];
+  if (rows.length !== ids.length || rows.some((row) => !row.HasQueueHistory)) return null;
+  const links = [...new Set(rows.map((row) => String(row.DriveLink || '').trim()).filter(Boolean))];
+  if (links.length !== 1) return null;
 
-        IF @@ROWCOUNT = 0
-        BEGIN
-          INSERT INTO dbo.HardwareHistory (HardwareId, EventType, PersonId, PersonName, DriveLink, DetailsJson, CreatedBy)
-          VALUES (@hardwareId, @eventType, @personId, @personName, @driveLink, @detailsJson, @createdBy)
-        END
-      `,
-      {
-        hardwareId: { type: sql.Int, value: item.hardwareId },
-        queuePublicId: { type: sql.NVarChar(80), value: job.PublicId },
-        eventType: { type: sql.NVarChar(120), value: eventType },
-        personId: { type: sql.NVarChar(160), value: payload.person?.id || null },
-        personName: { type: sql.NVarChar(240), value: payload.person?.name || null },
-        driveLink: { type: sql.NVarChar(1000), value: uploadResult.url || null },
-        detailsJson: {
-          type: sql.NVarChar(sql.MAX),
-          value: JSON.stringify({
-            queueId: job.PublicId,
-            actionType: job.ActionType,
-            documentStatus: 'PDF hazırlandı',
-            pdfHash: uploadResult.pdfHash,
-            delivery: uploadResult.delivery,
-            url: uploadResult.url || '',
-            pdfName: payload.pdfName || ''
-          })
-        },
-        createdBy: { type: sql.NVarChar(320), value: payload.requestedBy || null }
-      }
-    );
-  }
+  return {
+    url: links[0],
+    pdfHash: '',
+    delivery: 'recovered-existing-upload',
+    response: { reused: true, recovered: true }
+  };
+}
+
+async function attachPdfToHardware(uploadResult, job) {
+  await query(
+    `
+      EXEC dbo.FinalizeHardwarePdfHistory
+        @QueuePublicId = @queuePublicId,
+        @DriveLink = @driveLink,
+        @PdfHash = @pdfHash,
+        @Delivery = @delivery
+    `,
+    {
+      queuePublicId: { type: sql.NVarChar(80), value: job.PublicId },
+      driveLink: { type: sql.NVarChar(1000), value: uploadResult.url || null },
+      pdfHash: { type: sql.NVarChar(128), value: uploadResult.pdfHash || null },
+      delivery: { type: sql.NVarChar(40), value: uploadResult.delivery || null }
+    }
+  );
 }
 
 async function processOnePdfJob(job, leaseToken) {
@@ -256,26 +285,34 @@ async function processOnePdfJob(job, leaseToken) {
 
   payload.queueId = job.PublicId;
   await refreshPayloadHardwareFromDb(payload);
-  await renewPdfLease(job.QueueId, leaseToken);
-  const html = job.ActionType === 'GENERATE_TRANSFER_PDF'
-    ? buildTransferDocumentHtml(payload)
-    : buildZimmetDocumentHtml(payload);
-  const pdfBuffer = await renderHtmlToPdfBuffer(html, payload.pdfName);
-  await renewPdfLease(job.QueueId, leaseToken);
-  const uploadResult = await uploadPdfThroughGoogleBridge({
-    pdfBuffer,
-    pdfName: payload.pdfName,
-    campus: payload.campus,
-    email: payload.email,
-    meta: {
-      queueId: job.PublicId,
-      actionType: job.ActionType,
-      requestedBy: payload.requestedBy
-    }
-  });
+  let uploadResult = deliveryCheckpointFromResult(job.ResultJson);
+  if (!uploadResult) {
+    uploadResult = await recoverDeliveryFromHardware(payload, job);
+  }
+  if (!uploadResult) {
+    await renewPdfLease(job.QueueId, leaseToken);
+    const html = job.ActionType === 'GENERATE_TRANSFER_PDF'
+      ? buildTransferDocumentHtml(payload)
+      : buildZimmetDocumentHtml(payload);
+    const pdfBuffer = await renderHtmlToPdfBuffer(html, payload.pdfName);
+    await renewPdfLease(job.QueueId, leaseToken);
+    uploadResult = await uploadPdfThroughGoogleBridge({
+      pdfBuffer,
+      pdfName: payload.pdfName,
+      campus: payload.campus,
+      email: payload.email,
+      meta: {
+        queueId: job.PublicId,
+        actionType: job.ActionType,
+        requestedBy: payload.requestedBy
+      }
+    });
+  }
+
+  await persistDeliveryCheckpoint(job.QueueId, leaseToken, uploadResult);
 
   await renewPdfLease(job.QueueId, leaseToken);
-  await attachPdfToHardware(payload, uploadResult, job);
+  await attachPdfToHardware(uploadResult, job);
 
   return {
     result: {

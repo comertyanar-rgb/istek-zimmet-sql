@@ -281,7 +281,7 @@ export function ZimmetDocumentModal({ deps }) {
                            value={personSignature}
                            onChange={setPersonSignature}
                            label="Personel Teslim Alma Beyanı"
-                           statement="Okudum, eksiksiz teslim aldım ve onaylıyorum."
+                           statement="Eksiksiz teslim aldım, onaylıyorum."
                          />
                        </div>
                     )}
@@ -290,7 +290,7 @@ export function ZimmetDocumentModal({ deps }) {
                 
                 {isGenerating && personSignature && (
                   <div style={{ minHeight: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
-                    <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Okudum, eksiksiz teslim aldım ve onaylıyorum.”</div>
+                    <div style={{ fontSize: '9px', color: '#333', marginBottom: '4px' }}>“Eksiksiz teslim aldım, onaylıyorum.”</div>
                     <img src={personSignature.image} alt="Personel teslim alma beyanı" style={{ maxHeight: '45px', maxWidth: '100%', marginBottom: '2px' }} />
                     <span style={{ fontSize: '7px', color: '#666', fontFamily: 'monospace', marginBottom: '3px' }}>Beyan ID: {personSignature.hash}</span>
                     {personOtpData && (

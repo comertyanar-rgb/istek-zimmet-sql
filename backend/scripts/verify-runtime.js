@@ -27,6 +27,7 @@ try {
       OBJECT_ID(N'dbo.OperationQueue', N'U') AS OperationQueueTableId,
       OBJECT_ID(N'dbo.ReserveAgentRequestNonce', N'P') AS ReserveNonceProcedureId,
       OBJECT_ID(N'dbo.PruneZimmetTransientData', N'P') AS PruneProcedureId,
+      OBJECT_ID(N'dbo.FinalizeHardwarePdfHistory', N'P') AS FinalizePdfHistoryProcedureId,
       OBJECT_ID(N'dbo.AdminSaveSignatureTitle', N'P') AS AdminSaveSignatureTitleProcedureId,
       OBJECT_ID(N'dbo.vw_SystemLogChainVerification', N'V') AS LogVerificationViewId,
       COL_LENGTH(N'dbo.Sessions', N'TokenHash') AS SessionTokenHashColumn,
@@ -46,6 +47,7 @@ try {
       HAS_PERMS_BY_NAME(N'dbo.AgentRequestNonces', N'OBJECT', N'SELECT') AS NonceTableSelect,
       HAS_PERMS_BY_NAME(N'dbo.ReserveAgentRequestNonce', N'OBJECT', N'EXECUTE') AS ReserveNonceExecute,
       HAS_PERMS_BY_NAME(N'dbo.PruneZimmetTransientData', N'OBJECT', N'EXECUTE') AS PruneExecute,
+      HAS_PERMS_BY_NAME(N'dbo.FinalizeHardwarePdfHistory', N'OBJECT', N'EXECUTE') AS FinalizePdfHistoryExecute,
       HAS_PERMS_BY_NAME(N'dbo.SignatureTitles', N'OBJECT', N'UPDATE') AS SignatureTitlesUpdate,
       HAS_PERMS_BY_NAME(N'dbo.AdminSaveSignatureTitle', N'OBJECT', N'EXECUTE') AS SignatureTitleAdminExecute;
   `);
@@ -57,6 +59,7 @@ try {
   expectTruthy('OperationQueue tablosu', runtime.OperationQueueTableId);
   expectTruthy('Nonce rezervasyon prosedürü', runtime.ReserveNonceProcedureId);
   expectTruthy('Kuyruk saklama prosedürü', runtime.PruneProcedureId);
+  expectTruthy('PDF geçmişi tamamlama prosedürü', runtime.FinalizePdfHistoryProcedureId);
   expectTruthy('İmza ünvanı yönetim prosedürü', runtime.AdminSaveSignatureTitleProcedureId);
   expectTruthy('Log doğrulama görünümü', runtime.LogVerificationViewId);
   expectTruthy('Session TokenHash kolonu', runtime.SessionTokenHashColumn);
@@ -76,6 +79,7 @@ try {
   expectValue('Nonce tablosu doğrudan SELECT reddi', runtime.NonceTableSelect, 0);
   expectValue('Nonce prosedürü EXECUTE izni', runtime.ReserveNonceExecute, 1);
   expectValue('Kuyruk temizleme EXECUTE izni', runtime.PruneExecute, 1);
+  expectValue('PDF geçmişi tamamlama EXECUTE izni', runtime.FinalizePdfHistoryExecute, 1);
   expectValue('İmza ünvanı doğrudan UPDATE reddi', runtime.SignatureTitlesUpdate, 0);
   expectValue('İmza ünvanı prosedürü EXECUTE izni', runtime.SignatureTitleAdminExecute, 1);
 

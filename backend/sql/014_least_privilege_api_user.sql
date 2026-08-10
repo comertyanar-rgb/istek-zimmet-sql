@@ -95,6 +95,9 @@ IF OBJECT_ID(N'dbo.ReserveAgentRequestNonce', N'P') IS NOT NULL
 IF OBJECT_ID(N'dbo.PruneZimmetTransientData', N'P') IS NOT NULL
   GRANT EXECUTE ON OBJECT::dbo.PruneZimmetTransientData TO zimmet_api;
 
+IF OBJECT_ID(N'dbo.FinalizeHardwarePdfHistory', N'P') IS NOT NULL
+  GRANT EXECUTE ON OBJECT::dbo.FinalizeHardwarePdfHistory TO zimmet_api;
+
 IF OBJECT_ID(N'dbo.vw_SystemLogChainVerification', N'V') IS NOT NULL
   GRANT SELECT ON OBJECT::dbo.vw_SystemLogChainVerification TO zimmet_api;
 

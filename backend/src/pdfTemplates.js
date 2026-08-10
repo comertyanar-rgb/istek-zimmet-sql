@@ -108,7 +108,7 @@ export function buildZimmetDocumentHtml(payload) {
       statementPayload.person || legacySignatures.person,
       isReturn
         ? 'Donanımı belirtilen durumda teslim ettim.'
-        : 'Okudum, eksiksiz teslim aldım ve onaylıyorum.'
+        : 'Eksiksiz teslim aldım, onaylıyorum.'
     ),
     otpHash: statementPayload.otpHash || legacySignatures.otpHash || ''
   };

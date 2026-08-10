@@ -16,7 +16,7 @@ test('zimmet şablonu iki sayfayı ve yönergeyi korur', () => {
       },
       person: {
         image: 'data:image/png;base64,UEVSU09ORUw=',
-        text: 'Okudum, eksiksiz teslim aldım ve onaylıyorum.',
+        text: 'Eksiksiz teslim aldım, onaylıyorum.',
         hash: 'BEYAN-PERSONEL'
       },
       otpHash: 'DİJİTAL-ONAY-TEST'
@@ -29,7 +29,7 @@ test('zimmet şablonu iki sayfayı ve yönergeyi korur', () => {
   assert.match(html, /page-break-before:always/);
   assert.match(html, />220299000000000</);
   assert.match(html, /Eksiksiz teslim ettim\./);
-  assert.match(html, /Okudum, eksiksiz teslim aldım ve onaylıyorum\./);
+  assert.match(html, /Eksiksiz teslim aldım, onaylıyorum\./);
   assert.match(html, /Beyan ID: BEYAN-IT/);
   assert.doesNotMatch(html, /imza/i);
 });

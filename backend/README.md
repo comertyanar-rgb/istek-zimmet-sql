@@ -145,6 +145,9 @@ sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\014_least_privilege
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\015_super_admin_console.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\016_personnel_contact_identity.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_queue_notification_dismissals.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_prune_personnel_sync_logs.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\018_signature_title_admin.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\019_finalize_pdf_history.sql
 ```
 
 `010_system_log_chain.sql`, mevcut logları SHA-256 zincirine dahil eder ve
@@ -210,6 +213,12 @@ oturumları da prosedür tarafından iptal edilir.
 metin olarak tutmak yerine yalnız HMAC-SHA256 özetini saklayan
 `Personnel.NationalIdHash` kolonunu ve tekillik indeksini ekler. HMAC anahtarı
 SQL veritabanında veya SQL yedeğinde tutulmaz.
+
+`019_finalize_pdf_history.sql`, Google Drive ve e-posta tesliminden sonra cihaz
+bağlantısı ile geçmiş kaydını tek ve dar yetkili bir prosedür üzerinden tamamlar.
+API hesabının `HardwareHistory` tablosundaki doğrudan `UPDATE` reddi korunur.
+PDF işçisi dış teslim sonucunu önce kuyrukta sakladığı için sonraki SQL adımı hata
+verse bile yeniden deneme aynı dosyayı veya e-postayı ikinci kez üretmez.
 
 `npm run import:xlsx -- --reset` çok sayıda tabloyu bilinçli olarak silip yeniden
 oluşturduğu için en az yetkili API hesabıyla çalışmaz. İlk/toplu importu `014`
