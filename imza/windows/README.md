@@ -133,25 +133,10 @@ komutuna `-RemoteBasePath` parametresi ekleyin.
 
 ## Ilk test
 
-Once sadece SQL'den isi alma ve JPG uretimini test edin; upload ve GAM kapali
-olsun:
-
-```powershell
-pwsh.exe -NoProfile -ExecutionPolicy Bypass `
-  -File ".\imza\windows\Run-ImzaPipeline.ps1" `
-  -RenderEngine Headless `
-  -HeadlessRendererPath ".\backend\scripts\render-signatures.js" `
-  -ChromePath "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  -CampusImageDir "C:\GAMWork\campus" `
-  -DisablePhotoshopFallback `
-  -SkipUpload `
-  -SkipGam `
-  -SkipSignatureCallback
-```
-
-JPG dosyasi `C:\GAMWork\jpg` altinda 1072x287 piksel olarak olusmalidir.
-
-Tek bir hazir dataset'i dogrudan test etmek icin:
+Ilk denemede SQL kuyrugundan is almayin. `SkipUpload`, `SkipGam` ve
+`SkipSignatureCallback` ile yapilan bir SQL kuyruk denemesi isi kiralayip
+`ISLENIYOR` durumunda birakabilir. Once kuyruktan bagimsiz tek bir hazir dataset'i
+dogrudan render edin:
 
 ```powershell
 node .\backend\scripts\render-signatures.js `
@@ -162,7 +147,11 @@ node .\backend\scripts\render-signatures.js `
   --campus-dir "C:\GAMWork\campus"
 ```
 
-Sonra tam akisi elle bir kez calistirin:
+JPG dosyasi `C:\GAMWork\jpg` altinda 1072x287 piksel olarak olusmalidir. Bu test
+SQL, FTP/SFTP, GAM ve personel imza kaydini degistirmez.
+
+Bu test basarili olduktan sonra siteden yalniz bir test personeli icin imza isi
+olusturun ve tam akisi elle bir kez calistirin:
 
 ```powershell
 pwsh.exe -NoProfile -ExecutionPolicy Bypass `
