@@ -88,10 +88,11 @@ if ($Visible) {
   $escapedWorkingDirectory = $WorkingDirectory.Replace('"', '""')
   $wrapperContent = @"
 Option Explicit
-Dim shell
+Dim shell, exitCode
 Set shell = CreateObject("WScript.Shell")
 shell.CurrentDirectory = "$escapedWorkingDirectory"
-shell.Run "$escapedHiddenCommand", 0, True
+exitCode = shell.Run("$escapedHiddenCommand", 0, True)
+WScript.Quit exitCode
 "@
 
   Set-Content -Path $WrapperPath -Value $wrapperContent -Encoding ASCII
