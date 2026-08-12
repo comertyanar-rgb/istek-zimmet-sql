@@ -8033,7 +8033,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   {latestAdPasswordJobView.label}
                                 </span>
                                 <span className="text-[10px] text-gray-500 font-semibold truncate">
-                                  {latestAdPasswordJob?.updatedAt || latestAdPasswordJob?.createdAt || ''}
+                                  {formatTransferDateTime(
+                                    latestAdPasswordJob?.updatedAt || latestAdPasswordJob?.createdAt
+                                  )}
                                 </span>
                               </div>
                             )}
@@ -8078,10 +8080,16 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     showAppAlert('İmza bağlantısı güvenli olmadığı için açılamadı.');
                                   }
                                 }}
-                                className="block max-w-full text-left font-bold text-gray-800 text-[14px] break-words leading-tight hover:text-[#0066b1] hover:underline underline-offset-2 transition-colors"
+                                className="group inline-flex max-w-full items-center gap-1.5 text-left font-bold text-[#0066b1] text-[14px] leading-snug hover:text-[#005595] hover:underline underline-offset-2 transition-colors"
                                 title="İmza linkini aç"
                               >
-                                {viewedPerson.department || '-'}
+                                <span className="min-w-0 break-words">
+                                  {viewedPerson.department || '-'}
+                                </span>
+                                <ExternalLink
+                                  className="w-3.5 h-3.5 shrink-0 opacity-65 transition-opacity group-hover:opacity-100"
+                                  aria-hidden="true"
+                                />
                               </button>
                             ) : (
                               <p className="font-bold text-gray-800 text-[14px] break-words leading-tight">
@@ -9397,7 +9405,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             </div>
 
             {/* Metin Alanı (Yumuşak Metin Geçişi) */}
-            <div className="w-full flex flex-col items-center justify-start text-center h-[80px] relative overflow-hidden">
+            <div className="w-full flex flex-col items-center justify-start text-center h-[104px] relative overflow-hidden">
               
               {/* Yükleniyor Metni */}
               <div 
@@ -9418,7 +9426,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 }`}
               >
                 <h3 className="text-xl font-black mb-1.5 text-green-700">İşlem Başarılı!</h3>
-                <p className="text-[13px] text-gray-600 font-medium leading-tight px-2">
+                <p className="text-[13px] text-gray-600 font-medium leading-[1.5] px-2 pb-1">
                   {successMessage}
                 </p>
               </div>
