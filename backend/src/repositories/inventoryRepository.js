@@ -20,6 +20,7 @@ import {
   isValidTurkishNationalId,
   normalizeNationalId
 } from '../personnelContactImport.js';
+import { getSignatureTemplateVariant } from '../signatureTemplate.js';
 
 export const core = (value) =>
   String(value || '')
@@ -243,27 +244,6 @@ function normalizeSignatureText(value) {
     .replace(/\s+/g, ' ');
 }
 
-function normalizeSignatureTemplateKey(value) {
-  let key = String(value || '').trim();
-  if (!key) return '';
-  key = key.replace(/^imza-template-/i, '');
-  key = key.replace(/^template-/i, '');
-  key = key.replace(/^tpl/i, '');
-  return key.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 20);
-}
-
-function getSignatureTemplateVariant(titleTr, titleEn, explicitTemplateKey) {
-  const templateKey = normalizeSignatureTemplateKey(explicitTemplateKey);
-  if (templateKey) return templateKey;
-  const tr = String(titleTr || '').replace(/\s+/g, ' ').trim();
-  const en = String(titleEn || '').replace(/\s+/g, ' ').trim();
-  const maxLen = Math.max(tr.length, en.length);
-  const combinedLen = tr.length + en.length;
-  if (maxLen > 62 || combinedLen > 118) return '4';
-  if (maxLen > 48 || combinedLen > 96) return '3';
-  if (maxLen > 36 || combinedLen > 76) return '2';
-  return '1';
-}
 function normalizeKey(value) {
   return String(value ?? '').trim().toLocaleLowerCase('tr-TR');
 }
@@ -2901,7 +2881,12 @@ export async function createPersonnelSignatureForUser(user, data) {
 
   const title = await getSignatureTitle(data.titleTr);
   const campusInfo = await getSignatureCampusInfo(user, data.signatureCampus, person.campus);
-  const templateVariant = getSignatureTemplateVariant(title.titleTr, title.titleEn, title.templateKey);
+  const templateVariant = getSignatureTemplateVariant(
+    title.titleTr,
+    title.titleEn,
+    title.templateKey,
+    person.name
+  );
   const signatureEmail = normalizeEmail(person.email);
   if (!/^[a-z0-9._%+-]+@istek\.k12\.tr$/i.test(signatureEmail)) {
     throw new Error('İmza oluşturmak için geçerli bir @istek.k12.tr e-posta adresi gereklidir.');

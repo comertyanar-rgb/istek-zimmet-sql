@@ -9,6 +9,13 @@ param(
   [string]$SignatureCallbackUrl = "",
   [string]$SignatureAgentSecret = "",
   [int]$SignatureFetchLimit = 1,
+  [ValidateSet("Headless", "Photoshop")]
+  [string]$RenderEngine = "Headless",
+  [string]$NodeExe = "node.exe",
+  [string]$HeadlessRendererPath = "",
+  [string]$ChromePath = "",
+  [string]$CampusImageDir = "C:\GAMWork\campus",
+  [switch]$DisablePhotoshopFallback,
   [switch]$SkipSignatureFetch,
   [switch]$SkipSignatureCallback,
   [switch]$SkipPhotoshop,
@@ -43,13 +50,33 @@ function Resolve-ToolPath {
   throw "$ToolName was not found. Configured path: $ConfiguredPath"
 }
 
-$WinScpCom = Resolve-ToolPath `
-  -ConfiguredPath $WinScpCom `
-  -CandidatePaths @(
-    "C:\Program Files (x86)\WinSCP\WinSCP.com",
-    "C:\Program Files\WinSCP\WinSCP.com"
-  ) `
-  -ToolName "WinSCP.com"
+function Resolve-ExecutablePath {
+  param(
+    [string]$ConfiguredPath,
+    [string]$ToolName
+  )
+
+  if (![string]::IsNullOrWhiteSpace($ConfiguredPath) -and (Test-Path -LiteralPath $ConfiguredPath)) {
+    return (Resolve-Path -LiteralPath $ConfiguredPath).Path
+  }
+
+  $command = Get-Command $ConfiguredPath -ErrorAction SilentlyContinue
+  if ($command) {
+    return $command.Source
+  }
+
+  throw "$ToolName was not found. Configured path: $ConfiguredPath"
+}
+
+if (!$SkipUpload) {
+  $WinScpCom = Resolve-ToolPath `
+    -ConfiguredPath $WinScpCom `
+    -CandidatePaths @(
+      "C:\Program Files (x86)\WinSCP\WinSCP.com",
+      "C:\Program Files\WinSCP\WinSCP.com"
+    ) `
+    -ToolName "WinSCP.com"
+}
 
 $DatasetDir = Join-Path $GamWork "datasets"
 $HtmlDir = Join-Path $GamWork "signature"
@@ -86,9 +113,43 @@ if ([string]::IsNullOrWhiteSpace($SignatureCallbackUrl)) {
   }
 }
 
+if (![string]::IsNullOrWhiteSpace($env:SIGNATURE_RENDER_ENGINE)) {
+  $RenderEngine = $env:SIGNATURE_RENDER_ENGINE.Trim()
+}
+if ($RenderEngine -notin @("Headless", "Photoshop")) {
+  throw "Geçersiz imza üretim motoru: $RenderEngine"
+}
+
+if ([string]::IsNullOrWhiteSpace($HeadlessRendererPath)) {
+  if (![string]::IsNullOrWhiteSpace($env:SIGNATURE_RENDERER_PATH)) {
+    $HeadlessRendererPath = $env:SIGNATURE_RENDERER_PATH
+  } else {
+    $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $rendererCandidates = @(
+      (Join-Path $repositoryRoot "backend\scripts\render-signatures.js"),
+      (Join-Path $PSScriptRoot "render-signatures.js"),
+      (Join-Path $GamWork "scripts\render-signatures.js")
+    )
+    $HeadlessRendererPath = $rendererCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  }
+}
+
+if ([string]::IsNullOrWhiteSpace($ChromePath)) {
+  if (![string]::IsNullOrWhiteSpace($env:SIGNATURE_CHROME_PATH)) {
+    $ChromePath = $env:SIGNATURE_CHROME_PATH
+  } elseif (![string]::IsNullOrWhiteSpace($env:PDF_CHROME_PATH)) {
+    $ChromePath = $env:PDF_CHROME_PATH
+  }
+}
+
+if (![string]::IsNullOrWhiteSpace($env:SIGNATURE_CAMPUS_DIR)) {
+  $CampusImageDir = $env:SIGNATURE_CAMPUS_DIR
+}
+
 Write-AgentInfo "API: $SignatureApiUrl"
 Write-AgentInfo ("Secret: " + $(if ([string]::IsNullOrWhiteSpace($SignatureAgentSecret)) { "YOK" } else { "VAR" }))
 Write-AgentInfo "GAMWork: $GamWork"
+Write-AgentInfo "İmza üretim motoru: $RenderEngine"
 
 foreach ($dir in @($DatasetDir, $HtmlDir, $CommandDir, $JpgDir, $ProcessedDir, $LogDir, $ScriptsDir, $JobDir)) {
   if (!(Test-Path -LiteralPath $dir)) {
@@ -131,7 +192,7 @@ function Get-SignatureTemplateFileKey {
   $key = $key -replace '^template-', ''
   $key = $key -replace '^tpl', ''
   $key = $key -replace '[^a-zA-Z0-9_-]', ''
-  if ([string]::IsNullOrWhiteSpace($key)) { return "1" }
+  if ($key -notmatch '^[1-4](?:-w)?$') { return "1" }
   return $key
 }
 
@@ -510,7 +571,12 @@ try {
   }
 
   $stamp = $Matches[1]
-  $templateVariant = "normal"
+  $templateVariant = "1"
+  $templateFileKey = "1"
+  if ($stamp -match "_(compact|small|tiny|tpl[a-zA-Z0-9_-]+)$") {
+    $templateVariant = $Matches[1]
+    $templateFileKey = Get-SignatureTemplateFileKey $templateVariant
+  }
   $gamFile = Join-Path $CommandDir ("gam_imza_{0}.cmd" -f $stamp)
 
   if (!(Test-Path -LiteralPath $gamFile)) {
@@ -529,7 +595,7 @@ try {
   $rowCountBeforeStateCheck = @($rows).Count
   $rows = @(Get-ActiveSignatureRows -Rows $rows -RunLog $runLog)
   if ($rows.Count -eq 0) {
-    Write-AgentInfo "Dataset içindeki tüm imza işleri iptal edilmiş; Photoshop çalıştırılmadı."
+    Write-AgentInfo "Dataset içindeki tüm imza işleri iptal edilmiş; üretim başlatılmadı."
     "All signature jobs in this dataset are inactive. Archiving input files." | Tee-Object -FilePath $runLog -Append
     Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "cancelled"
     exit 0
@@ -539,47 +605,95 @@ try {
   }
 
   if (!$SkipPhotoshop) {
-    if (!(Test-Path -LiteralPath $PhotoshopExe)) {
-      throw "Photoshop.exe was not found: $PhotoshopExe"
+    foreach ($row in $rows) {
+      $oldJpg = Join-Path $JpgDir (([string]$row.filename) + ".jpg")
+      Remove-Item -LiteralPath $oldJpg -ErrorAction SilentlyContinue
     }
 
-    $activePsdTemplate = $PsdTemplate
-    $templateVariant = "normal"
-    $templateFileKey = Get-SignatureTemplateFileKey $templateVariant
-    if ($stamp -match "_(compact|small|tiny|tpl[a-zA-Z0-9_-]+)$") {
-      $templateVariant = $Matches[1]
-      $templateFileKey = Get-SignatureTemplateFileKey $templateVariant
+    $rendered = $false
+    if ($RenderEngine -eq "Headless") {
+      try {
+        if ([string]::IsNullOrWhiteSpace($HeadlessRendererPath) -or !(Test-Path -LiteralPath $HeadlessRendererPath)) {
+          throw "Headless imza renderer bulunamadı: $HeadlessRendererPath"
+        }
+
+        $resolvedNode = Resolve-ExecutablePath -ConfiguredPath $NodeExe -ToolName "Node.js"
+        $rendererArguments = @(
+          $HeadlessRendererPath,
+          "--dataset", $dataset.FullName,
+          "--output-dir", $JpgDir,
+          "--template-key", $templateFileKey
+        )
+        if (![string]::IsNullOrWhiteSpace($ChromePath)) {
+          $rendererArguments += @("--chrome-path", $ChromePath)
+        }
+        if (![string]::IsNullOrWhiteSpace($CampusImageDir)) {
+          $rendererArguments += @("--campus-dir", $CampusImageDir)
+        }
+
+        Write-AgentInfo "Görünmez Chrome ile imza oluşturuluyor: şablon $templateFileKey"
+        "Starting headless signature renderer with template '$templateFileKey'." | Tee-Object -FilePath $runLog -Append
+        $renderOutput = & $resolvedNode @rendererArguments 2>&1
+        $rendererExitCode = $LASTEXITCODE
+        if ($renderOutput) {
+          $renderOutput | Tee-Object -FilePath $runLog -Append
+        }
+        if ($rendererExitCode -ne 0) {
+          throw "Headless renderer çıkış kodu: $rendererExitCode"
+        }
+        $rendered = $true
+      } catch {
+        "Headless renderer failed: $($_.Exception.Message)" | Tee-Object -FilePath $runLog -Append
+        if ($DisablePhotoshopFallback -or !(Test-Path -LiteralPath $PhotoshopExe)) {
+          throw
+        }
+        Write-AgentInfo "Chrome üretimi başarısız; Photoshop yedeğine geçiliyor."
+      }
     }
 
-    $variantTemplate = Join-Path $TemplateDir ("imza-template-{0}.psd" -f $templateFileKey)
-    if (Test-Path -LiteralPath $variantTemplate) {
-      $activePsdTemplate = $variantTemplate
-    } else {
-      "Template variant '$templateVariant' was requested but not found: $variantTemplate. Falling back to default template." | Tee-Object -FilePath $runLog -Append
-    }
+    if (!$rendered) {
+      if (!(Test-Path -LiteralPath $PhotoshopExe)) {
+        throw "Photoshop.exe was not found: $PhotoshopExe"
+      }
 
-    if (!(Test-Path -LiteralPath $activePsdTemplate)) {
-      throw "PSD template was not found: $activePsdTemplate"
-    }
+      $activePsdTemplate = $PsdTemplate
+      $variantTemplate = Join-Path $TemplateDir ("imza-template-{0}.psd" -f $templateFileKey)
+      if (!(Test-Path -LiteralPath $variantTemplate) -and $templateFileKey.EndsWith("-w")) {
+        $baseTemplateKey = $templateFileKey.Substring(0, 1)
+        $baseVariantTemplate = Join-Path $TemplateDir ("imza-template-{0}.psd" -f $baseTemplateKey)
+        if (Test-Path -LiteralPath $baseVariantTemplate) {
+          $variantTemplate = $baseVariantTemplate
+          "Wide Photoshop template '$templateFileKey' bulunamadı; '$baseTemplateKey' kullanılıyor." | Tee-Object -FilePath $runLog -Append
+        }
+      }
+      if (Test-Path -LiteralPath $variantTemplate) {
+        $activePsdTemplate = $variantTemplate
+      } else {
+        "Template variant '$templateFileKey' was requested but not found: $variantTemplate. Falling back to default template." | Tee-Object -FilePath $runLog -Append
+      }
 
-    $doneFile = Join-Path $JobDir ("photoshop_{0}.done" -f $stamp)
-    $errorFile = Join-Path $JobDir ("photoshop_{0}.error.txt" -f $stamp)
-    $jobFile = Join-Path $JobDir "photoshop-job.js"
-    $bundledPhotoshopScript = Join-Path $PSScriptRoot "photoshop-generate-signatures.jsx"
-    $photoshopScript = if (Test-Path -LiteralPath $bundledPhotoshopScript) {
-      $bundledPhotoshopScript
-    } else {
-      Join-Path $ScriptsDir "photoshop-generate-signatures.jsx"
-    }
+      if (!(Test-Path -LiteralPath $activePsdTemplate)) {
+        throw "PSD template was not found: $activePsdTemplate"
+      }
 
-    Remove-Item -LiteralPath $doneFile, $errorFile -ErrorAction SilentlyContinue
+      $doneFile = Join-Path $JobDir ("photoshop_{0}.done" -f $stamp)
+      $errorFile = Join-Path $JobDir ("photoshop_{0}.error.txt" -f $stamp)
+      $jobFile = Join-Path $JobDir "photoshop-job.js"
+      $bundledPhotoshopScript = Join-Path $PSScriptRoot "photoshop-generate-signatures.jsx"
+      $photoshopScript = if (Test-Path -LiteralPath $bundledPhotoshopScript) {
+        $bundledPhotoshopScript
+      } else {
+        Join-Path $ScriptsDir "photoshop-generate-signatures.jsx"
+      }
 
-    $toJsPath = {
-      param([string]$path)
-      return $path.Replace("\", "/").Replace("'", "\\'")
-    }
+      Remove-Item -LiteralPath $doneFile, $errorFile -ErrorAction SilentlyContinue
 
-    $jobConfig = @"
+      $toJsPath = {
+        param([string]$path)
+        return $path.Replace("\", "/").Replace("'", "\\'")
+      }
+
+      $jobConfig = @"
 var SIGNATURE_JOB = {
   psdPath: '$(& $toJsPath $activePsdTemplate)',
   datasetPath: '$(& $toJsPath $dataset.FullName)',
@@ -589,34 +703,42 @@ var SIGNATURE_JOB = {
 };
 "@
 
-    Set-Content -LiteralPath $jobFile -Value $jobConfig -Encoding UTF8
+      Set-Content -LiteralPath $jobFile -Value $jobConfig -Encoding UTF8
 
-    Write-AgentInfo "Photoshop başlatılıyor: $activePsdTemplate"
-    "Starting Photoshop with template variant '$templateVariant': $activePsdTemplate" | Tee-Object -FilePath $runLog -Append
-    Start-Process -FilePath $PhotoshopExe -ArgumentList @("-r", "`"$photoshopScript`"")
+      Write-AgentInfo "Photoshop başlatılıyor: $activePsdTemplate"
+      "Starting Photoshop with template variant '$templateFileKey': $activePsdTemplate" | Tee-Object -FilePath $runLog -Append
+      Start-Process -FilePath $PhotoshopExe -ArgumentList @("-r", "`"$photoshopScript`"")
 
-    $deadline = (Get-Date).AddMinutes(30)
-    while ((Get-Date) -lt $deadline) {
-      if (Test-Path -LiteralPath $doneFile) {
-        "Photoshop completed." | Tee-Object -FilePath $runLog -Append
-        break
+      $deadline = (Get-Date).AddMinutes(30)
+      while ((Get-Date) -lt $deadline) {
+        if (Test-Path -LiteralPath $doneFile) {
+          "Photoshop completed." | Tee-Object -FilePath $runLog -Append
+          break
+        }
+        if (Test-Path -LiteralPath $errorFile) {
+          $psError = Get-Content -LiteralPath $errorFile -Raw
+          throw "Photoshop script failed: $psError"
+        }
+        Start-Sleep -Seconds 5
       }
-      if (Test-Path -LiteralPath $errorFile) {
-        $psError = Get-Content -LiteralPath $errorFile -Raw
-        throw "Photoshop script failed: $psError"
+
+      if (!(Test-Path -LiteralPath $doneFile)) {
+        throw "Photoshop did not finish within 30 minutes."
       }
-      Start-Sleep -Seconds 5
     }
 
-    if (!(Test-Path -LiteralPath $doneFile)) {
-      throw "Photoshop did not finish within 30 minutes."
+    foreach ($row in $rows) {
+      $renderedJpg = Join-Path $JpgDir (([string]$row.filename) + ".jpg")
+      if (!(Test-Path -LiteralPath $renderedJpg)) {
+        throw "İmza JPG çıktısı oluşmadı: $renderedJpg"
+      }
     }
   }
 
   $rows = @(Get-ActiveSignatureRows -Rows $rows -RunLog $runLog)
   if ($rows.Count -eq 0) {
-    Write-AgentInfo "İmza işi Photoshop aşamasında iptal edildi; yükleme ve GAM adımları atlandı."
-    "Signature jobs were cancelled after Photoshop. Upload and GAM skipped." | Tee-Object -FilePath $runLog -Append
+    Write-AgentInfo "İmza işi üretim aşamasında iptal edildi; yükleme ve GAM adımları atlandı."
+    "Signature jobs were cancelled after rendering. Upload and GAM skipped." | Tee-Object -FilePath $runLog -Append
     Move-SignatureInputToArchive -Dataset $dataset -GamFile $gamFile -Bucket "cancelled"
     exit 0
   }
@@ -707,7 +829,7 @@ var SIGNATURE_JOB = {
           action = "completeSignatureJob"
           signatureId = $signatureId
           success = $true
-          templateVariant = $templateVariant
+          templateVariant = $templateFileKey
           machine = $env:COMPUTERNAME
         }
 

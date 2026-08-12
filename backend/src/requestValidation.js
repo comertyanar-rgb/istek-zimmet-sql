@@ -198,8 +198,8 @@ function validateActionSpecificShape(data) {
     if (data.titleEn !== undefined && (typeof data.titleEn !== 'string' || data.titleEn.length > 240)) {
       throw new RequestValidationError('İngilizce ünvan en fazla 240 karakter olmalıdır.');
     }
-    if (!['1', '2', '3', '4'].includes(String(data.templateKey || ''))) {
-      throw new RequestValidationError('İmza şablonu yalnızca 1, 2, 3 veya 4 olabilir.');
+    if (!/^[1-4](?:-w)?$/.test(String(data.templateKey || ''))) {
+      throw new RequestValidationError('İmza şablonu 1-4 veya 1-w ile 4-w arasında olmalıdır.');
     }
     if (data.titleId !== null && data.titleId !== undefined) {
       const titleId = Number(data.titleId);

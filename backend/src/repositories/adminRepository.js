@@ -434,8 +434,8 @@ export async function saveSignatureTitleForAdmin(user, data) {
   const active = data.active !== false;
 
   if (!titleTr) throw new Error('Türkçe ünvan zorunludur.');
-  if (!['1', '2', '3', '4'].includes(templateKey)) {
-    throw new Error('İmza şablonu yalnızca 1, 2, 3 veya 4 olabilir.');
+  if (!/^[1-4](?:-w)?$/.test(templateKey)) {
+    throw new Error('İmza şablonu 1-4 veya 1-w ile 4-w arasında olmalıdır.');
   }
 
   return withTransaction(async (execute) => {

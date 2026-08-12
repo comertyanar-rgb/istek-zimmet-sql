@@ -18,7 +18,8 @@
     "smoke:pdf-load": "node scripts/smoke-pdf-load.js",
     "smoke:business-bulk": "node scripts/smoke-business-bulk.js",
     "verify:google-bridge": "node scripts/verify-google-bridge.js",
-    "import:personnel-contact": "node scripts/import-personnel-contact-data.js"
+    "import:personnel-contact": "node scripts/import-personnel-contact-data.js",
+    "render:signatures": "node scripts/render-signatures.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

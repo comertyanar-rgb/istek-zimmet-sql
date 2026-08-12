@@ -1,189 +1,220 @@
-# Windows imza pipeline kurulumu
+# Windows imza ajani
 
-Bu klasordeki dosyalar Google Sheet'in Drive'a urettigi dosyalari yerelde isler.
+Bu ajan SQL'deki `SignatureJobs` kuyrugundan is alir, imza JPG'sini gorunmez
+Chrome/Edge ile uretir, sunucuya yukler, GAM komutunu calistirir ve sonucu SQL
+API'ye bildirir. Varsayilan akista Photoshop gerekmez.
 
-## Klasor yapisi
+## Gereksinimler
 
-`C:\GAMWork` altinda su klasorler kullanilir:
+- Node.js 20 veya daha yeni
+- Google Chrome ya da Microsoft Edge
+- WinSCP (FTP/SFTP yuklemesi icin)
+- GAMADV-XTD3
+- PowerShell 7 onerilir; Windows PowerShell 5.1 de desteklenir
+- `backend` klasorunde `npm ci` calistirilmis olmalidir
+
+Photoshop sadece eski akisa donmek icin istege bagli yedek motordur.
+
+## Klasorler
+
+Ajan asagidaki klasorleri gerektiginde kendisi olusturur:
 
 ```text
 C:\GAMWork\datasets
 C:\GAMWork\signature
 C:\GAMWork\commands
 C:\GAMWork\jpg
+C:\GAMWork\campus
 C:\GAMWork\scripts
-C:\GAMWork\template
 C:\GAMWork\logs
 C:\GAMWork\processed
 C:\GAMWork\job
 ```
 
-Google Drive for Desktop tarafinda:
+Kampus alt bant PNG'lerini `C:\GAMWork\campus` altina koyun. Dosya adlari
+Kampus tablosundaki `CampusImage` degerleriyle ayni olmalidir. Ornek:
 
 ```text
-Photoshop dataset klasoru -> C:\GAMWork\datasets
-HTML klasoru              -> C:\GAMWork\signature
-GAM command klasoru       -> C:\GAMWork\commands
+AB.png
+AN.png
+AO.png
+BE.png
+BK.png
+GM.png
+IO.png
+KA.png
+KL.png
+KM.png
+SS.png
+UB.png
 ```
 
-## Dosyalari yerlestir
+SQL'de eski bilgisayara ait tam bir `CampusImage` yolu bulunsa bile ajan once dosya
+adini alir ve `C:\GAMWork\campus` altinda arar. Boylece sunucuya geciste eski yerel
+yollari tek tek degistirmek gerekmez.
+
+## Sablonlar
+
+Sekiz sablon anahtari desteklenir:
 
 ```text
-Run-ImzaPipeline.ps1              -> C:\GAMWork\scripts\Run-ImzaPipeline.ps1
-photoshop-generate-signatures.jsx -> C:\GAMWork\scripts\photoshop-generate-signatures.jsx
-winscp-open.example.txt           -> C:\GAMWork\scripts\winscp-open.txt
+1    1-w
+2    2-w
+3    3-w
+4    4-w
 ```
 
-`winscp-open.txt` icindeki FTP bilgisini doldur:
+- `1`-`4`: unvan uzunluguna gore kademeli font boyutlari
+- `-w`: ayni unvan kademesi, uzun ad/soyad icin daha kucuk ad fontu
+
+Sistem ad uzunlugunu otomatik olcer. Ad 25 karakteri veya agirlikli genisligi 22
+birimi gecerse secilen sablona otomatik olarak `-w` eklenir. Yoneticiler Sistem >
+Imza Unvanlari ekraninda bir unvan icin `1-w` ... `4-w` anahtarini elle de
+zorlayabilir.
+
+Eski anahtarlar geriye donuk desteklenir:
 
 ```text
-open "ftp://USERNAME:PASSWORD@ftp.example.com/"
+normal  -> 1
+compact -> 2
+small   -> 3
+tiny    -> 4
 ```
 
-Normal FileZilla Client otomatik upload icin uygun degildir. Gorev Zamanlayici'da
-sessiz calisip klasor olusturma, dosya yukleme, hata kodu dondurme ve log tutma
-gibi islemler icin WinSCP veya FileZilla Pro CLI gerekir.
+Headless motorda PSD dosyasi kullanilmaz. Boyut ve font farklari kod tarafindan
+uygulanir. Photoshop yedegi kullanilacaksa `imza-template-1.psd` ...
+`imza-template-4-w.psd` dosyalari `C:\GAMWork\template` altinda tutulabilir.
 
-FileZilla Pro CLI kullaniyorsan pipeline'in upload kismi ayrica fzcli komutlarina
-gore uyarlanmalidir. Standart FileZilla Client kullaniliyorsa bu scriptteki WinSCP
-bolumunu korumak en stabil yoldur.
+## Ortam degiskenleri
 
-PSD template dosyalarini da su yola koy:
+Ayni ajan anahtarini backend `.env` dosyasina ve ajani calistiran Windows hesabina
+girin:
 
 ```text
-C:\GAMWork\template\imza-template-1.psd
-C:\GAMWork\template\imza-template-2.psd
-C:\GAMWork\template\imza-template-3.psd
-C:\GAMWork\template\imza-template-4.psd
+Backend .env:
+SIGNATURE_AGENT_SECRET=uzun-rastgele-deger
+
+Windows ortam degiskeni:
+SIGNATURE_AGENT_SECRET=ayni-uzun-rastgele-deger
 ```
 
-`Unvanlar` sayfasinda 3. kolona `1`, `2`, `3` veya `4` sablon numarasi
-yazilirsa SQL kuyrugu ve Windows ajani ayni numarali PSD'yi kullanir. Bu
-kolon bos kalirsa sistem unvan uzunluguna gore otomatik olarak 1-4 arasinda
-bir sablon secer.
-
-Eski `normal`, `compact`, `small`, `tiny` varyantlari da geriye donuk uyumluluk
-icin sirasiyla `1`, `2`, `3`, `4` olarak yorumlanir.
-
-PSD icindeki variable isimleri TXT basliklariyla eslesmeli:
+Istege bagli ayarlar:
 
 ```text
-ad
-unvan
-ing
-email
-adres
-CampusImage
+SIGNATURE_API_URL=http://127.0.0.1:8787/api/action
+SIGNATURE_CALLBACK_URL=http://127.0.0.1:8787/api/action
+SIGNATURE_RENDER_ENGINE=Headless
+SIGNATURE_RENDERER_PATH=E:\IstekZimmet\App\backend\scripts\render-signatures.js
+SIGNATURE_CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
+SIGNATURE_CAMPUS_DIR=C:\GAMWork\campus
 ```
 
-Ilk kolon olan `filename`, dosya adi ve data set adi olarak kullanilir.
+`SIGNATURE_AGENT_SECRET` yoksa ajan SQL kuyrugundan is alamaz. Gecis kolayligi
+icin `ZIMMET_SIGNATURE_AGENT_SECRET`, `AD_AGENT_SECRET` ve `ZIMMET_SYNC_SECRET`
+sirayla yedek olarak okunur; canli ortamda ayri `SIGNATURE_AGENT_SECRET`
+kullanilmasi onerilir.
+
+## FTP/SFTP ayari
+
+`C:\GAMWork\scripts\winscp-open.txt` icine baglanti satirini yazin:
+
+```text
+open "sftp://USERNAME:PASSWORD@example.com/" -hostkey="ssh-ed25519 255 xx:xx:xx"
+```
+
+FTP kullaniliyorsa:
+
+```text
+open "ftp://USERNAME:PASSWORD@example.com/"
+```
+
+Uzak klasor varsayilan olarak `/public_html/imza` dizinidir. Farkliysa ajan
+komutuna `-RemoteBasePath` parametresi ekleyin.
 
 ## Ilk test
 
-Once upload ve GAM'i kapatip sadece Photoshop'u test et:
+Once sadece SQL'den isi alma ve JPG uretimini test edin; upload ve GAM kapali
+olsun:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1" -SkipUpload -SkipGam
+pwsh.exe -NoProfile -ExecutionPolicy Bypass `
+  -File ".\imza\windows\Run-ImzaPipeline.ps1" `
+  -RenderEngine Headless `
+  -HeadlessRendererPath ".\backend\scripts\render-signatures.js" `
+  -ChromePath "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  -CampusImageDir "C:\GAMWork\campus" `
+  -DisablePhotoshopFallback `
+  -SkipUpload `
+  -SkipGam `
+  -SkipSignatureCallback
 ```
 
-Photoshop farkli bir yoldaysa parametreyle ver:
+JPG dosyasi `C:\GAMWork\jpg` altinda 1072x287 piksel olarak olusmalidir.
+
+Tek bir hazir dataset'i dogrudan test etmek icin:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1" -PhotoshopExe "C:\Program Files\Adobe\Adobe Photoshop 2026\Photoshop.exe" -SkipUpload -SkipGam
+node .\backend\scripts\render-signatures.js `
+  --dataset "C:\GAMWork\datasets\Photoshop_Dataset_TEST_tpl1-w.txt" `
+  --output-dir "C:\GAMWork\jpg" `
+  --template-key "1-w" `
+  --chrome-path "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  --campus-dir "C:\GAMWork\campus"
 ```
 
-JPG dosyalari burada olusmali:
-
-```text
-C:\GAMWork\jpg
-```
-
-Sonra sadece upload'u test et:
+Sonra tam akisi elle bir kez calistirin:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1" -SkipPhotoshop -SkipGam
-```
-
-Son olarak komple calistir:
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1"
-```
-
-SQL gecisinden sonra ajan artik `SignatureJobs` kuyrugundan is cekebilir. Klasorde
-hazir `Photoshop_Dataset_*.txt` dosyasi varsa once onu isler; yoksa SQL API'ye
-`fetchSignatureJobs` istegi atip dataset, HTML ve GAM dosyalarini yerelde kendisi
-olusturur.
-
-GAM basimi bittikten sonra personelin `Imza Durumu` bilgisinin otomatik
-`Basildi` olmasi icin ayni gizli degeri iki yere gir:
-
-```text
-SQL API backend .env:
-SIGNATURE_AGENT_SECRET = uzun-rastgele-bir-deger
-
-Windows ortam degiskeni:
-SIGNATURE_AGENT_SECRET = ayni-uzun-rastgele-deger
-```
-
-Windows ortam degiskeni yoksa ajan yedek olarak `ZIMMET_SIGNATURE_AGENT_SECRET`,
-sonra gecis kolayligi icin `AD_AGENT_SECRET`, en son `ZIMMET_SYNC_SECRET`
-degerini kullanmayi dener. Secret bos kalirsa SQL kuyrugundan is cekmez; klasorde
-hazir dosya varsa imza basilir ama durum callback'i atlanir.
-
-Varsayilan SQL API adresi:
-
-```text
-http://localhost:8787/api/action
-```
-
-Farkli bir adres kullanacaksan Windows ortam degiskeni olarak gir:
-
-```text
-SIGNATURE_API_URL = http://sunucu-adresi:8787/api/action
-```
-
-Callback adresi ayri olacaksa:
-
-```text
-SIGNATURE_CALLBACK_URL = http://sunucu-adresi:8787/api/action
+pwsh.exe -NoProfile -ExecutionPolicy Bypass `
+  -File ".\imza\windows\Run-ImzaPipeline.ps1" `
+  -RenderEngine Headless `
+  -HeadlessRendererPath ".\backend\scripts\render-signatures.js" `
+  -CampusImageDir "C:\GAMWork\campus" `
+  -DisablePhotoshopFallback
 ```
 
 ## Gorev Zamanlayici
 
-Onerilen sessiz kurulum:
+Yonetici PowerShell 7 ile depo kokunde calistirin:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2
+pwsh.exe -NoProfile -ExecutionPolicy Bypass `
+  -File ".\imza\windows\Install-ImzaAgentTask.ps1" `
+  -IntervalMinutes 2 `
+  -RenderEngine Headless `
+  -NodeExe "C:\Program Files\nodejs\node.exe" `
+  -HeadlessRendererPath "E:\IstekZimmet\App\backend\scripts\render-signatures.js" `
+  -ChromePath "C:\Program Files\Google\Chrome\Application\chrome.exe" `
+  -CampusImageDir "C:\GAMWork\campus" `
+  -DisablePhotoshopFallback
 ```
 
-Bu komut gorevi `wscript.exe` ile kurar; arka planda calisirken PowerShell penceresi acmaz.
-Test ederken pencereyi gormek istersen:
+Kurulum betigi `C:\GAMWork\scripts\Run-ImzaAgentHidden.vbs` dosyasini otomatik
+olusturur. Gorev `wscript.exe` uzerinden calisir; PowerShell veya Chrome penceresi
+gostermez. Ayni gorev zaten varsa guvenli bicimde guncellenir.
+
+Kontrol:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\imza\windows\Install-ImzaAgentTask.ps1" -IntervalMinutes 2 -Visible
+Get-ScheduledTask -TaskName "ISTEK Zimmet Imza Agent" |
+  Select-Object TaskName, State
+
+Start-ScheduledTask -TaskName "ISTEK Zimmet Imza Agent"
+Start-Sleep -Seconds 10
+Get-ScheduledTaskInfo -TaskName "ISTEK Zimmet Imza Agent" |
+  Select-Object LastRunTime, LastTaskResult, NextRunTime
 ```
 
-Elle kurulum gerekirse Windows Task Scheduler'da yeni gorev olustur:
+`LastTaskResult` degeri `0` olmali. Ajan loglari `C:\GAMWork\logs` altindadir.
 
-```text
-Program/script:
-powershell.exe
+## Photoshop yedegi
 
-Add arguments:
--ExecutionPolicy Bypass -File "C:\GAMWork\scripts\Run-ImzaPipeline.ps1"
-
-Start in:
-C:\GAMWork
-```
-
-Tetikleyici olarak her 5 veya 10 dakikada bir calistirabilirsin.
-
-## Not
-
-WinSCP remote yolu `Run-ImzaPipeline.ps1` icindeki `RemoteBasePath` parametresiyle belirlenir.
-Sitedeki gercek yol `/public_html/imza` veya `/httpdocs/imza` ise gorev argumanina sunu ekle:
+Headless uretim basarisiz oldugunda Photoshop'a otomatik gecmek isteniyorsa
+`-DisablePhotoshopFallback` parametresini kaldirin ve Photoshop yolunu verin:
 
 ```powershell
--RemoteBasePath "/public_html/imza"
+-PhotoshopExe "C:\Program Files\Adobe\Adobe Photoshop 2026\Photoshop.exe"
 ```
+
+Sunucuda Photoshop bulunmayacaksa `-DisablePhotoshopFallback` mutlaka kullanin;
+boylece bir hata sessizce baska bir motora gecmek yerine acik olarak loglanir.

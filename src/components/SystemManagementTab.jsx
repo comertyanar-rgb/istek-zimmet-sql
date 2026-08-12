@@ -1028,9 +1028,13 @@ export function SystemManagementTab({ currentUser, onRefreshData }) {
                   className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm outline-none focus:border-[#0066b1]"
                 >
                   <option value="1">Şablon 1</option>
+                  <option value="1-w">Şablon 1-w (uzun ad)</option>
                   <option value="2">Şablon 2</option>
+                  <option value="2-w">Şablon 2-w (uzun ad)</option>
                   <option value="3">Şablon 3</option>
+                  <option value="3-w">Şablon 3-w (uzun ad)</option>
                   <option value="4">Şablon 4</option>
+                  <option value="4-w">Şablon 4-w (uzun ad)</option>
                 </select>
               </label>
               <label className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 sm:mt-[22px] sm:h-11 sm:py-0">

@@ -35,6 +35,13 @@ test('süper yönetici aksiyonlarını bilinen ve güvenli istekler olarak kabul
       templateKey: '2',
       active: true,
     },
+    {
+      action: 'adminSaveSignatureTitle',
+      titleTr: 'Kurumsal Uygulamalar Yöneticisi',
+      titleEn: 'Enterprise Applications Manager',
+      templateKey: '3-w',
+      active: true,
+    },
   ];
 
   for (const request of requests) {
@@ -52,6 +59,6 @@ test('imza ünvanı yönetim isteğinde geçersiz şablonu reddeder', () => {
         templateKey: '7',
         active: true,
       }),
-    /şablonu yalnızca 1, 2, 3 veya 4/i
+    /şablonu 1-4 veya 1-w ile 4-w/i
   );
 });

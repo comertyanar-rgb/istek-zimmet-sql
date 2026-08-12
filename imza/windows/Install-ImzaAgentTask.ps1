@@ -8,6 +8,13 @@ param(
   [string]$WorkingDirectory = "",
   [string]$WrapperPath = "C:\GAMWork\scripts\Run-ImzaAgentHidden.vbs",
   [int]$SignatureFetchLimit = 1,
+  [ValidateSet("Headless", "Photoshop")]
+  [string]$RenderEngine = "Headless",
+  [string]$NodeExe = "node.exe",
+  [string]$HeadlessRendererPath = "",
+  [string]$ChromePath = "",
+  [string]$CampusImageDir = "C:\GAMWork\campus",
+  [switch]$DisablePhotoshopFallback,
   [switch]$Visible,
   [switch]$SkipPhotoshop,
   [switch]$SkipUpload,
@@ -15,6 +22,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+function Quote-TaskArgument {
+  param([string]$Value)
+
+  if ($null -eq $Value) { return '""' }
+  if ($Value.Contains('"')) {
+    throw "Gorev argumani cift tirnak iceremez: $Value"
+  }
+  return '"' + $Value + '"'
+}
 
 if ($IntervalMinutes -lt 1) {
   throw "IntervalMinutes en az 1 olmali."
@@ -42,6 +59,18 @@ if (-not $pwsh) {
 
 $quotedScript = '"' + $ScriptPath + '"'
 $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $quotedScript -SignatureFetchLimit $SignatureFetchLimit"
+$arguments += " -RenderEngine $RenderEngine"
+$arguments += " -NodeExe " + (Quote-TaskArgument $NodeExe)
+if (-not [string]::IsNullOrWhiteSpace($HeadlessRendererPath)) {
+  $arguments += " -HeadlessRendererPath " + (Quote-TaskArgument $HeadlessRendererPath)
+}
+if (-not [string]::IsNullOrWhiteSpace($ChromePath)) {
+  $arguments += " -ChromePath " + (Quote-TaskArgument $ChromePath)
+}
+if (-not [string]::IsNullOrWhiteSpace($CampusImageDir)) {
+  $arguments += " -CampusImageDir " + (Quote-TaskArgument $CampusImageDir)
+}
+if ($DisablePhotoshopFallback) { $arguments += " -DisablePhotoshopFallback" }
 if ($SkipPhotoshop) { $arguments += " -SkipPhotoshop" }
 if ($SkipUpload) { $arguments += " -SkipUpload" }
 if ($SkipGam) { $arguments += " -SkipGam" }
@@ -96,6 +125,7 @@ Register-ScheduledTask `
   taskName = $TaskName
   intervalMinutes = $IntervalMinutes
   scriptPath = $ScriptPath
+  renderEngine = $RenderEngine
   hidden = -not $Visible
   wrapperPath = if ($Visible) { "" } else { $WrapperPath }
 }

@@ -2,11 +2,8 @@ USE IstekZimmet;
 GO
 
 /*
-  İmza ünvanı yönetimi:
-  - API hesabına SignatureTitles üzerinde doğrudan yazma izni verilmez.
-  - Ekleme ve güncelleme yalnız süper yönetici API akışının çağırdığı,
-    EXECUTE AS OWNER prosedürü üzerinden yapılır.
-  - Kayıtlar silinmez; eski imza geçmişini korumak için pasife alınır.
+  Adds wide-name signature variants to the existing title administration flow.
+  Fresh installations also receive this validation from migration 018.
 */
 
 SET XACT_ABORT ON;

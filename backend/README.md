@@ -148,7 +148,14 @@ sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_queue_notificat
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_prune_personnel_sync_logs.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\018_signature_title_admin.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\019_finalize_pdf_history.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\020_signature_wide_templates.sql
 ```
+
+`020_signature_wide_templates.sql`, mevcut veritabanlarında imza şablonu
+anahtarlarını `1`, `1-w`, `2`, `2-w`, `3`, `3-w`, `4`, `4-w` olarak
+genişletir. Temiz kurulumlarda aynı doğrulama `018_signature_title_admin.sql`
+içinde de bulunur. Migration çalıştırıldıktan sonra backend ve imza ajanını
+yeniden başlatın.
 
 `010_system_log_chain.sql`, mevcut logları SHA-256 zincirine dahil eder ve
 `SystemLogs` tablosunu API için yalnızca eklenebilir hale getirir. Zincir kontrolü:
