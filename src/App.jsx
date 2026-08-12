@@ -46,6 +46,7 @@ import {
   postApiAction,
 } from './services/apiClient.js';
 import { BRANDS_MODELS, CAMPUS_CODES, TYPE_BRANDS } from './constants/inventory.js';
+import { hasCurrentAssignmentDocument } from './utils/hardware.js';
 import { toTrLower } from './utils/text.js';
 import { openSafeExternalUrl, toSafeDriveEmbedUrl, toSafeExternalUrl } from './utils/safeUrls.js';
 import { downloadGeneratedExport } from './utils/exportDownload.js';
@@ -4650,7 +4651,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   </button>
                                   
                                   {/* YENİ: ANA LİSTEDE PDF AÇMA BUTONU */}
-                                  {item.driveLink && (
+                                  {hasCurrentAssignmentDocument(item) && (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -4862,7 +4863,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               )}
                             </div>
 
-                            {item.driveLink && (
+                            {hasCurrentAssignmentDocument(item) && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -5533,7 +5534,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         <Laptop className="w-3.5 h-3.5 opacity-60 group-hover:text-[#0066b1] transition-colors" /> {h.brand}
                                       </button>
 
-                                      {h.driveLink && (
+                                      {hasCurrentAssignmentDocument(h) && (
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();
@@ -5694,7 +5695,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     {h.brand}
                                   </button>
 
-                                  {h.driveLink && (
+                                  {hasCurrentAssignmentDocument(h) && (
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation();
@@ -8218,7 +8219,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   </div>
 
                                   {/* Sag: Zimmet Belgesi Butonu (Sadece belge varsa) */}
-                                  {h.driveLink && (
+                                  {hasCurrentAssignmentDocument(h) && (
                                     <div
                                       className="flex flex-row gap-2 shrink-0 sm:ml-auto w-full sm:w-auto"
                                       onClick={(e) => e.stopPropagation()}

@@ -13,7 +13,7 @@
     document.documentElement.style.colorScheme = theme;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute('content', theme === 'dark' ? '#11161d' : '#f8fafc');
+      ?.setAttribute('content', theme === 'dark' ? '#0b3b5f' : '#0066b1');
   } catch {
     document.documentElement.dataset.theme = 'light';
   }

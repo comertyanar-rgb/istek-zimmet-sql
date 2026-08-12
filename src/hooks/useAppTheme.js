@@ -31,7 +31,7 @@ export function useAppTheme() {
     root.classList.toggle('dark', theme === 'dark');
     root.style.colorScheme = theme;
 
-    const themeColor = theme === 'dark' ? '#11161d' : '#f8fafc';
+    const themeColor = theme === 'dark' ? '#0b3b5f' : '#0066b1';
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
 
     try {

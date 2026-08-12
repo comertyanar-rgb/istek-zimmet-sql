@@ -27,6 +27,7 @@ import {
 import { CAMPUS_CODES } from '../constants/inventory.js';
 import { postApiAction } from '../services/apiClient.js';
 import { showAppAlert } from '../services/uiMessageService.js';
+import { hasCurrentAssignmentDocument } from '../utils/hardware.js';
 import { toTrLower } from '../utils/text.js';
 
 function getGlpiMismatchInfo(value) {
@@ -725,7 +726,7 @@ export const HardwareProfileModal = ({ deps }) => {
                     </p>
                     
                     {/* Sağ Üst: Belge Yok Rozeti */}
-                    {!viewedHardware.driveLink && (
+                    {!hasCurrentAssignmentDocument(viewedHardware) && (
                       <span className="text-[9px] sm:text-[10px] font-black text-amber-600  flex items-center gap-0 m-0">
                         <span className="text-[11px] sm:text-[12px] -mt-0.5">⚠️</span> Belge Yok
                       </span>
@@ -750,7 +751,7 @@ export const HardwareProfileModal = ({ deps }) => {
                     </div>
 
                     {/* SAĞ: Yükle Veya (PDF Görüntüle + İade Al) Butonları */}
-                    {!viewedHardware.driveLink ? (
+                    {!hasCurrentAssignmentDocument(viewedHardware) ? (
                       <div className="flex flex-col items-end shrink-0 w-full sm:w-auto">
                         <input
                           type="file"
