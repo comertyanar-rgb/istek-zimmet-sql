@@ -9497,9 +9497,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
           </button>
           <div className="flex flex-col items-center justify-center text-center p-4 w-full max-w-4xl">
             <img
-              src="https://drive.google.com/thumbnail?id=1b4vy0bcDxxm1ubDwhb3jp70spII-yzC-&sz=w1000" alt="Easter Egg"
+              src="/huseyin-mode.jpg"
+              alt="Hüseyin modu"
+              loading="eager"
+              decoding="async"
+              draggable={false}
               className="w-full max-w-[600px] max-h-[70vh] rounded-3xl border-4 border-[#0066b1] mb-6 object-contain shadow-[0_0_40px_rgba(0,102,177,0.4)]"
-              onError={(e) => { e.target.onerror = null; e.target.src = 'https://media1.tenor.com/m/b10vA4_2v7kAAAAC/hacker-hack.gif'; }}
             />
             <h2 className="text-3xl md:text-5xl font-black text-white drop-shadow-[0_5px_15px_rgba(0,0,0,1)]">
               Tebrikler! Hüseyin modunu açtınız! 👨‍💻

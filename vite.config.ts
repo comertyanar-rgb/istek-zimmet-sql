@@ -44,7 +44,7 @@ export default defineConfig({
       // Yeni sürüm geldiğinde kullanıcıya mevcut uygulama içi uyarıyı göster.
       // Otomatik etkinleştirme sayfayı çalışma sırasında kendiliğinden yeniliyordu.
       registerType: 'prompt',
-      includeAssets: ['favicon.svg', 'logo.png'],
+      includeAssets: ['favicon.svg', 'logo.png', 'huseyin-mode.jpg'],
       manifest: {
         short_name: 'İSTEK Demirbaş Yönetimi',
         name: 'İSTEK IT Demirbaş Yönetimi',
