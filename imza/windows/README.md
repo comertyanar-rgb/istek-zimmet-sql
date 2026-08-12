@@ -8,12 +8,27 @@ API'ye bildirir. Varsayilan akista Photoshop gerekmez.
 
 - Node.js 20 veya daha yeni
 - Google Chrome ya da Microsoft Edge
+- Kurumun lisansli Gotham Book, Gotham Medium ve Gotham Bold font dosyalari
 - WinSCP (FTP/SFTP yuklemesi icin)
 - GAMADV-XTD3
 - PowerShell 7 onerilir; Windows PowerShell 5.1 de desteklenir
 - `backend` klasorunde `npm ci` calistirilmis olmalidir
 
 Photoshop sadece eski akisa donmek icin istege bagli yedek motordur.
+
+Gotham fontlarini sunucuda asagidaki adlarla `C:\GAMWork\fonts` klasorune
+kopyalayin. Headless uretici bu fontlari JPG'nin HTML kaynagina dogrudan gomerek
+Photoshop sablonuyla ayni tipografiyi korur:
+
+```text
+Gotham Book.otf
+Gotham Medium.otf
+Gotham Bold.otf
+```
+
+Fontlar bulunamazsa ajan farkli bir sistem fontuna sessizce gecmez; hatali gorunum
+uretilmesini engellemek icin isi acik bir hata ile durdurur. Font lisansinin
+sunucuda kullanima izin verdigini kurum lisansinizdan dogrulayin.
 
 ## Klasorler
 
@@ -25,6 +40,7 @@ C:\GAMWork\signature
 C:\GAMWork\commands
 C:\GAMWork\jpg
 C:\GAMWork\campus
+C:\GAMWork\fonts
 C:\GAMWork\scripts
 C:\GAMWork\logs
 C:\GAMWork\processed
@@ -107,6 +123,7 @@ SIGNATURE_RENDER_ENGINE=Headless
 SIGNATURE_RENDERER_PATH=E:\IstekZimmet\App\backend\scripts\render-signatures.js
 SIGNATURE_CHROME_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe
 SIGNATURE_CAMPUS_DIR=C:\GAMWork\campus
+SIGNATURE_FONT_DIR=C:\GAMWork\fonts
 ```
 
 `SIGNATURE_AGENT_SECRET` yoksa ajan SQL kuyrugundan is alamaz. Gecis kolayligi
@@ -144,7 +161,8 @@ node .\backend\scripts\render-signatures.js `
   --output-dir "C:\GAMWork\jpg" `
   --template-key "1-w" `
   --chrome-path "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --campus-dir "C:\GAMWork\campus"
+  --campus-dir "C:\GAMWork\campus" `
+  --font-dir "C:\GAMWork\fonts"
 ```
 
 JPG dosyasi `C:\GAMWork\jpg` altinda 1072x287 piksel olarak olusmalidir. Bu test

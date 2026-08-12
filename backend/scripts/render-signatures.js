@@ -16,12 +16,34 @@ const DEFAULT_CAMPUS_DIRS = [
   'C:/GAMWork/campus',
   'C:/GAMWork/template/campus',
 ];
+const DEFAULT_FONT_DIRS = [
+  'C:/GAMWork/fonts',
+  process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Microsoft/Windows/Fonts'),
+  'C:/Windows/Fonts',
+].filter(Boolean);
+const SIGNATURE_FONTS = [
+  {
+    key: 'book',
+    weight: 400,
+    candidates: ['Gotham Book.otf', 'Gotham-Book.otf', 'GothamBook.otf'],
+  },
+  {
+    key: 'medium',
+    weight: 500,
+    candidates: ['Gotham Medium.otf', 'Gotham-Medium.otf', 'GothamMedium.otf'],
+  },
+  {
+    key: 'bold',
+    weight: 700,
+    candidates: ['Gotham Bold.otf', 'Gotham-Bold.otf', 'GothamBold.otf'],
+  },
+];
 
 const TEMPLATE_STYLES = {
-  '1': { left: 79, right: 609, icon: 577, titleTr: 25, titleEn: 25 },
-  '2': { left: 79, right: 609, icon: 577, titleTr: 24, titleEn: 21 },
-  '3': { left: 64, right: 648, icon: 616, titleTr: 22, titleEn: 19 },
-  '4': { left: 64, right: 648, icon: 616, titleTr: 19, titleEn: 16 },
+  '1': { nameLeft: 79, titleLeft: 78, right: 609, icon: 577, titleTr: 24.92, titleEn: 24.92 },
+  '2': { nameLeft: 79, titleLeft: 78, right: 609, icon: 577, titleTr: 24.92, titleEn: 22.85 },
+  '3': { nameLeft: 64, titleLeft: 63, right: 648, icon: 616, titleTr: 24.92, titleEn: 22.85 },
+  '4': { nameLeft: 64, titleLeft: 63, right: 648, icon: 616, titleTr: 22.85, titleEn: 21.81 },
 };
 
 function readArguments(argv) {
@@ -107,6 +129,10 @@ function getMimeType(filePath) {
   const extension = path.extname(filePath).toLowerCase();
   if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
   if (extension === '.gif') return 'image/gif';
+  if (extension === '.otf') return 'font/otf';
+  if (extension === '.ttf') return 'font/ttf';
+  if (extension === '.woff') return 'font/woff';
+  if (extension === '.woff2') return 'font/woff2';
   return 'image/png';
 }
 
@@ -136,6 +162,74 @@ async function findChromeExecutable(configuredPath) {
     if (await exists(candidate)) return candidate;
   }
   throw new Error('Chrome/Edge bulunamadı. SIGNATURE_CHROME_PATH ortam değişkenini ayarlayın.');
+}
+
+function getConfiguredDirectories(value) {
+  return String(value || '')
+    .split(path.delimiter)
+    .map((directory) => directory.trim())
+    .filter(Boolean);
+}
+
+async function resolveSignatureFonts(configuredFontDir) {
+  const fontDirectories = [
+    ...getConfiguredDirectories(configuredFontDir),
+    ...getConfiguredDirectories(process.env.SIGNATURE_FONT_DIR),
+    ...DEFAULT_FONT_DIRS,
+  ];
+  const uniqueDirectories = [...new Set(fontDirectories.map((directory) => path.normalize(directory)))];
+  const resolvedFonts = {};
+  const missingFonts = [];
+
+  for (const font of SIGNATURE_FONTS) {
+    let resolvedPath = '';
+    for (const directory of uniqueDirectories) {
+      for (const fileName of font.candidates) {
+        const candidate = path.join(directory, fileName);
+        if (await exists(candidate)) {
+          resolvedPath = candidate;
+          break;
+        }
+      }
+      if (resolvedPath) break;
+    }
+
+    if (!resolvedPath) {
+      missingFonts.push(font.candidates[0]);
+      continue;
+    }
+
+    resolvedFonts[font.key] = {
+      weight: font.weight,
+      path: resolvedPath,
+      dataUrl: await fileToDataUrl(resolvedPath),
+    };
+  }
+
+  if (missingFonts.length > 0) {
+    throw new Error(
+      `Gotham imza fontları bulunamadı: ${missingFonts.join(', ')}. ` +
+      `Fontları C:\\GAMWork\\fonts klasörüne kopyalayın veya SIGNATURE_FONT_DIR ayarlayın. ` +
+      `Denenen klasörler: ${uniqueDirectories.join(', ')}`
+    );
+  }
+
+  return resolvedFonts;
+}
+
+function buildFontFaceCss(fonts) {
+  return Object.values(fonts)
+    .map((font) => {
+      const format = path.extname(font.path).toLowerCase() === '.otf' ? 'opentype' : 'truetype';
+      return `@font-face {
+        font-family: "ISTEK Gotham";
+        src: url("${font.dataUrl}") format("${format}");
+        font-style: normal;
+        font-weight: ${font.weight};
+        font-display: block;
+      }`;
+    })
+    .join('\n');
 }
 
 async function resolveCampusImagePath(configuredPath, configuredCampusDir) {
@@ -170,12 +264,12 @@ function iconSvg(type) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[type]}</svg>`;
 }
 
-function buildSignatureHtml(row, templateKey, campusImageDataUrl) {
+function buildSignatureHtml(row, templateKey, campusImageDataUrl, fonts) {
   const baseKey = templateKey.replace(/-w$/, '');
   const wide = templateKey.endsWith('-w');
   const style = TEMPLATE_STYLES[baseKey];
-  const nameSize = wide ? 29 : 36;
-  const nameMaxWidth = Math.max(390, style.icon - style.left - 38);
+  const nameSize = wide ? 30.5 : 37.39;
+  const nameMaxWidth = Math.max(390, style.icon - style.nameLeft - 38);
   const rightMaxWidth = SIGNATURE_WIDTH - style.right - 24;
 
   const name = escapeHtml(row.ad);
@@ -190,16 +284,23 @@ function buildSignatureHtml(row, templateKey, campusImageDataUrl) {
 <head>
   <meta charset="utf-8">
   <style>
+    ${buildFontFaceCss(fonts)}
     * { box-sizing: border-box; }
     html, body { margin: 0; width: ${SIGNATURE_WIDTH}px; height: ${SIGNATURE_HEIGHT}px; overflow: hidden; background: #fff; }
-    body { font-family: "Gotham", "Century Gothic", "Segoe UI", Arial, sans-serif; color: #0071bc; }
+    body {
+      font-family: "ISTEK Gotham", sans-serif;
+      color: #0071bc;
+      font-synthesis: none;
+      text-rendering: geometricPrecision;
+      -webkit-font-smoothing: antialiased;
+    }
     .signature { position: relative; width: ${SIGNATURE_WIDTH}px; height: ${SIGNATURE_HEIGHT}px; background: #fff; }
     .name, .title, .info-text { position: absolute; white-space: nowrap; overflow: hidden; }
     .name {
-      left: ${style.left}px; top: 43px; width: ${nameMaxWidth}px;
-      font-size: ${nameSize}px; line-height: 43px; font-weight: 700; letter-spacing: -0.6px;
+      left: ${style.nameLeft}px; top: 43px; width: ${nameMaxWidth}px;
+      font-size: ${nameSize}px; line-height: 43px; font-weight: 500; letter-spacing: -0.05em;
     }
-    .title { left: ${style.left}px; width: ${nameMaxWidth + 36}px; font-weight: 400; letter-spacing: -0.5px; }
+    .title { left: ${style.titleLeft}px; width: ${nameMaxWidth + 36}px; font-weight: 400; letter-spacing: -0.05em; }
     .title-tr { top: 91px; font-size: ${style.titleTr}px; line-height: 30px; }
     .title-en { top: 123px; font-size: ${style.titleEn}px; line-height: 30px; }
     .info-icon {
@@ -212,11 +313,11 @@ function buildSignatureHtml(row, templateKey, campusImageDataUrl) {
     .home-icon { top: 121px; }
     .info-text {
       left: ${style.right}px; width: ${rightMaxWidth}px; height: 29px;
-      font-size: 21px; line-height: 29px; letter-spacing: -0.4px; text-overflow: clip;
+      font-size: 20.77px; line-height: 29px; font-weight: 400; text-overflow: clip;
     }
-    .email { top: 56px; }
-    .address { top: 88px; }
-    .website { top: 120px; font-weight: 700; }
+    .email { top: 56px; letter-spacing: -0.01em; }
+    .address { top: 88px; letter-spacing: -0.05em; }
+    .website { top: 120px; font-weight: 700; letter-spacing: -0.01em; }
     .campus-band { position: absolute; left: 0; top: ${CAMPUS_BAND_TOP}px; width: ${SIGNATURE_WIDTH}px; height: ${SIGNATURE_HEIGHT - CAMPUS_BAND_TOP}px; object-fit: fill; }
   </style>
 </head>
@@ -237,7 +338,7 @@ function buildSignatureHtml(row, templateKey, campusImageDataUrl) {
 </html>`;
 }
 
-async function renderRow(page, row, outputDir, templateKey, campusDir) {
+async function renderRow(page, row, outputDir, templateKey, campusDir, fonts) {
   const filename = String(row.filename || '').trim();
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(filename)) {
     throw new Error(`Geçersiz imza dosya kimliği: ${filename || '(boş)'}`);
@@ -246,11 +347,16 @@ async function renderRow(page, row, outputDir, templateKey, campusDir) {
   const campusImagePath = await resolveCampusImagePath(row.CampusImage, campusDir);
 
   const campusImageDataUrl = await fileToDataUrl(campusImagePath);
-  const html = buildSignatureHtml(row, templateKey, campusImageDataUrl);
+  const html = buildSignatureHtml(row, templateKey, campusImageDataUrl, fonts);
   await page.setContent(html, { waitUntil: 'load', timeout: 30_000 });
-  await page.evaluate(async () => {
+  const fontsLoaded = await page.evaluate(async () => {
     if (document.fonts?.ready) await document.fonts.ready;
+    const gothamFaces = [...document.fonts].filter(
+      (fontFace) => String(fontFace.family || '').replace(/["']/g, '') === 'ISTEK Gotham'
+    );
+    return gothamFaces.length === 3 && gothamFaces.every((fontFace) => fontFace.status === 'loaded');
   });
+  if (!fontsLoaded) throw new Error('Gotham imza fontları Chrome tarafından yüklenemedi.');
 
   const outputPath = path.join(outputDir, `${filename}.jpg`);
   await page.screenshot({
@@ -277,6 +383,7 @@ async function main() {
   if (rows.length === 0) throw new Error(`Dataset boş: ${datasetPath}`);
   await fs.mkdir(outputDir, { recursive: true });
 
+  const fonts = await resolveSignatureFonts(args['font-dir']);
   const executablePath = await findChromeExecutable(args['chrome-path']);
   const browser = await puppeteer.launch({
     executablePath,
@@ -300,7 +407,7 @@ async function main() {
     await page.setViewport({ width: SIGNATURE_WIDTH, height: SIGNATURE_HEIGHT, deviceScaleFactor: 1 });
     await page.setJavaScriptEnabled(true);
     for (const row of rows) {
-      outputs.push(await renderRow(page, row, outputDir, templateKey, args['campus-dir']));
+      outputs.push(await renderRow(page, row, outputDir, templateKey, args['campus-dir'], fonts));
     }
     await page.close();
   } finally {
@@ -310,6 +417,7 @@ async function main() {
   process.stdout.write(`${JSON.stringify({
     success: true,
     engine: 'headless-chrome',
+    fontEngine: 'embedded-gotham',
     templateKey,
     count: outputs.length,
     outputs,
