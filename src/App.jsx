@@ -37,12 +37,14 @@ import {
   Camera,
   ShieldCheck,
   FileSpreadsheet,
+  Wrench,
 } from 'lucide-react';
 import { useRegisterSW } from 'virtual:pwa-register/react';
 import { GAS_URL, GOOGLE_CLIENT_ID } from './config/appConfig.js';
 import {
   API_SESSION_EXPIRED_EVENT,
   isRetryableApiError,
+  OPERATION_QUEUE_REFRESH_EVENT,
   postApiAction,
 } from './services/apiClient.js';
 import { BRANDS_MODELS, CAMPUS_CODES, TYPE_BRANDS } from './constants/inventory.js';
@@ -1921,6 +1923,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
             ? 'Depoda'
             : item.status === 'Hurda'
             ? 'Hurda'
+            : item.status === 'Faulty'
+            ? 'Arızalı'
+            : item.status === 'Transfer'
+            ? 'Transfer'
             : 'Zimmetli',
         Personel: personnelById.get(item.assignedTo)?.name || '-',
         Kampüs: item.campus || '-',
@@ -1992,8 +1998,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       message: `Seçilen ${data.length} kayıtla yeni bir Google Sheet oluşturulacak ve düzenleme yetkisi hesabınıza verilecek. Devam edilsin mi?`,
       type: 'info',
       onConfirm: async () => {
-        setConfirmDialog(null); // Modali kapat
-        setIsGenerating(true);  // Yükleniyor ekranını aç
+        setConfirmDialog(null);
 
         try {
           const formattedData = getFormattedDataForExport(data, type);
@@ -2007,20 +2012,25 @@ setTimeout(() => setSuccessMessage(null), 2500);
               } (${new Date().toLocaleDateString('tr-TR')})`,
               data: formattedData,
             },
-            { timeoutMs: 120000 }
+            { timeoutMs: 30000 }
           );
 
-          const safeExportUrl = toSafeExternalUrl(result.url);
-          if (!safeExportUrl) {
-            throw new Error(result.error || 'Dışa aktarım bağlantısı oluşturulamadı.');
+          if (!result.queued || !result.queueId) {
+            throw new Error(result.error || 'Dışa aktarım kuyruğa alınamadı.');
           }
+          window.dispatchEvent(
+            new CustomEvent(OPERATION_QUEUE_REFRESH_EVENT, {
+              detail: {
+                queueId: result.queueId,
+                expectCompletion: true,
+              },
+            })
+          );
         } catch (err) {
           await showAppAlert('İşlem başarısız: ' + err.message, {
             type: 'error',
             title: 'Dışa aktarma hatası',
           });
-        } finally {
-          setIsGenerating(false);
         }
       },
     });
@@ -2045,6 +2055,8 @@ setTimeout(() => setSuccessMessage(null), 2500);
     } else if (actionType === 'Hurda') {
       confirmMsg = `${selectedBulkHardware.length} adet cihaz HURDAYA ayrılacak.${assignmentWarning} Emin misiniz?`;
       msgType = 'danger';
+    } else if (actionType === 'Arızalı') {
+      confirmMsg = `${selectedBulkHardware.length} adet cihaz ARIZALI olarak işaretlenecek.${assignmentWarning} Onaylıyor musunuz?`;
     } else if (actionType === 'Transfer') {
       confirmMsg = `${selectedBulkHardware.length} adet cihaz ${targetCampus} kampüsüne transfer edilecek. Onaylıyor musunuz?`;
     }
@@ -2065,6 +2077,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
             if (selectedIdsToProcess.includes(h.id)) {
               if (actionType === 'Depo') return { ...h, status: 'Available', assignedTo: null };
               if (actionType === 'Hurda') return { ...h, status: 'Hurda', assignedTo: null };
+              if (actionType === 'Arızalı') return { ...h, status: 'Faulty', assignedTo: null };
               // YENİ: Ekranda kampüs adını anında temizleyerek gösterir (Örn: "Acıbadem Kampüsü" -> "Acıbadem")
               if (actionType === 'Transfer') return { ...h, campus: getCoreCampusName(targetCampus) }; 
             }
@@ -2082,12 +2095,17 @@ setTimeout(() => setSuccessMessage(null), 2500);
         setTimeout(() => setSuccessMessage(null), 2000);
 
         // 2. ADIM: ARKA PLANDA SESSİZCE GOOGLE SHEETS'İ GÜNCELLE
-        if (actionType === 'Depo' || actionType === 'Hurda') {
+        if (actionType === 'Depo' || actionType === 'Hurda' || actionType === 'Arızalı') {
           postApiAction({
             authToken: currentUser.token,
             action: 'bulkStatusUpdate',
             hardwareIds: selectedIdsToProcess,
-            newStatus: actionType === 'Depo' ? 'Available' : 'Hurda',
+            newStatus:
+              actionType === 'Depo'
+                ? 'Available'
+                : actionType === 'Arızalı'
+                ? 'Faulty'
+                : 'Hurda',
             confirmUnassignAssigned: assignedSelectionCount > 0,
           })
           .then(() => {
@@ -2258,6 +2276,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
       : personnel.filter((p) => getCoreCampusName(p.campus) === myCoreCampus && !String(p.name).toUpperCase().includes('GÖNDEREN:'));
   }, [personnel, isHQ, campusFilter, myCoreCampus]);
 
+  const profileAssignmentPersonnel = useMemo(() => {
+    const hardwareCampus = getCoreCampusName(viewedHardware?.campus);
+    if (!hardwareCampus) return [];
+
+    return personnel.filter(
+      (person) =>
+        getCoreCampusName(person.campus) === hardwareCampus &&
+        isSignatureEligiblePerson(person) &&
+        !String(person.name || '').toUpperCase().includes('GÖNDEREN:')
+    );
+  }, [personnel, viewedHardware?.campus]);
+
   // 2. ARAMA VE DURUM FILTRELERI
   const displayHardware = useMemo(() => {
     const normalizeTypeFilter = (value) =>
@@ -2274,6 +2304,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         if (hardwareFilterStatus === 'Zimmetli') matchStatus = h.status === 'Assigned';
         if (hardwareFilterStatus === 'Depoda') matchStatus = h.status === 'Available';
         if (hardwareFilterStatus === 'Hurda') matchStatus = h.status === 'Hurda';
+        if (hardwareFilterStatus === 'Arızalı') matchStatus = h.status === 'Faulty';
         if (hardwareFilterStatus === 'Transfer') matchStatus = h.status === 'Transfer';
       }
 
@@ -2759,7 +2790,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
     const targetIds = getQrActionTargetIds();
     if (targetIds.length === 0) return;
 
-    const actionLabel = nextStatus === 'Available' ? 'Depoya çek' : 'Hurdaya ayır';
+    const actionLabel =
+      nextStatus === 'Available'
+        ? 'Depoya çek'
+        : nextStatus === 'Faulty'
+        ? 'Arızalı olarak işaretle'
+        : 'Hurdaya ayır';
     const assignedCount = targetIds.reduce(
       (count, id) => count + (hardwareById.get(id)?.assignedTo ? 1 : 0),
       0
@@ -2777,7 +2813,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
         setQrActionLabel(`${actionLabel} işlemi yapılıyor...`);
         setConfirmDialog(null);
         const previousHardwareState = [...hardware];
-        const statusText = nextStatus === 'Available' ? 'Available' : 'Hurda';
+        const statusText = nextStatus;
 
         setHardware((prev) =>
           prev.map((item) =>
@@ -2832,9 +2868,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
 
     const blockedItems = targetIds
       .map((id) => hardwareById.get(id))
-      .filter((item) => item && (item.status === 'Hurda' || item.status === 'Transfer'));
+      .filter((item) => item && (item.status === 'Hurda' || item.status === 'Faulty' || item.status === 'Transfer'));
     if (blockedItems.length > 0) {
-      showAppAlert('Hurda veya transfer durumundaki cihazlar zimmete aktarılamaz.');
+      showAppAlert('Hurda, arızalı veya transfer durumundaki cihazlar zimmete aktarılamaz.');
       return;
     }
 
@@ -2854,7 +2890,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
     const searchTerms = toTrLower(assignSearchQuery).split(/\s+/).filter(Boolean);
 
     return campusHardware.filter((h) => {
-      if (h.status === 'Hurda' || h.status === 'Transfer') return false;
+      if (h.status === 'Hurda' || h.status === 'Faulty' || h.status === 'Transfer') return false;
       const matchType =
         assignFilterType === 'All' ||
         (h.type && normalizeTypeFilter(h.type) === normalizedTypeFilter);
@@ -3326,6 +3362,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       return showAppAlert('Lütfen bir personel ve dosya seçin.');
 
     const person = personnelById.get(manualUploadPerson);
+    if (!person) return showAppAlert('Seçilen personel kaydı bulunamadı.');
     const extension =
       manualUploadFile.type === 'image/png'
         ? '.png'
@@ -3399,6 +3436,85 @@ setTimeout(() => setSuccessMessage(null), 2500);
       setIsUploadingManual(false);
     }
   };
+
+  const handleInitialAssignmentWithoutDocument = async () => {
+    if (!manualUploadPerson) return showAppAlert('Lütfen bir personel seçin.');
+    if (!viewedHardware) return showAppAlert('Cihaz kaydı bulunamadı.');
+
+    const person = personnelById.get(manualUploadPerson);
+    if (!person) return showAppAlert('Seçilen personel kaydı bulunamadı.');
+    if (!person.email) return showAppAlert('Seçilen personelin e-posta adresi bulunamadı.');
+
+    const confirmed = await confirmAppAction({
+      type: 'warning',
+      title: 'Belgesiz ilk geçiş zimmeti',
+      message: `${viewedHardware.serial || viewedHardware.id} seri numaralı cihaz ${person.name} adına belgesiz zimmetli gösterilecek. PDF, OTP veya e-posta oluşturulmayacak; iade daha sonra sistemden alınabilecek.`,
+      confirmLabel: 'Belgesiz Ata'
+    });
+    if (!confirmed) return;
+
+    setIsUploadingManual(true);
+    try {
+      const result = await postApiAction(
+        {
+          authToken: currentUser.token,
+          action: 'bulkInitialAssignment',
+          confirmMigration: true,
+          source: 'device-profile',
+          items: [
+            {
+              rowNumber: 2,
+              serial: String(viewedHardware.serial || viewedHardware.id || '').trim(),
+              personEmail: person.email,
+              driveLink: ''
+            }
+          ],
+          clientIp
+        },
+        { timeoutMs: 60000 }
+      );
+
+      if (Number(result.assigned || 0) !== 1) {
+        await fetchVeritabani();
+        throw new Error('Cihaz eşleşmesi değişmedi. Güncel cihaz durumunu kontrol edin.');
+      }
+
+      const historyRecord = {
+        personName: person.name,
+        date: new Date().toLocaleDateString('tr-TR'),
+        driveLink: null,
+        type: 'İlk Geçiş Zimmeti (Belgesiz)'
+      };
+
+      setHardware((prev) =>
+        prev.map((hardwareItem) =>
+          hardwareItem.id === viewedHardware.id
+            ? {
+                ...hardwareItem,
+                status: 'Assigned',
+                assignedTo: person.id,
+                driveLink: null,
+                hasHistory: true,
+                history: [historyRecord, ...(hardwareItem.history || [])]
+              }
+            : hardwareItem
+        )
+      );
+
+      setSuccessMessage('Cihaz belgesiz ilk geçiş zimmetiyle personele atandı.');
+      setTimeout(() => setSuccessMessage(null), 2500);
+      setShowManualUpload(false);
+      setManualUploadFile(null);
+      setManualUploadPerson('');
+      setManualUploadSearch('');
+      setViewingHardwareId(null);
+    } catch (error) {
+      showAppAlert('Hata: ' + error.message);
+    } finally {
+      setIsUploadingManual(false);
+    }
+  };
+
   const renderPrintableDocument = () => (
     <Suspense fallback={<LazyPanelFallback label="Tutanak ekranı hazırlanıyor..." />}>
       <ZimmetDocumentModal
@@ -4277,6 +4393,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               'Zimmetli',
                               'Depoda',
                               'Hurda',
+                              'Arızalı',
                               'Transfer',
                             ].map((st) => (
                               <button
@@ -4626,6 +4743,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                     ? 'inventory-status--available bg-green-100 text-green-700'
                                     : item.status === 'Hurda'
                                     ? 'inventory-status--scrap bg-red-100 text-red-700'
+                                    : item.status === 'Faulty'
+                                    ? 'inventory-status--faulty bg-amber-100 text-amber-800'
+                                    : item.status === 'Transfer'
+                                    ? 'inventory-status--transfer bg-violet-100 text-violet-700'
                                     : 'inventory-status--assigned bg-blue-100 text-blue-700'
                                 }`}
                               >
@@ -4633,6 +4754,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                   ? 'Depoda'
                                   : item.status === 'Hurda'
                                   ? 'Hurda'
+                                  : item.status === 'Faulty'
+                                  ? 'Arızalı'
+                                  : item.status === 'Transfer'
+                                  ? 'Transfer'
                                   : 'Zimmetli'}
                               </span>
                             </td>
@@ -4721,6 +4846,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     if (item.status === 'Hurda') {
                       statusColor = 'bg-red-500';
                       statusText = 'HURDA';
+                    }
+                    if (item.status === 'Faulty') {
+                      statusColor = 'bg-amber-500';
+                      statusText = 'ARIZALI';
+                    }
+                    if (item.status === 'Transfer') {
+                      statusColor = 'bg-violet-500';
+                      statusText = 'TRANSFER';
                     }
 
                     return (
@@ -5827,6 +5960,16 @@ setTimeout(() => setSuccessMessage(null), 2500);
     type="date"
     value={transferFilterDate}
     onChange={(e) => setTransferFilterDate(e.target.value)}
+    onClick={(e) => {
+      if (typeof e.currentTarget.showPicker === 'function') {
+        try {
+          e.currentTarget.showPicker();
+        } catch {
+          e.currentTarget.focus();
+        }
+      }
+    }}
+    aria-label="Transfer tarihini seç"
     className={`flex items-center justify-center min-w-[110px] sm:min-w-[125px] px-3 py-1 rounded-full text-[11px] sm:text-xs font-bold border transition-colors shadow-sm outline-none h-[28px] sm:h-[30px] cursor-pointer relative z-0 ${
       transferFilterDate
         ? 'bg-[#0066b1] border-[#0066b1] text-white'
@@ -5877,7 +6020,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
                             }`}
                           >
-                            Alici:{' '}
+                            Alıcı:{' '}
                             {transferFilterReceiver === 'All'
                               ? 'Tümü'
                               : transferFilterReceiver.length > 12
@@ -7582,9 +7725,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                     setManualUploadSearch,
                     manualUploadPerson,
                     setManualUploadPerson,
-                    campusPersonnel,
+                    campusPersonnel: profileAssignmentPersonnel,
                     personnel,
                     handleManualUploadSubmit,
+                    handleInitialAssignmentWithoutDocument,
                     handleOpenHistory,
                     isLoadingHistory,
                     showHardwareHistory,
@@ -9085,6 +9229,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 </button>
                 <button onClick={() => handleBulkAction('Hurda')} className="bulk-btn" style={{ backgroundColor: '#fee2e2', color: '#991b1b' }}>
                   <Trash2 size={16} className="md:w-[18px] md:h-[18px]" /> Hurda
+                </button>
+                <button onClick={() => handleBulkAction('Arızalı')} className="bulk-btn" style={{ backgroundColor: '#fef3c7', color: '#92400e' }}>
+                  <Wrench size={16} className="md:w-[18px] md:h-[18px]" /> Arızalı
                 </button>
                 <button onClick={() => setShowGroupModal(true)} className="bulk-btn" style={{ backgroundColor: '#f3e8ff', color: '#6b21a8' }}>
                   <Tag size={16} className="md:w-[18px] md:h-[18px]" /> Grup

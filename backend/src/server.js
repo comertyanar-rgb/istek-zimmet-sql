@@ -9,6 +9,7 @@ import { config, assertConfig } from './config.js';
 import { closePool, getPool } from './db.js';
 import { handleAction } from './actionRouter.js';
 import { startGlpiQueueWorker } from './glpiQueueWorker.js';
+import { startGoogleSheetQueueWorker } from './googleSheetQueueWorker.js';
 import { startPdfQueueWorker } from './pdfQueueWorker.js';
 import { startQueueRetentionWorker } from './queueRetentionWorker.js';
 import { closePdfRenderer } from './pdfRenderer.js';
@@ -575,6 +576,7 @@ app.use((error, req, res, _next) => {
 });
 
 let glpiQueueWorker = null;
+let googleSheetQueueWorker = null;
 let pdfQueueWorker = null;
 let queueRetentionWorker = null;
 const server = app.listen(config.port, config.host, () => {
@@ -590,6 +592,7 @@ const server = app.listen(config.port, config.host, () => {
     'İSTEK Zimmet SQL API başladı'
   );
   glpiQueueWorker = startGlpiQueueWorker(logger);
+  googleSheetQueueWorker = startGoogleSheetQueueWorker(logger);
   pdfQueueWorker = startPdfQueueWorker(logger);
   queueRetentionWorker = startQueueRetentionWorker(logger);
 });
@@ -619,6 +622,7 @@ async function shutdown(signal) {
 
   try {
     await glpiQueueWorker?.stop?.();
+    await googleSheetQueueWorker?.stop?.();
     await pdfQueueWorker?.stop?.();
     await queueRetentionWorker?.stop?.();
     await serverClosed;

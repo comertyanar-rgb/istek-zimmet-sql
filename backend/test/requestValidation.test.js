@@ -123,6 +123,21 @@ test('ilk migrasyon zimmetinde listeyi ve açık onayı zorunlu tutar', () => {
   };
   assert.equal(validateActionRequest(payload), payload);
 
+  const deviceProfilePayload = {
+    ...payload,
+    source: 'device-profile'
+  };
+  assert.equal(validateActionRequest(deviceProfilePayload), deviceProfilePayload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...payload,
+        source: 'bilinmeyen-kaynak'
+      }),
+    (error) => error instanceof RequestValidationError && /kaynağı geçersiz/i.test(error.message)
+  );
+
   assert.throws(
     () =>
       validateActionRequest({

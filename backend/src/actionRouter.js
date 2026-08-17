@@ -44,6 +44,7 @@ import {
   lookupPersonnelByNationalIdForUser,
   manualAssignOrUploadMissingDocumentForUser,
   processGlpiReconcileQueue,
+  processGoogleSheetExportQueue,
   recordInventoryScanForUser,
   saveZimmetOrReturnForUser,
   startTransferForUser,
@@ -262,15 +263,21 @@ export async function handleAction(data, context = {}) {
       return { success: false, error: 'Kuyruğu sadece HQ IT çalıştırabilir.' };
     }
     const maxJobs = data.maxJobs || 5;
-    const [pdfQueue, glpiQueue] = await Promise.all([
+    const [pdfQueue, glpiQueue, googleSheetQueue] = await Promise.all([
       processPdfQueue({ maxJobs, includeFailed: true }),
-      processGlpiReconcileQueue({ maxJobs: 1, includeFailed: true })
+      processGlpiReconcileQueue({ maxJobs: 1, includeFailed: true }),
+      processGoogleSheetExportQueue({ maxJobs: 1, includeFailed: true })
     ]);
     return success({
-      processed: pdfQueue.processed + glpiQueue.processed,
-      results: [...(pdfQueue.results || []), ...(glpiQueue.results || [])],
+      processed: pdfQueue.processed + glpiQueue.processed + googleSheetQueue.processed,
+      results: [
+        ...(pdfQueue.results || []),
+        ...(glpiQueue.results || []),
+        ...(googleSheetQueue.results || [])
+      ],
       pdf: pdfQueue,
-      glpi: glpiQueue
+      glpi: glpiQueue,
+      googleSheet: googleSheetQueue
     });
   }
 

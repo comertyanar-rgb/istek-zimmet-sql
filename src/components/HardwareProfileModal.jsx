@@ -22,7 +22,8 @@ import {
   Keyboard,
   Mouse,
   FileSignature,
-  Terminal // <-- EKSİK OLAN İKON EKLENDİ
+  Terminal, // <-- EKSİK OLAN İKON EKLENDİ
+  Wrench,
 } from 'lucide-react';
 import { CAMPUS_CODES } from '../constants/inventory.js';
 import { postApiAction } from '../services/apiClient.js';
@@ -108,6 +109,7 @@ export const HardwareProfileModal = ({ deps }) => {
     campusPersonnel,
     personnel,
     handleManualUploadSubmit,
+    handleInitialAssignmentWithoutDocument,
     handleOpenHistory,
     isLoadingHistory,
     showHardwareHistory,
@@ -125,6 +127,28 @@ export const HardwareProfileModal = ({ deps }) => {
     isGenerating,
     setIsGenerating
   } = deps;
+  const [manualAssignmentMode, setManualAssignmentMode] = React.useState('document');
+
+  React.useEffect(() => {
+    setManualAssignmentMode('document');
+  }, [viewingHardwareId]);
+
+  const openManualAssignment = (mode) => {
+    setManualAssignmentMode(mode);
+    setManualUploadFile(null);
+    setManualUploadPerson('');
+    setManualUploadSearch('');
+    setShowManualUpload(true);
+  };
+
+  const closeManualAssignment = () => {
+    setShowManualUpload(false);
+    setManualAssignmentMode('document');
+    setManualUploadFile(null);
+    setManualUploadPerson('');
+    setManualUploadSearch('');
+  };
+
   const glpiMismatchInfo = getGlpiMismatchInfo(viewedHardware?.glpiMismatch);
   const historyPersonNameByKey = React.useMemo(() => {
     const names = new Map();
@@ -346,6 +370,50 @@ export const HardwareProfileModal = ({ deps }) => {
                     title="Cihazı Depoya Çek"
                   >
                     <Archive className="w-4 h-4" />
+                  </button>
+                )}
+
+                {/* TEKIL ARIZALI BUTONU (OPTIMISTIC UI) */}
+                {viewedHardware.status !== 'Faulty' && (
+                  <button
+                    onClick={() => {
+                      setConfirmDialog({
+                        message: `Bu cihaz (S/N: ${viewedHardware.serial}) ARIZALI olarak işaretlenecek.${viewedHardware.assignedTo ? ' Cihaz halen personele zimmetli; mevcut zimmet bağlantısı kaldırılacak.' : ''} Onaylıyor musunuz?`,
+                        type: 'info',
+                        onConfirm: () => {
+                          setConfirmDialog(null);
+                          setViewingHardwareId(null);
+
+                          const previousHardwareState = [...hardware];
+                          const targetId = viewedHardware.id;
+
+                          setHardware((prev) => prev.map((h) => h.id === targetId ? { ...h, status: 'Faulty', assignedTo: null, groupName: '' } : h));
+
+                          setSuccessMessage('Cihaz arka planda arızalı olarak işaretleniyor...');
+                          setTimeout(() => setSuccessMessage(null), 2000);
+
+                          postApiAction({
+                            authToken: currentUser.token,
+                            action: 'bulkStatusUpdate',
+                            hardwareIds: [targetId],
+                            newStatus: 'Faulty',
+                            confirmUnassignAssigned: Boolean(viewedHardware.assignedTo),
+                          })
+                          .then(() => {
+                            fetchVeritabani(false);
+                          })
+                          .catch(error => {
+                            console.error('Arızalı Durum Hatası:', error);
+                            setHardware(previousHardwareState);
+                            showAppAlert('HATA: İnternet sorunu nedeniyle cihaz arızalı olarak işaretlenemedi.');
+                          });
+                        }
+                      });
+                    }}
+                    className="flex items-center justify-center p-2 sm:p-2.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 hover:bg-amber-200 transition-colors shadow-sm"
+                    title="Cihazı Arızalı Olarak İşaretle"
+                  >
+                    <Wrench className="w-4 h-4" />
                   </button>
                 )}
 
@@ -817,27 +885,62 @@ export const HardwareProfileModal = ({ deps }) => {
 
                 </div>
               ) : (
-                // CİHAZ BOŞTAYSA MANUEL YÜKLEME ALANI
+                // CİHAZ BOŞTAYSA İLK GEÇİŞ / MANUEL BELGE ALANI
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 shadow-sm">
                   {!showManualUpload ? (
-                    <div className="flex justify-between items-center gap-3">
+                    <div className="space-y-2.5">
                       <div>
                         <p className="text-[13px] font-bold text-gray-800 leading-tight">
-                          Tutanak Yükle
+                          İlk Geçiş Zimmeti
                         </p>
                         <p className="text-[10px] text-gray-500 mt-0.5">
-                          Sistem dışı kağıt belge
+                          Belge yükleyin veya cihazı belgesiz zimmetli gösterin
                         </p>
                       </div>
-                      <button
-                        onClick={() => setShowManualUpload(true)}
-                        className="px-3 py-1.5 bg-white text-gray-700 text-[11px] font-bold rounded-lg border border-gray-300 shadow-sm hover:bg-gray-50 flex items-center gap-1.5 shrink-0"
-                      >
-                        <Printer className="w-3.5 h-3.5" /> Yükle
-                      </button>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => openManualAssignment('document')}
+                          className="min-h-9 px-2.5 py-2 bg-white text-gray-700 text-[11px] font-bold rounded-lg border border-gray-300 shadow-sm hover:bg-gray-50 flex items-center justify-center gap-1.5"
+                        >
+                          <Printer className="w-3.5 h-3.5" /> Belge ile Ata
+                        </button>
+                        <button
+                          onClick={() => openManualAssignment('no-document')}
+                          className="min-h-9 px-2.5 py-2 bg-amber-50 text-amber-800 text-[11px] font-bold rounded-lg border border-amber-200 shadow-sm hover:bg-amber-100 flex items-center justify-center gap-1.5"
+                        >
+                          <Users className="w-3.5 h-3.5" /> Belgesiz Ata
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div className="space-y-2.5 animate-in fade-in duration-200">
+                      <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1">
+                        <button
+                          type="button"
+                          onClick={() => setManualAssignmentMode('document')}
+                          className={`min-h-8 rounded-md px-2 text-[10px] font-bold transition-colors ${
+                            manualAssignmentMode === 'document'
+                              ? 'bg-white text-[#0066b1] shadow-sm'
+                              : 'text-gray-500 hover:text-gray-700'
+                          }`}
+                        >
+                          Belge ile
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setManualAssignmentMode('no-document');
+                            setManualUploadFile(null);
+                          }}
+                          className={`min-h-8 rounded-md px-2 text-[10px] font-bold transition-colors ${
+                            manualAssignmentMode === 'no-document'
+                              ? 'bg-amber-50 text-amber-800 shadow-sm'
+                              : 'text-gray-500 hover:text-gray-700'
+                          }`}
+                        >
+                          Belgesiz
+                        </button>
+                      </div>
                       <p className="text-[10px] font-bold text-[#0066b1] uppercase tracking-wider">
                         Kime Zimmetli Gösterilecek?
                       </p>
@@ -860,8 +963,8 @@ export const HardwareProfileModal = ({ deps }) => {
                       <div className="max-h-[120px] overflow-y-auto border border-gray-200 rounded-lg bg-white space-y-1 p-1">
                         {campusPersonnel
                           .filter((p) =>
-                            toTrLower(p.name).includes(
-                              toTrLower(manualUploadSearch)
+                            [p.name, p.email].some((value) =>
+                              toTrLower(value || '').includes(toTrLower(manualUploadSearch))
                             )
                           )
                           .map((p) => (
@@ -887,55 +990,71 @@ export const HardwareProfileModal = ({ deps }) => {
                               </span>
                             </label>
                           ))}
+                        {campusPersonnel.length === 0 && (
+                          <p className="px-2 py-3 text-center text-[11px] text-gray-500">
+                            Bu kampüste atanabilir aktif personel bulunamadı.
+                          </p>
+                        )}
                       </div>
 
-                      <input
-                        type="file"
-                        ref={fileInputRef}
-                        accept="image/*,application/pdf"
-                        capture="environment"
-                        onChange={(e) =>
-                          setManualUploadFile(e.target.files[0])
-                        }
-                        className="hidden"
-                      />
-                      <button
-                        onClick={() => fileInputRef.current.click()}
-                        className="w-full py-2 border border-dashed border-blue-300 bg-blue-50 text-[#0066b1] rounded-lg font-bold text-[11px] hover:bg-blue-100 flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        {manualUploadFile ? (
-                          <>
-                            <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />{' '}
-                            {manualUploadFile.name.substring(0, 20)}...
-                          </>
-                        ) : (
-                          '📸 Kamera / Dosya Seç'
-                        )}
-                      </button>
+                      {manualAssignmentMode === 'document' ? (
+                        <>
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            accept="image/*,application/pdf"
+                            capture="environment"
+                            onChange={(e) => setManualUploadFile(e.target.files[0])}
+                            className="hidden"
+                          />
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="w-full py-2 border border-dashed border-blue-300 bg-blue-50 text-[#0066b1] rounded-lg font-bold text-[11px] hover:bg-blue-100 flex items-center justify-center gap-1.5 transition-colors"
+                          >
+                            {manualUploadFile ? (
+                              <>
+                                <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />{' '}
+                                {manualUploadFile.name.substring(0, 20)}...
+                              </>
+                            ) : (
+                              'Kamera / Dosya Seç'
+                            )}
+                          </button>
+                        </>
+                      ) : (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] leading-relaxed text-amber-800">
+                          Yalnızca ilk geçiş içindir. PDF, OTP ve e-posta oluşturulmaz; cihaz daha sonra sistemden iade alınabilir.
+                        </div>
+                      )}
 
                       <div className="flex justify-end gap-2 pt-1 mt-1">
                         <button
-                          onClick={() => {
-                            setShowManualUpload(false);
-                            setManualUploadFile(null);
-                          }}
+                          onClick={closeManualAssignment}
                           className="px-3 py-1.5 text-[11px] font-bold text-gray-500 hover:bg-gray-100 rounded-md"
                         >
                           İptal
                         </button>
                         <button
-                          onClick={handleManualUploadSubmit}
+                          onClick={
+                            manualAssignmentMode === 'document'
+                              ? handleManualUploadSubmit
+                              : handleInitialAssignmentWithoutDocument
+                          }
                           disabled={
                             isUploadingManual ||
-                            !manualUploadFile ||
-                            !manualUploadPerson
+                            !manualUploadPerson ||
+                            (manualAssignmentMode === 'document' && !manualUploadFile)
                           }
-                          className="px-3 py-1.5 text-[11px] font-bold bg-[#0066b1] text-white rounded-md hover:bg-[#005595] disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                          className={`px-3 py-1.5 text-[11px] font-bold text-white rounded-md disabled:opacity-50 flex items-center gap-1.5 shadow-sm ${
+                            manualAssignmentMode === 'document'
+                              ? 'bg-[#0066b1] hover:bg-[#005595]'
+                              : 'bg-amber-600 hover:bg-amber-700'
+                          }`}
                         >
                           {isUploadingManual ? (
                             <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
-                            'Yükle ve Ata'
+                            manualAssignmentMode === 'document' ? 'Yükle ve Ata' : 'Belgesiz Ata'
                           )}
                         </button>
                       </div>

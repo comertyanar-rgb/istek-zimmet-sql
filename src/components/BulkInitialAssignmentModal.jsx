@@ -102,6 +102,7 @@ function getHardwareStatus(item) {
   if (status === 'ASSIGNED' || status === 'AKTIF') return 'AKTIF';
   if (status === 'TRANSFER') return 'TRANSFER';
   if (status === 'HURDA' || status === 'SCRAP') return 'HURDA';
+  if (status === 'ARIZALI' || status === 'FAULTY') return 'ARIZALI';
   return status;
 }
 
@@ -111,6 +112,7 @@ function statusLabel(item) {
   if (status === 'AKTIF') return 'Zimmetli / Aktif';
   if (status === 'TRANSFER') return 'Transfer';
   if (status === 'HURDA') return 'Hurda';
+  if (status === 'ARIZALI') return 'Arızalı';
   return text(item?.status) || '-';
 }
 
@@ -287,6 +289,7 @@ function buildPreview(matrix, hardware, personnel, currentUser) {
       const status = getHardwareStatus(device);
       if (status === 'TRANSFER') errors.push('Transferdeki cihaz zimmetlenemez.');
       if (status === 'HURDA') errors.push('Hurda cihaz zimmetlenemez.');
+      if (status === 'ARIZALI') errors.push('Arızalı cihaz zimmetlenemez.');
       if (status && !['DEPODA', 'AKTIF'].includes(status)) {
         errors.push(`Desteklenmeyen cihaz durumu: ${statusLabel(device)}.`);
       }

@@ -1110,6 +1110,18 @@ html[data-theme='dark'] .inventory-status--scrap {
   border-color: rgba(239, 68, 68, 0.24) !important;
 }
 
+html[data-theme='dark'] .inventory-status--faulty {
+  color: #f6c86b !important;
+  background-color: rgba(245, 158, 11, 0.14) !important;
+  border-color: rgba(245, 158, 11, 0.26) !important;
+}
+
+html[data-theme='dark'] .inventory-status--transfer {
+  color: #c4b5fd !important;
+  background-color: rgba(139, 92, 246, 0.14) !important;
+  border-color: rgba(139, 92, 246, 0.26) !important;
+}
+
 html[data-theme='dark'] .inventory-status--assigned {
   color: #62c9ff !important;
   background-color: rgba(14, 165, 233, 0.14) !important;

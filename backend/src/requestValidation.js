@@ -228,6 +228,12 @@ function validateActionSpecificShape(data) {
   }
 
   if (data.action === 'bulkInitialAssignment') {
+    if (
+      data.source !== undefined &&
+      !['excel', 'device-profile'].includes(data.source)
+    ) {
+      throw new RequestValidationError('İlk migrasyon zimmeti kaynağı geçersiz.');
+    }
     if (!Array.isArray(data.items) || data.items.length === 0 || data.items.length > 5000) {
       throw new RequestValidationError(
         'İlk migrasyon zimmeti 1-5000 kayıt içeren bir liste olmalıdır.'

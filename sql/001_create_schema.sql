@@ -189,7 +189,7 @@ CREATE TABLE dbo.Hardware (
   CONSTRAINT UQ_Hardware_SerialNo UNIQUE (SerialNo),
   CONSTRAINT FK_Hardware_Campuses FOREIGN KEY (CampusId) REFERENCES dbo.Campuses(CampusId),
   CONSTRAINT FK_Hardware_Personnel FOREIGN KEY (AssignedPersonId) REFERENCES dbo.Personnel(PersonId),
-  CONSTRAINT CK_Hardware_Status CHECK (HardwareStatus IN (N'AKTIF', N'DEPODA', N'HURDA', N'TRANSFER'))
+  CONSTRAINT CK_Hardware_Status CHECK (HardwareStatus IN (N'AKTIF', N'DEPODA', N'HURDA', N'ARIZALI', N'TRANSFER'))
 );
 
 CREATE INDEX IX_Hardware_CampusStatus ON dbo.Hardware(CampusId, HardwareStatus);

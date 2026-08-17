@@ -63,6 +63,7 @@ function normalizeStatus(value) {
   if (!raw || raw === 'AKTIF') return 'AKTIF';
   if (raw === 'DEPODA') return 'DEPODA';
   if (raw === 'HURDA') return 'HURDA';
+  if (raw === 'ARIZALI') return 'ARIZALI';
   if (raw === 'TRANSFER') return 'TRANSFER';
   return 'DEPODA';
 }

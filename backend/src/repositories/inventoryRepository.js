@@ -31,22 +31,24 @@ export const core = (value) =>
     .replace(/kampus/g, '')
     .trim();
 
-const toUiStatus = (status) => {
+export const toUiStatus = (status) => {
   const value = String(status || '').toUpperCase().replace(/İ/g, 'I');
   if (value === 'AKTIF' || value === '') return 'Assigned';
   if (value === 'DEPODA') return 'Available';
   if (value === 'HURDA') return 'Hurda';
+  if (value === 'ARIZALI') return 'Faulty';
   if (value === 'TRANSFER') return 'Transfer';
   return 'Available';
 };
 
-const toDbStatus = (status) => {
+export const toDbStatus = (status) => {
   const value = String(status || '').toUpperCase().replace(/İ/g, 'I');
   if (value === 'AVAILABLE' || value === 'DEPODA' || value === 'DEPO') return 'DEPODA';
   if (value === 'HURDA') return 'HURDA';
+  if (value === 'FAULTY' || value === 'ARIZALI') return 'ARIZALI';
   if (value === 'TRANSFER') return 'TRANSFER';
   if (value === 'ASSIGNED' || value === 'AKTIF') return 'AKTIF';
-  return 'DEPODA';
+  return '';
 };
 
 function canSeeCampus(user, campus) {
@@ -1514,6 +1516,9 @@ export async function bulkAddHardwareForUser(user, data) {
 
 export async function bulkInitialAssignmentForUser(user, data) {
   const items = Array.isArray(data.items) ? data.items : [];
+  const isDeviceProfileSource = data.source === 'device-profile';
+  const itemContext = (rowNumber) =>
+    isDeviceProfileSource ? 'Cihaz profili' : `Excel satır ${rowNumber}`;
   if (data.confirmMigration !== true) {
     throw new Error('İlk migrasyon zimmeti açıkça onaylanmalıdır.');
   }
@@ -1527,7 +1532,7 @@ export async function bulkInitialAssignmentForUser(user, data) {
   const seenSerials = new Map();
   const requested = items.map((item, index) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new Error(`Excel satır ${index + 2}: Kayıt biçimi geçersiz.`);
+      throw new Error(`${itemContext(index + 2)}: Kayıt biçimi geçersiz.`);
     }
 
     const rowNumber = Number.isInteger(Number(item.rowNumber))
@@ -1535,46 +1540,46 @@ export async function bulkInitialAssignmentForUser(user, data) {
       : index + 2;
     const rawSerial = String(item.serial ?? '').replace(/^'/, '').trim();
     if (rawSerial.length > 160) {
-      throw new Error(`Excel satır ${rowNumber}: Seri no 160 karakterden uzun olamaz.`);
+      throw new Error(`${itemContext(rowNumber)}: Seri no 160 karakterden uzun olamaz.`);
     }
     const serial = rawSerial;
-    if (!serial) throw new Error(`Excel satır ${rowNumber}: Seri no boş olamaz.`);
+    if (!serial) throw new Error(`${itemContext(rowNumber)}: Seri no boş olamaz.`);
 
     const serialKey = normalizeSerialKey(serial);
     if (seenSerials.has(serialKey)) {
       throw new Error(
-        `Excel satır ${rowNumber}: "${serial}" seri numarası satır ${seenSerials.get(serialKey)} ile tekrar ediyor.`
+        `${itemContext(rowNumber)}: "${serial}" seri numarası satır ${seenSerials.get(serialKey)} ile tekrar ediyor.`
       );
     }
     seenSerials.set(serialKey, rowNumber);
 
     const rawPersonEmail = String(item.personEmail ?? '').trim();
     if (rawPersonEmail.length > 320) {
-      throw new Error(`Excel satır ${rowNumber}: Personel e-posta adresi 320 karakterden uzun olamaz.`);
+      throw new Error(`${itemContext(rowNumber)}: Personel e-posta adresi 320 karakterden uzun olamaz.`);
     }
     const personEmail = rawPersonEmail.toLocaleLowerCase('tr-TR');
     if (!personEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(personEmail)) {
-      throw new Error(`Excel satır ${rowNumber}: Geçerli bir personel e-posta adresi girin.`);
+      throw new Error(`${itemContext(rowNumber)}: Geçerli bir personel e-posta adresi girin.`);
     }
 
     const rawDriveLink = String(item.driveLink ?? '').trim();
     let driveLink = null;
     if (rawDriveLink) {
       if (rawDriveLink.length > 2048) {
-        throw new Error(`Excel satır ${rowNumber}: Drive linki 2048 karakterden uzun olamaz.`);
+        throw new Error(`${itemContext(rowNumber)}: Drive linki 2048 karakterden uzun olamaz.`);
       }
       let driveUrl;
       try {
         driveUrl = new URL(rawDriveLink);
       } catch {
-        throw new Error(`Excel satır ${rowNumber}: Drive linki geçerli bir HTTPS adresi olmalıdır.`);
+        throw new Error(`${itemContext(rowNumber)}: Drive linki geçerli bir HTTPS adresi olmalıdır.`);
       }
       if (
         driveUrl.protocol !== 'https:' ||
         !['drive.google.com', 'docs.google.com'].includes(driveUrl.hostname.toLowerCase())
       ) {
         throw new Error(
-          `Excel satır ${rowNumber}: Yalnızca Google Drive veya Google Docs bağlantısı kullanılabilir.`
+          `${itemContext(rowNumber)}: Yalnızca Google Drive veya Google Docs bağlantısı kullanılabilir.`
         );
       }
       driveLink = driveUrl.toString();
@@ -1618,20 +1623,20 @@ export async function bulkInitialAssignmentForUser(user, data) {
     const person = personnelByEmail.get(item.personEmail);
     if (!person) {
       throw new Error(
-        `Excel satır ${item.rowNumber}: "${item.personEmail}" e-posta adresli personel bulunamadı.`
+        `${itemContext(item.rowNumber)}: "${item.personEmail}" e-posta adresli personel bulunamadı.`
       );
     }
     if (normalizePersonnelStatus(person.Status) !== 'Aktif') {
       throw new Error(
-        `Excel satır ${item.rowNumber}: "${person.FullName}" aktif bir personel değil.`
+        `${itemContext(item.rowNumber)}: "${person.FullName}" aktif bir personel değil.`
       );
     }
     if (!hardware) {
-      throw new Error(`Excel satır ${item.rowNumber}: "${item.serial}" cihazı bulunamadı.`);
+      throw new Error(`${itemContext(item.rowNumber)}: "${item.serial}" cihazı bulunamadı.`);
     }
     if (core(hardware.Campus) !== core(person.Campus)) {
       throw new Error(
-        `Excel satır ${item.rowNumber}: Cihaz (${hardware.Campus || 'Bilinmiyor'}) ile personel (${person.Campus || 'Bilinmiyor'}) aynı kampüste değil.`
+        `${itemContext(item.rowNumber)}: Cihaz (${hardware.Campus || 'Bilinmiyor'}) ile personel (${person.Campus || 'Bilinmiyor'}) aynı kampüste değil.`
       );
     }
 
@@ -1640,14 +1645,14 @@ export async function bulkInitialAssignmentForUser(user, data) {
       .replace(/İ/g, 'I');
     if (!['DEPODA', 'AKTIF'].includes(status)) {
       throw new Error(
-        `Excel satır ${item.rowNumber}: "${item.serial}" cihazının durumu ${hardware.HardwareStatus || 'Bilinmiyor'}; yalnızca Depoda veya sahipsiz Aktif cihazlar aktarılabilir.`
+        `${itemContext(item.rowNumber)}: "${item.serial}" cihazının durumu ${hardware.HardwareStatus || 'Bilinmiyor'}; yalnızca Depoda veya sahipsiz Aktif cihazlar aktarılabilir.`
       );
     }
 
     const assignedPersonId = cleanText(hardware.AssignedPersonId, 160);
     if (assignedPersonId && assignedPersonId !== String(person.PersonId)) {
       throw new Error(
-        `Excel satır ${item.rowNumber}: "${item.serial}" cihazı başka bir personele zimmetli.`
+        `${itemContext(item.rowNumber)}: "${item.serial}" cihazı başka bir personele zimmetli.`
       );
     }
 
@@ -1698,7 +1703,7 @@ export async function bulkInitialAssignmentForUser(user, data) {
           INNER JOIN @Items i ON i.HardwareId = h.HardwareId;
 
           IF @lockedHardwareCount <> @expectedCount
-            THROW 51000, N'Cihazlardan biri işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+            THROW 51000, N'Cihazlardan biri işlem sırasında değişti. Verileri yenileyip yeniden deneyin.', 1;
 
           DECLARE @lockedPersonnelCount INT;
           SELECT @lockedPersonnelCount = COUNT(*)
@@ -1706,7 +1711,7 @@ export async function bulkInitialAssignmentForUser(user, data) {
           INNER JOIN (SELECT DISTINCT PersonId FROM @Items) i ON i.PersonId = p.PersonId;
 
           IF @lockedPersonnelCount <> (SELECT COUNT(DISTINCT PersonId) FROM @Items)
-            THROW 51000, N'Personel kayıtlarından biri işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+            THROW 51000, N'Personel kayıtlarından biri işlem sırasında değişti. Verileri yenileyip yeniden deneyin.', 1;
 
           IF EXISTS (
             SELECT 1
@@ -1723,7 +1728,7 @@ export async function bulkInitialAssignmentForUser(user, data) {
               OR (h.AssignedPersonId IS NOT NULL AND h.AssignedPersonId <> i.PersonId)
               OR (@isHq = 0 AND ISNULL(hardwareCampus.CoreName, N'') <> @userCore)
           )
-            THROW 51000, N'Cihaz veya personel verisi işlem sırasında değişti. Dosyayı yeniden yükleyin.', 1;
+            THROW 51000, N'Cihaz veya personel verisi işlem sırasında değişti. Verileri yenileyip yeniden deneyin.', 1;
 
           DECLARE @Updated TABLE (
             HardwareId INT NOT NULL PRIMARY KEY,
@@ -1735,7 +1740,10 @@ export async function bulkInitialAssignmentForUser(user, data) {
           SET
             HardwareStatus = N'AKTIF',
             AssignedPersonId = i.PersonId,
-            DriveLink = COALESCE(i.DriveLink, h.DriveLink),
+            DriveLink = CASE
+              WHEN @clearDocument = 1 THEN NULL
+              ELSE COALESCE(i.DriveLink, h.DriveLink)
+            END,
             UpdatedAt = SYSUTCDATETIME()
           OUTPUT INSERTED.HardwareId, INSERTED.SerialNo, INSERTED.DriveLink
             INTO @Updated (HardwareId, SerialNo, DriveLink)
@@ -1743,7 +1751,8 @@ export async function bulkInitialAssignmentForUser(user, data) {
           INNER JOIN @Items i ON i.HardwareId = h.HardwareId
           WHERE h.HardwareStatus <> N'AKTIF'
              OR ISNULL(h.AssignedPersonId, N'') <> i.PersonId
-             OR (i.DriveLink IS NOT NULL AND ISNULL(h.DriveLink, N'') <> i.DriveLink);
+             OR (@clearDocument = 1 AND h.DriveLink IS NOT NULL)
+             OR (@clearDocument = 0 AND i.DriveLink IS NOT NULL AND ISNULL(h.DriveLink, N'') <> i.DriveLink);
 
           INSERT INTO dbo.HardwareHistory (
             HardwareId,
@@ -1757,12 +1766,12 @@ export async function bulkInitialAssignmentForUser(user, data) {
           )
           SELECT
             updated.HardwareId,
-            N'İlk Migrasyon Zimmeti',
+            @historyEventType,
             item.PersonId,
             item.PersonName,
             updated.DriveLink,
             SYSUTCDATETIME(),
-            N'{"source":"excel-initial-migration"}',
+            @historyDetailsJson,
             @createdBy
           FROM @Updated updated
           INNER JOIN @Items item ON item.HardwareId = updated.HardwareId;
@@ -1776,6 +1785,19 @@ export async function bulkInitialAssignmentForUser(user, data) {
           expectedCount: { type: sql.Int, value: prepared.length },
           isHq: { type: sql.Bit, value: user.role === 'HQ IT' },
           userCore: { type: sql.NVarChar(160), value: core(user.campus) },
+          clearDocument: { type: sql.Bit, value: isDeviceProfileSource },
+          historyEventType: {
+            type: sql.NVarChar(160),
+            value: isDeviceProfileSource
+              ? 'İlk Geçiş Zimmeti (Belgesiz)'
+              : 'İlk Migrasyon Zimmeti'
+          },
+          historyDetailsJson: {
+            type: sql.NVarChar(sql.MAX),
+            value: isDeviceProfileSource
+              ? '{"source":"device-profile-initial-assignment","document":"none"}'
+              : '{"source":"excel-initial-migration"}'
+          },
           createdBy: { type: sql.NVarChar(320), value: cleanText(user.email, 320) || null }
         }
       );
@@ -1783,9 +1805,11 @@ export async function bulkInitialAssignmentForUser(user, data) {
       const assigned = Number(result.recordset[0]?.AssignedCount || 0);
       const skipped = Number(result.recordset[0]?.SkippedCount || 0);
       await appendSystemLog(
-        'İLK MİGRASYON ZİMMET',
+        isDeviceProfileSource ? 'BELGESİZ İLK GEÇİŞ ZİMMET' : 'İLK MİGRASYON ZİMMET',
         user,
-        `${assigned} cihaz Excel ile zimmetlendi; ${skipped} mevcut eşleşme değişmeden bırakıldı.`,
+        isDeviceProfileSource
+          ? `${assigned} cihaz profilden belgesiz zimmetlendi; ${skipped} mevcut eşleşme değişmeden bırakıldı.`
+          : `${assigned} cihaz Excel ile zimmetlendi; ${skipped} mevcut eşleşme değişmeden bırakıldı.`,
         data.clientIp || '',
         execute
       );
@@ -1886,7 +1910,9 @@ export async function bulkUpdateGroupForUser(user, data) {
 export async function bulkStatusUpdateForUser(user, data) {
   const rows = await findHardwareRows(user, data.hardwareIds);
   const dbStatus = toDbStatus(data.newStatus);
-  if (!['DEPODA', 'HURDA'].includes(dbStatus)) throw new Error('Bu toplu işlem sadece Depo veya Hurda için kullanılabilir.');
+  if (!['DEPODA', 'HURDA', 'ARIZALI'].includes(dbStatus)) {
+    throw new Error('Bu toplu işlem sadece Depo, Hurda veya Arızalı için kullanılabilir.');
+  }
 
   const transferRows = rows.filter(
     (row) => String(row.HardwareStatus || '').trim().toUpperCase().replace(/İ/g, 'I') === 'TRANSFER'
@@ -2159,32 +2185,16 @@ export async function createSheetForUser(user, data) {
   const exportFormat = String(data.format || 'xlsx').toLocaleLowerCase('tr-TR');
 
   if (exportFormat === 'google-sheet') {
-    const spreadsheet = await createSpreadsheetThroughGoogleBridge({
-      sheetName,
-      headers,
-      rows,
-      editorEmail: cleanText(user.email, 320)
-    });
-    if (!spreadsheet.url) throw new Error('Google Sheet bağlantısı oluşturulamadı.');
-
-    await appendSystemLog(
-      'EXPORT GOOGLE SHEETS',
-      user,
-      `${rows.length} kayıt Google Sheets'e aktarıldı.`,
-      data.clientIp || ''
-    );
-
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
     const queuePublicId = `EXPORT-${stamp}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     await query(
       `
         INSERT INTO dbo.OperationQueue (
-          PublicId, ActionType, Status, PayloadJson, ResultJson,
-          RequestedBy, CampusId, StartedAt, FinishedAt
+          PublicId, ActionType, Status, PayloadJson, RequestedBy, CampusId
         )
         VALUES (
-          @publicId, N'EXPORT_GOOGLE_SHEET', N'TAMAMLANDI', @payloadJson, @resultJson,
-          @requestedBy, @campusId, SYSUTCDATETIME(), SYSUTCDATETIME()
+          @publicId, N'EXPORT_GOOGLE_SHEET', N'BEKLIYOR', @payloadJson,
+          @requestedBy, @campusId
         )
       `,
       {
@@ -2194,14 +2204,11 @@ export async function createSheetForUser(user, data) {
           value: JSON.stringify({
             documentType: 'google-sheet',
             pdfName: sheetName,
-            requestedBy: normalizeEmail(user.email)
-          })
-        },
-        resultJson: {
-          type: sql.NVarChar(sql.MAX),
-          value: JSON.stringify({
-            url: spreadsheet.url,
-            resultLabel: 'Google Sheet hazır',
+            sheetName,
+            headers,
+            rows,
+            editorEmail: cleanText(user.email, 320),
+            requestedBy: normalizeEmail(user.email),
             count: rows.length
           })
         },
@@ -2210,11 +2217,20 @@ export async function createSheetForUser(user, data) {
       }
     );
 
+    await appendSystemLog(
+      'EXPORT GOOGLE SHEETS KUYRUK',
+      user,
+      `${rows.length} kayıtlık Google Sheets dışa aktarımı kuyruğa alındı: ${queuePublicId}`,
+      data.clientIp || ''
+    );
+
     return {
-      url: spreadsheet.url,
+      queued: true,
+      queueId: queuePublicId,
+      status: 'BEKLIYOR',
       count: rows.length,
       format: 'google-sheet',
-      queueId: queuePublicId
+      message: 'Google Sheets dışa aktarımı işlem kuyruğuna alındı.'
     };
   }
 
@@ -2260,6 +2276,7 @@ export async function manualAssignOrUploadMissingDocumentForUser(user, data) {
   if (status === 'TRANSFER') throw new Error('Cihaz transferde.');
   if (isManualAssign && status === 'AKTIF') throw new Error('Cihaz zaten başkasına zimmetli.');
   if (isManualAssign && status === 'HURDA') throw new Error('Hurda durumundaki cihaza manuel zimmet yapılamaz.');
+  if (isManualAssign && status === 'ARIZALI') throw new Error('Arızalı durumundaki cihaza manuel zimmet yapılamaz.');
 
   let person = {
     id: '',
@@ -3876,6 +3893,45 @@ async function claimGlpiReconcileJobs(maxJobs, leaseToken, { includeFailed = fal
   return result.recordset || [];
 }
 
+async function claimGoogleSheetExportJobs(maxJobs, leaseToken, { includeFailed = false } = {}) {
+  const result = await query(
+    `
+      ;WITH NextJobs AS (
+        SELECT TOP (@maxJobs) QueueId
+        FROM dbo.OperationQueue WITH (READPAST, UPDLOCK, ROWLOCK)
+        WHERE (
+                Status = N'BEKLIYOR'
+                OR (@includeFailed = 1 AND Status = N'HATA')
+                OR (Status = N'ISLENIYOR' AND (LeaseExpiresAt IS NULL OR LeaseExpiresAt <= SYSUTCDATETIME()))
+              )
+          AND AttemptCount < @maxAttempts
+          AND ActionType = N'EXPORT_GOOGLE_SHEET'
+        ORDER BY CreatedAt
+      )
+      UPDATE q
+      SET Status = N'ISLENIYOR',
+          StartedAt = COALESCE(StartedAt, SYSUTCDATETIME()),
+          FinishedAt = NULL,
+          ErrorMessage = NULL,
+          AttemptCount = AttemptCount + 1,
+          LeaseToken = @leaseToken,
+          LeaseExpiresAt = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME())
+      OUTPUT INSERTED.QueueId, INSERTED.PublicId, INSERTED.ActionType, INSERTED.PayloadJson
+      FROM dbo.OperationQueue q
+      INNER JOIN NextJobs n ON n.QueueId = q.QueueId;
+    `,
+    {
+      maxJobs: { type: sql.Int, value: Math.max(1, Math.min(Number(maxJobs || 1), 2)) },
+      includeFailed: { type: sql.Bit, value: includeFailed ? 1 : 0 },
+      maxAttempts: { type: sql.Int, value: Math.max(1, Number(config.queue.maxAttempts || 5)) },
+      leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
+      leaseSeconds: { type: sql.Int, value: Math.max(60, Number(config.queue.leaseSeconds || 1800)) }
+    }
+  );
+
+  return result.recordset || [];
+}
+
 async function renewOperationQueueLease(queueId, leaseToken) {
   const result = await query(
     `
@@ -3894,12 +3950,13 @@ async function renewOperationQueueLease(queueId, leaseToken) {
   if (Number(result.rowsAffected?.[0] || 0) !== 1) throw new Error('İşlem kuyruğu lease sahipliği kaybedildi.');
 }
 
-async function markOperationQueueDone(queueId, leaseToken, resultPayload) {
+async function markOperationQueueDone(queueId, leaseToken, resultPayload, safePayload = null) {
   const result = await query(
     `
       UPDATE dbo.OperationQueue
       SET Status = N'TAMAMLANDI',
           ResultJson = @resultJson,
+          PayloadJson = COALESCE(@safePayloadJson, PayloadJson),
           ErrorMessage = NULL,
           FinishedAt = SYSUTCDATETIME(),
           LeaseToken = NULL,
@@ -3911,7 +3968,11 @@ async function markOperationQueueDone(queueId, leaseToken, resultPayload) {
     {
       queueId: { type: sql.BigInt, value: queueId },
       leaseToken: { type: sql.UniqueIdentifier, value: leaseToken },
-      resultJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(resultPayload) }
+      resultJson: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(resultPayload) },
+      safePayloadJson: {
+        type: sql.NVarChar(sql.MAX),
+        value: safePayload ? JSON.stringify(safePayload) : null
+      }
     }
   );
   if (Number(result.rowsAffected?.[0] || 0) !== 1) throw new Error('İşlem kuyruğu tamamlanırken lease sahipliği kaybedildi.');
@@ -3971,6 +4032,67 @@ export async function processGlpiReconcileQueue({ maxJobs = 1, logger, includeFa
       await markOperationQueueFailed(job.QueueId, leaseToken, error);
       results.push({ queueId: job.PublicId, status: 'HATA', error: error.message });
       logger?.error?.({ err: error, queueId: job.PublicId }, 'GLPI eşleştirme kuyruğu hata verdi');
+    }
+  }
+
+  return {
+    processed: results.length,
+    results
+  };
+}
+
+export async function processGoogleSheetExportQueue({ maxJobs = 1, logger, includeFailed = false } = {}) {
+  const leaseToken = crypto.randomUUID();
+  const jobs = await claimGoogleSheetExportJobs(maxJobs, leaseToken, { includeFailed });
+  const results = [];
+
+  for (const job of jobs) {
+    try {
+      const startedAt = new Date();
+      const payload = parseQueueJson(job.PayloadJson);
+      const sheetName = cleanText(payload.sheetName || payload.pdfName, 200);
+      const editorEmail = normalizeEmail(payload.editorEmail || payload.requestedBy);
+      const headers = Array.isArray(payload.headers) ? payload.headers : [];
+      const rows = Array.isArray(payload.rows) ? payload.rows : [];
+
+      if (!sheetName || !editorEmail || headers.length === 0) {
+        throw new Error('Google Sheet kuyruk verisi eksik veya geçersiz.');
+      }
+
+      await renewOperationQueueLease(job.QueueId, leaseToken);
+      const spreadsheet = await createSpreadsheetThroughGoogleBridge({
+        sheetName,
+        headers,
+        rows,
+        editorEmail
+      });
+      if (!spreadsheet.url) throw new Error('Google Sheet bağlantısı oluşturulamadı.');
+
+      const result = {
+        queueId: job.PublicId,
+        actionType: job.ActionType,
+        url: spreadsheet.url,
+        resultLabel: 'Google Sheet hazır',
+        count: rows.length,
+        startedAt: startedAt.toISOString(),
+        finishedAt: new Date().toISOString()
+      };
+      const safePayload = {
+        documentType: 'google-sheet',
+        pdfName: sheetName,
+        requestedBy: cleanText(payload.requestedBy || editorEmail, 320),
+        count: rows.length
+      };
+      await markOperationQueueDone(job.QueueId, leaseToken, result, safePayload);
+      results.push({ queueId: job.PublicId, status: 'TAMAMLANDI', result });
+      logger?.info?.(
+        { queueId: job.PublicId, count: rows.length },
+        'Google Sheet dışa aktarım kuyruğu tamamlandı'
+      );
+    } catch (error) {
+      await markOperationQueueFailed(job.QueueId, leaseToken, error);
+      results.push({ queueId: job.PublicId, status: 'HATA', error: error.message });
+      logger?.error?.({ err: error, queueId: job.PublicId }, 'Google Sheet dışa aktarım kuyruğu hata verdi');
     }
   }
 
@@ -4442,6 +4564,9 @@ export async function saveZimmetOrReturnForUser(user, data) {
     if (status === 'TRANSFER') throw new Error(`Cihaz transferde: ${row.SerialNo}`);
     if (!isReturn && status === 'HURDA') {
       throw new Error(`HATA: Hurda durumundaki cihaz zimmetlenemez: ${row.SerialNo}`);
+    }
+    if (!isReturn && status === 'ARIZALI') {
+      throw new Error(`HATA: Arızalı durumundaki cihaz zimmetlenemez: ${row.SerialNo}`);
     }
     if (!isReturn && status !== 'DEPODA' && status !== 'AKTIF') {
       throw new Error(`HATA: Cihaz (S/N: ${row.SerialNo}) zimmete uygun durumda değil. Mevcut durum: ${row.HardwareStatus}`);

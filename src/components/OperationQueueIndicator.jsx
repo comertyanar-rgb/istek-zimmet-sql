@@ -102,6 +102,7 @@ const EMPTY_QUEUE_SNAPSHOT = Object.freeze({
   loading: false,
   running: false,
   error: '',
+  completionNotice: null,
 });
 const sharedQueueStores = new Map();
 
@@ -111,10 +112,12 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
   let requestInFlight = null;
   let pollTimer = null;
   let idleCleanupTimer = null;
+  let completionNoticeTimer = null;
   let started = false;
   const listeners = new Set();
   const openConsumers = new Set();
   const refreshCallbacks = new Map();
+  const expectedCompletionIds = new Set();
 
   const emit = (patch) => {
     snapshot = { ...snapshot, ...patch };
@@ -126,6 +129,43 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
         })
       );
     }
+  };
+
+  const clearCompletionNoticeTimer = () => {
+    if (completionNoticeTimer) window.clearTimeout(completionNoticeTimer);
+    completionNoticeTimer = null;
+  };
+
+  const dismissCompletionNotice = (noticeId) => {
+    if (!noticeId || snapshot.completionNotice?.id === noticeId) {
+      emit({ completionNotice: null });
+    }
+    clearCompletionNoticeTimer();
+  };
+
+  const showCompletionNotice = (job) => {
+    if (!job || typeof window === 'undefined') return;
+
+    const parsedResult = safeJson(job.result || job.resultJson);
+    const parsedPayload = safeJson(job.payloadJson);
+    const noticeId = `${job.kind}:${job.queueId}:${job.updatedAt || Date.now()}`;
+
+    clearCompletionNoticeTimer();
+    emit({
+      completionNotice: {
+        id: noticeId,
+        title: `${actionLabel(job.action)} tamamlandı`,
+        detail:
+          parsedResult?.resultLabel ||
+          jobSubtitle(job, parsedPayload) ||
+          'İşlem başarıyla tamamlandı.',
+        url: toSafeExternalUrl(parsedResult?.url),
+      },
+    });
+    completionNoticeTimer = window.setTimeout(
+      () => dismissCompletionNotice(noticeId),
+      8000
+    );
   };
 
   const hasActiveJobs = () => snapshot.jobs.some((job) => ACTIVE_STATUSES.has(job.status));
@@ -232,19 +272,32 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
         const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime() || 0;
         return bTime - aTime;
       });
-      const completedAfterActive = nextJobs.some((job) => {
+      const terminalAfterActive = nextJobs.filter((job) => {
         const oldStatus = previousJobs.get(`${job.kind}:${job.queueId}`);
-        return ACTIVE_STATUSES.has(oldStatus) && isTerminalStatus(job.status);
+        const expectedCompletion = expectedCompletionIds.has(String(job.queueId));
+        return (
+          isTerminalStatus(job.status) &&
+          (ACTIVE_STATUSES.has(oldStatus) || expectedCompletion)
+        );
       });
+      const completedAfterActive = terminalAfterActive.filter(
+        (job) => job.status === 'TAMAMLANDI'
+      );
 
       previousJobs = new Map(
         nextJobs.map((job) => [`${job.kind}:${job.queueId}`, job.status])
       );
+      terminalAfterActive.forEach((job) =>
+        expectedCompletionIds.delete(String(job.queueId))
+      );
       emit({ jobs: nextJobs });
 
-      if (completedAfterActive) {
+      if (terminalAfterActive.length > 0) {
         const refreshData = refreshCallbacks.values().next().value;
         refreshData?.();
+      }
+      if (completedAfterActive.length > 0) {
+        showCompletionNotice(completedAfterActive[0]);
       }
 
       return nextJobs;
@@ -289,7 +342,13 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') fetchQueue({ silent: true });
   };
-  const handleExternalRefresh = () => fetchQueue({ silent: true, force: true });
+  const handleExternalRefresh = (event) => {
+    const queueId = event?.detail?.queueId;
+    if (event?.detail?.expectCompletion && queueId) {
+      expectedCompletionIds.add(String(queueId));
+    }
+    fetchQueue({ silent: true, force: true });
+  };
 
   const start = () => {
     if (started || typeof window === 'undefined') return;
@@ -304,6 +363,7 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
     if (!started || typeof window === 'undefined') return;
     started = false;
     stopPolling();
+    clearCompletionNoticeTimer();
     window.removeEventListener('focus', handleFocus);
     window.removeEventListener('istek:operation-queue-refresh', handleExternalRefresh);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -323,6 +383,7 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
           if (listeners.size > 0) return;
           stop();
           previousJobs = new Map();
+          expectedCompletionIds.clear();
           openConsumers.clear();
           refreshCallbacks.clear();
           sharedQueueStores.delete(key);
@@ -344,6 +405,7 @@ function createSharedQueueStore({ key, currentUser, gasUrl }) {
     },
     fetchQueue,
     runQueue,
+    dismissCompletionNotice,
   };
 }
 
@@ -393,6 +455,7 @@ function useSharedQueueData({ currentUser, gasUrl, onRefreshData, open }) {
     ...snapshot,
     fetchQueue: store?.fetchQueue || (async () => undefined),
     runQueue: store?.runQueue || (async () => undefined),
+    dismissCompletionNotice: store?.dismissCompletionNotice || (() => {}),
   };
 }
 
@@ -408,12 +471,16 @@ export const OperationQueueIndicator = ({
   const [dismissingKey, setDismissingKey] = useState('');
   const [cancellingKey, setCancellingKey] = useState('');
   const [cancelError, setCancelError] = useState('');
-  const { jobs, loading, running, error, fetchQueue, runQueue } = useSharedQueueData({
-    currentUser,
-    gasUrl,
-    onRefreshData,
-    open,
-  });
+  const {
+    jobs,
+    loading,
+    running,
+    error,
+    completionNotice,
+    fetchQueue,
+    runQueue,
+    dismissCompletionNotice,
+  } = useSharedQueueData({ currentUser, gasUrl, onRefreshData, open });
 
   const normalizedUserEmail = String(currentUser?.email || '').trim().toLocaleLowerCase('en-US');
   const storageKey = normalizedUserEmail
@@ -757,6 +824,58 @@ export const OperationQueueIndicator = ({
     </div>
   ) : null;
 
+  const completionNoticeContent =
+    variant === 'desktop' && completionNotice ? (
+      <aside
+        className="app-queue-completion-notice fixed left-4 right-4 top-20 z-[1000000000000] mx-auto w-[min(420px,calc(100vw-32px))] rounded-xl border border-emerald-200 bg-white p-3 shadow-xl lg:bottom-[158px] lg:left-3 lg:right-auto lg:top-auto lg:mx-0 lg:w-[340px]"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-start gap-2.5">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+            <CheckCircle2 className="h-4 w-4" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-black text-gray-900">
+              {completionNotice.title}
+            </p>
+            {completionNotice.detail && (
+              <p className="mt-0.5 truncate text-[11px] font-semibold text-gray-500">
+                {completionNotice.detail}
+              </p>
+            )}
+          </div>
+          {completionNotice.url && (
+            <a
+              href={completionNotice.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 text-[11px] font-black text-emerald-700 hover:bg-emerald-100"
+            >
+              Aç
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={() => dismissCompletionNotice(completionNotice.id)}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+            title="Bildirimi kapat"
+            aria-label="Bildirimi kapat"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+    ) : null;
+
+  const portalContent = (
+    <>
+      {completionNoticeContent}
+      {panelContent}
+    </>
+  );
+
   return (
     <>
       <button
@@ -783,7 +902,9 @@ export const OperationQueueIndicator = ({
         )}
       </button>
 
-      {typeof document !== 'undefined' && panelContent ? createPortal(panelContent, document.body) : panelContent}
+      {typeof document !== 'undefined'
+        ? createPortal(portalContent, document.body)
+        : portalContent}
     </>
   );
 };

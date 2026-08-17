@@ -8,6 +8,7 @@ import {
   Printer,
   QrCode,
   Trash2,
+  Wrench,
   X,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
@@ -16,6 +17,7 @@ const getStatusLabel = (status) => {
   if (status === 'Available') return 'Depoda';
   if (status === 'Assigned') return 'Zimmetli';
   if (status === 'Hurda') return 'Hurda';
+  if (status === 'Faulty') return 'Arızalı';
   if (status === 'Transfer') return 'Transfer';
   return status || '-';
 };
@@ -24,7 +26,8 @@ const getStatusClass = (status) => {
   if (status === 'Available') return 'bg-green-50 text-green-700 border-green-200';
   if (status === 'Assigned') return 'bg-blue-50 text-blue-700 border-blue-200';
   if (status === 'Hurda') return 'bg-red-50 text-red-700 border-red-200';
-  if (status === 'Transfer') return 'bg-amber-50 text-amber-700 border-amber-200';
+  if (status === 'Faulty') return 'bg-amber-50 text-amber-800 border-amber-200';
+  if (status === 'Transfer') return 'bg-violet-50 text-violet-700 border-violet-200';
   return 'bg-slate-50 text-slate-700 border-slate-200';
 };
 
@@ -340,6 +343,9 @@ export const QrScanTab = ({
                 </button>
                 <button disabled={isQrActionBusy} onClick={() => handleQrStatusUpdate('Hurda')} className="h-10 w-10 sm:w-auto sm:px-3 rounded-full bg-red-50 border border-red-200 text-red-700 hover:bg-red-100 font-black text-xs flex items-center justify-center gap-2 transition-colors shrink-0 disabled:opacity-45 disabled:cursor-not-allowed" title="Hurdaya ayır">
                   <Trash2 className="w-4 h-4" /> <span className="hidden sm:inline">Hurda</span>
+                </button>
+                <button disabled={isQrActionBusy} onClick={() => handleQrStatusUpdate('Faulty')} className="h-10 w-10 sm:w-auto sm:px-3 rounded-full bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 font-black text-xs flex items-center justify-center gap-2 transition-colors shrink-0 disabled:opacity-45 disabled:cursor-not-allowed" title="Arızalı olarak işaretle">
+                  <Wrench className="w-4 h-4" /> <span className="hidden sm:inline">Arızalı</span>
                 </button>
                 <button disabled={isQrActionBusy} onClick={handleQrStartZimmet} className="h-10 w-10 sm:w-auto sm:px-3 rounded-full bg-[#0066b1] text-white hover:bg-[#005595] font-black text-xs flex items-center justify-center gap-2 transition-colors shadow-sm shrink-0 disabled:opacity-45 disabled:cursor-not-allowed" title="Zimmete aktar">
                   <FileSignature className="w-4 h-4" /> <span className="hidden sm:inline">Zimmet</span>
