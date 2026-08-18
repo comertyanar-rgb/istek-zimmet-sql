@@ -149,6 +149,7 @@ sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\017_prune_personnel
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\018_signature_title_admin.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\019_finalize_pdf_history.sql
 sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -b -i .\sql\020_signature_wide_templates.sql
+sqlcmd -S localhost\SQLEXPRESS -d IstekZimmet -E -C -f 65001 -b -i .\sql\021_merge_konyaalti_campuses.sql
 ```
 
 `020_signature_wide_templates.sql`, mevcut veritabanlarında imza şablonu
@@ -156,6 +157,12 @@ anahtarlarını `1`, `1-w`, `2`, `2-w`, `3`, `3-w`, `4`, `4-w` olarak
 genişletir. Temiz kurulumlarda aynı doğrulama `018_signature_title_admin.sql`
 içinde de bulunur. Migration çalıştırıldıktan sonra backend ve imza ajanını
 yeniden başlatın.
+
+`021_merge_konyaalti_campuses.sql`, `Konyaaltı`, `Konyaaltı - İlkokul` ve
+eski `Antalya Kampüsü (Konyaaltı)` kayıtlarını tek `Konyaaltı Kampüsü`
+kaydında birleştirir. `Campuses` tablosuna yabancı anahtarla bağlı mevcut ve
+sonradan eklenen tüm kayıtlar otomatik bulunup kanonik kampüse taşınır; yetkili
+kullanıcı, personel, donanım, kuyruk, hesap ve öğrenci ilişkileri korunur.
 
 `010_system_log_chain.sql`, mevcut logları SHA-256 zincirine dahil eder ve
 `SystemLogs` tablosunu API için yalnızca eklenebilir hale getirir. Zincir kontrolü:

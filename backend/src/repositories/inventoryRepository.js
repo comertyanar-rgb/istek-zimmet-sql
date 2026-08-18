@@ -22,14 +22,44 @@ import {
 } from '../personnelContactImport.js';
 import { getSignatureTemplateVariant } from '../signatureTemplate.js';
 
-export const core = (value) =>
+export const KONYAALTI_CAMPUS_NAME = 'Konyaaltı Kampüsü';
+
+const baseCampusCore = (value) =>
   String(value || '')
     .toLocaleLowerCase('tr-TR')
     .replace(/kampüsü/g, '')
     .replace(/kampusu/g, '')
     .replace(/kampüs/g, '')
     .replace(/kampus/g, '')
+    .replace(/\s+/g, ' ')
     .trim();
+
+const KONYAALTI_ALIASES = new Set([
+  'konyaaltı',
+  'konyaalti',
+  'konyaaltı ilkokul',
+  'konyaalti ilkokul',
+  'antalya konyaaltı',
+  'antalya konyaalti'
+]);
+
+const isKonyaaltiCampus = (value) => {
+  const alias = baseCampusCore(value)
+    .replace(/[_/]+/g, ' ')
+    .replace(/[()]/g, ' ')
+    .replace(/\s*-\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return KONYAALTI_ALIASES.has(alias);
+};
+
+export const core = (value) => (isKonyaaltiCampus(value) ? 'konyaaltı' : baseCampusCore(value));
+
+export const canonicalCampusName = (value) => {
+  const name = cleanText(value, 160);
+  if (!name) return '';
+  return isKonyaaltiCampus(name) ? KONYAALTI_CAMPUS_NAME : name;
+};
 
 export const toUiStatus = (status) => {
   const value = String(status || '').toUpperCase().replace(/İ/g, 'I');
@@ -303,8 +333,8 @@ const FALLBACK_CAMPUS_CODES = {
   KA: 'Kemal Atatürk Kampüsü',
   UB: 'Uluğbey Kampüsü',
   KM: 'Kaşgarlı Mahmut Kampüsü',
-  AK: 'Antalya Kampüsü (Konyaaltı)',
-  KL: 'Konyaaltı Kampüsü',
+  AK: KONYAALTI_CAMPUS_NAME,
+  KL: KONYAALTI_CAMPUS_NAME,
   IO: 'İzmir Kampüsü',
   İO: 'İzmir Kampüsü',
   SS: 'Semiha Şakir Kampüsü',
@@ -349,27 +379,35 @@ function parseComputerNameMeta(computerName, campusCodeMap) {
 }
 
 async function getCampusIdByName(name) {
+  const campusName = canonicalCampusName(name);
   const result = await query(
-    `SELECT TOP 1 CampusId, Name FROM dbo.Campuses WHERE CoreName = @core OR Name = @name`,
+    `
+      SELECT TOP 1 CampusId, Name
+      FROM dbo.Campuses
+      WHERE CoreName = @core OR Name = @name
+      ORDER BY CASE WHEN Name = @name THEN 0 ELSE 1 END, IsActive DESC, Name
+    `,
     {
-      core: { type: sql.NVarChar(160), value: core(name) },
-      name: { type: sql.NVarChar(160), value: String(name || '') }
+      core: { type: sql.NVarChar(160), value: core(campusName) },
+      name: { type: sql.NVarChar(160), value: campusName }
     }
   );
   return result.recordset[0]?.CampusId || null;
 }
 
 async function getActiveCampusByName(name) {
+  const campusName = canonicalCampusName(name);
   const result = await query(
     `
       SELECT TOP 1 CampusId, Name
       FROM dbo.Campuses
       WHERE IsActive = 1
         AND (CoreName = @core OR Name = @name)
+      ORDER BY CASE WHEN Name = @name THEN 0 ELSE 1 END, Name
     `,
     {
-      core: { type: sql.NVarChar(160), value: core(name) },
-      name: { type: sql.NVarChar(160), value: cleanText(name, 160) }
+      core: { type: sql.NVarChar(160), value: core(campusName) },
+      name: { type: sql.NVarChar(160), value: campusName }
     }
   );
   return result.recordset[0] || null;
@@ -404,10 +442,10 @@ async function getTransferEmailRecipients(campusId, requesterEmail) {
 }
 
 async function ensureCampusId(name) {
-  const existing = await getCampusIdByName(name);
+  const campusName = canonicalCampusName(name || 'Bilinmiyor') || 'Bilinmiyor';
+  const existing = await getCampusIdByName(campusName);
   if (existing) return existing;
 
-  const campusName = cleanText(name || 'Bilinmiyor', 160) || 'Bilinmiyor';
   const result = await query(
     `
       INSERT INTO dbo.Campuses (Name)
@@ -2869,7 +2907,9 @@ async function getSignatureTitle(titleTr) {
 
 async function getSignatureCampusInfo(user, requestedCampus, personCampus) {
   const canChooseCampus = user.role === 'HQ IT' || ['genel müdürlük', 'genel mudurluk'].includes(core(user.campus));
-  const finalCampus = canChooseCampus ? cleanText(requestedCampus || personCampus || user.campus, 160) : cleanText(personCampus || user.campus, 160);
+  const finalCampus = canonicalCampusName(
+    canChooseCampus ? requestedCampus || personCampus || user.campus : personCampus || user.campus
+  );
 
   if (!canChooseCampus && requestedCampus && core(requestedCampus) !== core(finalCampus)) {
     throw new Error('Bu personel için farklı imza kampüsü seçemezsiniz.');
@@ -2880,6 +2920,7 @@ async function getSignatureCampusInfo(user, requestedCampus, personCampus) {
       SELECT TOP 1 Name, COALESCE(ShortAddress, AddressText, N'') AS AddressText, CampusImage
       FROM dbo.Campuses
       WHERE CoreName = @core OR Name = @name
+      ORDER BY CASE WHEN Name = @name THEN 0 ELSE 1 END, IsActive DESC, Name
     `,
     {
       core: { type: sql.NVarChar(160), value: core(finalCampus) },
@@ -3606,7 +3647,7 @@ async function getCampusCodeMap() {
   }
 
   for (const row of result.recordset) {
-    const campusName = row.Name || '';
+    const campusName = canonicalCampusName(row.Name);
     const campusCode = cleanText(row.CampusCode, 32).toLocaleUpperCase('tr-TR');
     if (!campusCode || !campusName) continue;
     map[campusCode] = campusName;

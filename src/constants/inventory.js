@@ -4,7 +4,7 @@ export const CAMPUS_CODES = {
   'Kemal Atatürk Kampüsü': 'KA',
   'Uluğbey Kampüsü': 'UB',
   'Kaşgarlı Mahmut Kampüsü': 'KM',
-  'Antalya Kampüsü (Konyaaltı)': 'AK',
+  'Konyaaltı Kampüsü': 'AK',
   'İzmir Kampüsü': 'İO',
   'Semiha Şakir Kampüsü': 'SS',
   'Bilge Kağan Kampüsü': 'BK',
