@@ -1111,6 +1111,12 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
     newHardwareForm.type,
     newHardwareForm.brand
   );
+  const newHardwarePredefinedModels = newHardwareModelSuggestions.filter(
+    (model) => model !== 'Diğer'
+  );
+  const isNewHardwareCustomModel = !newHardwarePredefinedModels.includes(
+    newHardwareForm.model
+  );
 
   let computerPrefix = '';
   if (showComputerName && currentUser) {
@@ -7947,24 +7953,46 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wide mb-1.5 ml-1">
                             Model
                           </label>
-                          <input
-                            type="text"
-                            list="manual-hardware-model-options"
-                            value={newHardwareForm.model}
-                            onChange={(e) =>
+                          <select
+                            value={
+                              isNewHardwareCustomModel
+                                ? '__custom__'
+                                : newHardwareForm.model
+                            }
+                            onChange={(e) => {
+                              const selectedModel = e.target.value;
                               setNewHardwareForm({
                                 ...newHardwareForm,
-                                model: e.target.value,
-                              })
-                            }
-                            placeholder="Model seçin veya yazın"
+                                model:
+                                  selectedModel === '__custom__'
+                                    ? ''
+                                    : selectedModel,
+                              });
+                            }}
                             className="w-full px-3 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
-                          />
-                          <datalist id="manual-hardware-model-options">
-                            {newHardwareModelSuggestions.map((model) => (
-                              <option key={model} value={model} />
+                          >
+                            {newHardwarePredefinedModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
                             ))}
-                          </datalist>
+                            <option value="__custom__">Başka model...</option>
+                          </select>
+                          {isNewHardwareCustomModel && (
+                            <input
+                              type="text"
+                              value={newHardwareForm.model}
+                              onChange={(e) =>
+                                setNewHardwareForm({
+                                  ...newHardwareForm,
+                                  model: e.target.value,
+                                })
+                              }
+                              placeholder="Model adını yazın"
+                              autoFocus
+                              className="w-full mt-2 px-3 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
+                            />
+                          )}
                         </div>
                       </div>
 
