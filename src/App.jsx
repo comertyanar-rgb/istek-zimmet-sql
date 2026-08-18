@@ -35,6 +35,15 @@ import {
   Tag,
   QrCode,
   Camera,
+  Speaker,
+  Headphones,
+  Mic,
+  Projector,
+  Wifi,
+  BatteryCharging,
+  Tablet as TabletIcon,
+  ScanLine,
+  Router,
   ShieldCheck,
   FileSpreadsheet,
   Wrench,
@@ -47,7 +56,11 @@ import {
   OPERATION_QUEUE_REFRESH_EVENT,
   postApiAction,
 } from './services/apiClient.js';
-import { BRANDS_MODELS, CAMPUS_CODES, TYPE_BRANDS } from './constants/inventory.js';
+import {
+  CAMPUS_CODES,
+  TYPE_BRANDS,
+  getModelsForTypeBrand,
+} from './constants/inventory.js';
 import { hasCurrentAssignmentDocument } from './utils/hardware.js';
 import { toTrLower } from './utils/text.js';
 import { openSafeExternalUrl, toSafeDriveEmbedUrl, toSafeExternalUrl } from './utils/safeUrls.js';
@@ -1094,6 +1107,10 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
     newHardwareForm.type === 'Laptop' ||
     newHardwareForm.type === 'Masaüstü (PC)' ||
     newHardwareForm.type === 'All in One PC';
+  const newHardwareModelSuggestions = getModelsForTypeBrand(
+    newHardwareForm.type,
+    newHardwareForm.brand
+  );
 
   let computerPrefix = '';
   if (showComputerName && currentUser) {
@@ -1104,15 +1121,6 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
     computerPrefix = `I${cCode}${tCode}`;
   }
 
-  const handleBrandChange = (e) => {
-    const newBrand = e.target.value;
-    setNewHardwareForm({
-      ...newHardwareForm,
-      brand: newBrand,
-      model: BRANDS_MODELS[newBrand][0], // Marka değişince modeli ilk seçeneğe sıfırla
-    });
-  };
-
   const handleSaveNewHardware = async () => {
     if (
       !newHardwareForm.brand ||
@@ -1120,7 +1128,7 @@ const [expandedCompletedTransfers, setExpandedCompletedTransfers] = useState({})
       !newHardwareForm.serial
     ) {
       return showAppAlert(
-        'Lütfen marka, model ve seri no alanlarını eksiksiz doldurun.'
+        'Lütfen marka, model ve seri no / demirbaş no alanlarını eksiksiz doldurun.'
       );
     }
 
@@ -2525,8 +2533,19 @@ setTimeout(() => setSuccessMessage(null), 2500);
     if (t.includes('all in one') || t.includes('aio')) return <Monitor className={className} />;
     if (t.includes('akıllı') || t.includes('akilli') || t.includes('tahta') || t.includes('spc')) return <Monitor className={className} />;
     if (t.includes('monitör') || t.includes('monitor')) return <Monitor className={className} />;
+    if (t.includes('tablet')) return <TabletIcon className={className} />;
     if (t.includes('set') || t.includes('klavye')) return <Keyboard className={className} />;
     if (t.includes('mouse')) return <Mouse className={className} />;
+    if (t.includes('webcam') || t.includes('kamera')) return <Camera className={className} />;
+    if (t.includes('hoparlör') || t.includes('hoparlor') || t.includes('speaker')) return <Speaker className={className} />;
+    if (t.includes('kulaklık') || t.includes('kulaklik') || t.includes('headset')) return <Headphones className={className} />;
+    if (t.includes('mikrofon') || t.includes('microphone')) return <Mic className={className} />;
+    if (t.includes('projeksiyon') || t.includes('projector')) return <Projector className={className} />;
+    if (t.includes('yazıcı') || t.includes('yazici') || t.includes('printer')) return <Printer className={className} />;
+    if (t.includes('tarayıcı') || t.includes('tarayici') || t.includes('scanner')) return <ScanLine className={className} />;
+    if (t.includes('adaptör') || t.includes('adaptor') || t.includes('şarj') || t.includes('sarj') || t.includes('ups')) return <BatteryCharging className={className} />;
+    if (t.includes('access point') || t.includes('erişim noktası') || t.includes('erisim noktasi')) return <Wifi className={className} />;
+    if (t.includes('switch')) return <Router className={className} />;
     return <HardDrive className={className} />;
   };
 
@@ -4422,21 +4441,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             }}
                             className="bg-white border border-gray-200 rounded-xl shadow-2xl py-1.5 max-h-[50vh] overflow-y-auto sm:ml-[100px]"
                           >
-                            {[
-                              'All',
-                              'Laptop',
-                              'Masaüstü (PC)',
-                              'All in One',
-                              'Akilli Tahta',
-                              'Tablet',
-                              'Monitör',
-                              'Klavye ve Mouse Seti',
-                              'Mouse',
-                              'Klavye',
-                              'Webcam',
-                              'Hard Drive',
-                              'Diger',
-                            ].map((t) => (
+                            {['All', ...Object.keys(TYPE_BRANDS)].map((t) => (
                               <button
                                 key={t}
                                 onClick={() => {
@@ -7475,7 +7480,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 
                                 {activeAssignFilterDropdown === 'type' && (
                                   <div className="flex flex-col gap-1">
-                                    {['All', 'Laptop', 'Masaüstü (PC)', 'Tablet', 'Monitör', 'Klavye ve Mouse Seti', 'Mouse', 'Klavye', 'Webcam', 'Hard Drive', 'Diğer'].map((t) => (
+                                    {['All', ...Object.keys(TYPE_BRANDS)].map((t) => (
                                       <button key={t} onClick={() => { setAssignFilterType(t); setActiveAssignFilterDropdown(null); }} className={`w-full text-left px-4 py-3 rounded-xl text-sm transition-all ${assignFilterType === t ? 'font-bold text-[#0066b1] bg-blue-50/80 border border-blue-200' : 'text-gray-700 hover:bg-gray-100 font-medium'}`}>
                                         {t === 'All' ? 'Tüm Tipler' : t}
                                       </button>
@@ -7835,7 +7840,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 className="app-modal-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6"
                 style={{ zIndex: 999999 }}
               >
-                <div className="app-modal-panel bg-white rounded-3xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden border border-white/20">
+                <div className="app-modal-panel bg-white rounded-3xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden border border-white/20">
                   <div className="flex justify-between items-center p-4 md:p-5 border-b bg-[#0066b1] text-white shrink-0">
                     <h3 className="font-bold text-base flex items-center gap-2">
                       <Plus className="w-5 h-5" /> Yeni Donanım Ekle
@@ -7874,10 +7879,15 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             // SEÇİLEN TİPE AİT İLK MARKAYI VE MODELİ OTOMATİK BULUR
                             const autoBrand = TYPE_BRANDS[selectedType]
                               ? TYPE_BRANDS[selectedType][0]
-                              : 'Diger';
-                            const autoModel = BRANDS_MODELS[autoBrand]
-                              ? BRANDS_MODELS[autoBrand][0]
-                              : 'Diger';
+                              : 'Diğer';
+                            const suggestedModels = getModelsForTypeBrand(
+                              selectedType,
+                              autoBrand
+                            );
+                            const autoModel =
+                              autoBrand === 'Diğer'
+                                ? ''
+                                : suggestedModels[0] || '';
 
                             setNewHardwareForm({
                               ...newHardwareForm,
@@ -7889,19 +7899,13 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           }}
                           className="w-full px-3 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
                         >
-                          <option value="Laptop">Laptop</option>
-                          <option value="Masaüstü (PC)">Masaüstü (PC)</option>
-                          <option value="All in One PC">All in One PC</option>
-                          <option value="Tablet">Tablet</option>
-                          <option value="Monitör">Monitör</option>
-                          <option value="Klavye ve Mouse Seti">
-                            Klavye ve Mouse Seti
-                          </option>
-                          <option value="Mouse">Mouse</option>
-                          <option value="Klavye">Klavye</option>
-                          <option value="Webcam">Webcam</option>
-                          <option value="Hard Drive">Hard Drive / Disk</option>
-                          <option value="Diger">Diger</option>
+                          {Object.keys(TYPE_BRANDS).map((type) => (
+                            <option key={type} value={type}>
+                              {type === 'Hard Drive'
+                                ? 'Harici Disk / Depolama'
+                                : type}
+                            </option>
+                          ))}
                         </select>
                       </div>
 
@@ -7914,17 +7918,24 @@ setTimeout(() => setSuccessMessage(null), 2500);
                             value={newHardwareForm.brand}
                             onChange={(e) => {
                               const newBrand = e.target.value;
+                              const suggestedModels = getModelsForTypeBrand(
+                                newHardwareForm.type,
+                                newBrand
+                              );
                               setNewHardwareForm({
                                 ...newHardwareForm,
                                 brand: newBrand,
-                                model: BRANDS_MODELS[newBrand][0], // Marka degisince modeli o markanin ilk modeli yap
+                                model:
+                                  newBrand === 'Diğer'
+                                    ? ''
+                                    : suggestedModels[0] || '',
                               });
                             }}
                             className="w-full px-3 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
                           >
                             {/* BÜTÜN MARKALAR YERİNE, SADECE SEÇİLİ CİHAZ TİPİNE AİT MARKALARI LİSTELER */}
                             {(
-                              TYPE_BRANDS[newHardwareForm.type] || ['Diger']
+                              TYPE_BRANDS[newHardwareForm.type] || ['Diğer']
                             ).map((brand) => (
                               <option key={brand} value={brand}>
                                 {brand}
@@ -7936,7 +7947,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wide mb-1.5 ml-1">
                             Model
                           </label>
-                          <select
+                          <input
+                            type="text"
+                            list="manual-hardware-model-options"
                             value={newHardwareForm.model}
                             onChange={(e) =>
                               setNewHardwareForm({
@@ -7944,26 +7957,24 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 model: e.target.value,
                               })
                             }
+                            placeholder="Model seçin veya yazın"
                             className="w-full px-3 py-2.5 text-sm font-medium text-gray-700 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
-                          >
-                            {BRANDS_MODELS[newHardwareForm.brand]?.map(
-                              (model) => (
-                                <option key={model} value={model}>
-                                  {model}
-                                </option>
-                              )
-                            )}
-                          </select>
+                          />
+                          <datalist id="manual-hardware-model-options">
+                            {newHardwareModelSuggestions.map((model) => (
+                              <option key={model} value={model} />
+                            ))}
+                          </datalist>
                         </div>
                       </div>
 
                       <div>
                         <label className="block text-[11px] font-bold text-gray-500 uppercase tracking-wide mb-1.5 ml-1">
-                          Seri Numarası (S/N)
+                          Seri Numarası / Demirbaş No
                         </label>
                         <input
                           type="text"
-                          placeholder="Barkod veya seri numarası"
+                          placeholder="Barkod, seri no veya benzersiz demirbaş etiketi"
                           value={newHardwareForm.serial}
                           onChange={(e) =>
                             setNewHardwareForm({
@@ -7973,6 +7984,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
                           }
                           className="w-full px-3 py-2.5 text-sm font-medium text-gray-800 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-[#0066b1] bg-white shadow-sm transition-all"
                         />
+                        <p className="mt-1.5 ml-1 text-[10px] leading-4 text-gray-500">
+                          Üründe seri numarası yoksa kurum içinde benzersiz bir
+                          etiket girin. Örn: GM-MOUSE-0001.
+                        </p>
                       </div>
 
                       {/* BILGISAYAR ADI */}
@@ -7989,24 +8004,23 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               {computerPrefix}
                             </span>
                             <input
-                                  type="text"
-                                  inputMode="numeric" // YENİ
-                                  pattern="[0-9]*"    // YENİ
-                                  maxLength="4"
-                                  placeholder="0000"
-                                  value={editComputerNumber}
-                                  onChange={(e) =>
-                                    setEditComputerNumber(
-                                      e.target.value.replace(/[^0-9]/g, '')
-                                    )
-                                  }
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !isUpdatingName) {
-                                      handleSaveDeviceName(viewedHardware.id, profileComputerPrefix);
-                                    }
-                                  }}
-                                  className="flex-1 px-3 py-2 text-sm font-bold tracking-widest text-[#0066b1] bg-transparent outline-none placeholder-gray-300"
-                                />
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              maxLength="4"
+                              placeholder="0000"
+                              value={newHardwareForm.computerNumber}
+                              onChange={(e) =>
+                                setNewHardwareForm({
+                                  ...newHardwareForm,
+                                  computerNumber: e.target.value.replace(
+                                    /[^0-9]/g,
+                                    ''
+                                  ),
+                                })
+                              }
+                              className="flex-1 px-3 py-2 text-sm font-bold tracking-widest text-[#0066b1] bg-transparent outline-none placeholder-gray-300"
+                            />
                           </div>
                         </div>
                       )}

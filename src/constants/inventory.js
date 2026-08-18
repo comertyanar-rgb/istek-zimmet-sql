@@ -19,6 +19,15 @@ export const TYPE_BRANDS = {
   'Masaüstü (PC)': ['Lenovo', 'HP', 'Dell', 'Asus', 'Casper', 'Apple', 'Diğer'],
   'All in One PC': ['Lenovo', 'HP', 'Dell', 'Asus', 'Casper', 'Apple', 'Diğer'],
   Tablet: ['Apple', 'Samsung', 'Lenovo', 'Diğer'],
+  'Akıllı Tahta': [
+    'Vestel',
+    'Arçelik',
+    'Samsung',
+    'LG',
+    'ViewSonic',
+    'Promethean',
+    'Diğer',
+  ],
   Monitör: [
     'Samsung',
     'Philips',
@@ -62,7 +71,18 @@ export const TYPE_BRANDS = {
     'Diğer',
   ],
   Webcam: ['Logitech', 'A4Tech', 'Diğer'],
-  'Hard Drive': ['Samsung', 'Diğer'],
+  Hoparlör: ['Logitech', 'JBL', 'Creative', 'Trust', 'Edifier', 'Diğer'],
+  Kulaklık: ['Logitech', 'Jabra', 'Poly', 'Sennheiser', 'JBL', 'Microsoft', 'Diğer'],
+  Mikrofon: ['Logitech', 'Jabra', 'Boya', 'Rode', 'Trust', 'Diğer'],
+  Projeksiyon: ['Epson', 'BenQ', 'ViewSonic', 'Optoma', 'Sony', 'Panasonic', 'Diğer'],
+  Yazıcı: ['HP', 'Canon', 'Epson', 'Brother', 'Xerox', 'Kyocera', 'Diğer'],
+  Tarayıcı: ['Canon', 'Epson', 'Brother', 'Fujitsu', 'HP', 'Diğer'],
+  'Dock İstasyonu': ['Lenovo', 'HP', 'Dell', 'Apple', 'Microsoft', 'Baseus', 'Ugreen', 'Diğer'],
+  'Adaptör / Şarj Cihazı': ['Lenovo', 'HP', 'Dell', 'Apple', 'Samsung', 'Baseus', 'Ugreen', 'Diğer'],
+  'Hard Drive': ['Samsung', 'Western Digital', 'Seagate', 'Toshiba', 'Kingston', 'SanDisk', 'Diğer'],
+  UPS: ['APC', 'Inform', 'Tunçmatik', 'Tescom', 'Diğer'],
+  Switch: ['Cisco', 'HP', 'Aruba', 'TP-Link', 'D-Link', 'Ubiquiti', 'Diğer'],
+  'Access Point': ['Cisco', 'Aruba', 'TP-Link', 'Ubiquiti', 'Ruckus', 'Diğer'],
   Diğer: ['Diğer'],
 };
 
@@ -103,6 +123,7 @@ export const BRANDS_MODELS = {
     'MK240 (Set)',
     'MK270 (Set)',
     'M170 (Mouse)',
+    'M171 (Mouse)',
     'M185 (Mouse)',
     'M220 (Mouse)',
     'Standart Klavye',
@@ -116,3 +137,85 @@ export const BRANDS_MODELS = {
   AOC: ['Standart Monitör', 'Diğer'],
   Diğer: ['Standart', 'Diğer'],
 };
+
+export const TYPE_BRAND_MODELS = {
+  'Klavye ve Mouse Seti': {
+    Logitech: ['MK220', 'MK235', 'MK240', 'MK270', 'MK295 Silent', 'Diğer'],
+    A4Tech: ['FG1010', 'F1010', 'KR-8520D', 'Diğer'],
+  },
+  Mouse: {
+    Logitech: ['M171', 'M170', 'M185', 'M190', 'M220 Silent', 'M330 Silent Plus', 'Diğer'],
+    A4Tech: ['OP-620D', 'FM10', 'FG10S', 'Diğer'],
+    Everest: ['SM-300', 'SM-620', 'Diğer'],
+  },
+  Klavye: {
+    Logitech: ['K120', 'K270', 'K380', 'MX Keys', 'Diğer'],
+    A4Tech: ['KR-85', 'FK10', 'Diğer'],
+    Everest: ['KB-871U', 'KB-517U', 'Diğer'],
+  },
+  Webcam: {
+    Logitech: ['C270', 'C310', 'C505', 'C920', 'Brio', 'Diğer'],
+    A4Tech: ['PK-910H', 'PK-925H', 'Diğer'],
+  },
+  Hoparlör: {
+    Logitech: ['Z120', 'Z150', 'Z200', 'Z213', 'Z313', 'Diğer'],
+    JBL: ['GO 3', 'Flip 6', 'Charge 5', 'Professional 104', 'Diğer'],
+    Creative: ['Pebble', 'Pebble V2', 'Stage Air', 'SBS E2500', 'Diğer'],
+    Trust: ['Primo', 'Remo', 'Arys', 'Diğer'],
+    Edifier: ['R19U', 'R980T', 'R1280T', 'Diğer'],
+  },
+  Kulaklık: {
+    Logitech: ['H111', 'H151', 'H390', 'H540', 'Zone Vibe', 'Diğer'],
+    Jabra: ['Evolve 20', 'Evolve 40', 'Evolve2 30', 'Diğer'],
+    Poly: ['Blackwire 3220', 'Blackwire 3320', 'Diğer'],
+    Sennheiser: ['PC 8 USB', 'SC 60 USB', 'Diğer'],
+  },
+  Mikrofon: {
+    Logitech: ['Expansion Mic', 'Rally Mic Pod', 'Diğer'],
+    Jabra: ['Speak 510', 'Speak2 55', 'Diğer'],
+    Boya: ['BY-M1', 'BY-PM500', 'Diğer'],
+    Rode: ['NT-USB Mini', 'VideoMic GO II', 'Diğer'],
+  },
+  Projeksiyon: {
+    Epson: ['EB-E01', 'EB-X06', 'EB-FH06', 'Diğer'],
+    BenQ: ['MS550', 'MX560', 'MH560', 'Diğer'],
+    ViewSonic: ['PA503S', 'PA503X', 'Diğer'],
+    Optoma: ['X309ST', 'HD146X', 'Diğer'],
+  },
+  Yazıcı: {
+    HP: ['LaserJet', 'Color LaserJet', 'OfficeJet', 'PageWide', 'Diğer'],
+    Canon: ['i-SENSYS', 'PIXMA', 'imageRUNNER', 'Diğer'],
+    Epson: ['EcoTank', 'WorkForce', 'L Serisi', 'Diğer'],
+    Brother: ['HL Serisi', 'DCP Serisi', 'MFC Serisi', 'Diğer'],
+    Xerox: ['Phaser', 'VersaLink', 'WorkCentre', 'Diğer'],
+    Kyocera: ['ECOSYS', 'TASKalfa', 'Diğer'],
+  },
+  Tarayıcı: {
+    Canon: ['CanoScan', 'imageFORMULA', 'Diğer'],
+    Epson: ['WorkForce Scanner', 'Perfection', 'Diğer'],
+    Brother: ['ADS Serisi', 'DCP Serisi', 'Diğer'],
+    Fujitsu: ['ScanSnap', 'fi Serisi', 'Diğer'],
+  },
+  'Dock İstasyonu': {
+    Lenovo: ['ThinkPad USB-C Dock', 'ThinkPad Universal USB-C Dock', 'Diğer'],
+    HP: ['USB-C Dock G5', 'Thunderbolt Dock G4', 'Diğer'],
+    Dell: ['WD19', 'WD19S', 'WD22TB4', 'Diğer'],
+    Apple: ['USB-C Digital AV Multiport Adapter', 'Diğer'],
+  },
+  'Hard Drive': {
+    Samsung: ['T5', 'T7', '870 EVO', 'Diğer'],
+    'Western Digital': ['Elements', 'My Passport', 'Blue', 'Diğer'],
+    Seagate: ['Expansion', 'Backup Plus', 'Barracuda', 'Diğer'],
+    Toshiba: ['Canvio Basics', 'Canvio Advance', 'Diğer'],
+    Kingston: ['XS1000', 'DataTraveler', 'Diğer'],
+    SanDisk: ['Extreme Portable SSD', 'Ultra', 'Diğer'],
+  },
+};
+
+export function getModelsForTypeBrand(type, brand) {
+  const typeModels = TYPE_BRAND_MODELS[type]?.[brand];
+  if (typeModels?.length) return typeModels;
+
+  const brandModels = BRANDS_MODELS[brand];
+  return brandModels?.length ? brandModels : ['Diğer'];
+}
