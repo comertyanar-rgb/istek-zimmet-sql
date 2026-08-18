@@ -111,12 +111,26 @@ export async function postApiAction(payload, options = {}) {
     });
 
     const rawBody = await response.text();
+    const responseContentType = String(response.headers.get('content-type') || '').toLowerCase();
     let data = {};
 
     if (rawBody) {
       try {
         data = JSON.parse(rawBody);
       } catch (cause) {
+        if (response.status >= 500 && !responseContentType.includes('application/json')) {
+          throw new ApiActionError(
+            'Sunucu API\'sine ulaşılamıyor. Yerel API\'nin çalıştığını kontrol edin.',
+            {
+              action,
+              status: response.status,
+              code: 'API_UNAVAILABLE',
+              retryable: true,
+              cause,
+            }
+          );
+        }
+
         throw new ApiActionError('Sunucudan geçersiz bir yanıt alındı.', {
           action,
           status: response.status,
@@ -125,6 +139,18 @@ export async function postApiAction(payload, options = {}) {
           cause,
         });
       }
+    }
+
+    if (!rawBody && response.status >= 500) {
+      throw new ApiActionError(
+        'Sunucu API\'sine ulaşılamıyor. Yerel API\'nin çalıştığını kontrol edin.',
+        {
+          action,
+          status: response.status,
+          code: 'API_UNAVAILABLE',
+          retryable: true,
+        }
+      );
     }
 
     const serverMessage = String(data?.error || data?.message || '').trim();

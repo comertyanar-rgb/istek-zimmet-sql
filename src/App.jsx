@@ -2443,6 +2443,10 @@ setTimeout(() => setSuccessMessage(null), 2500);
       let aValue = '', bValue = '';
       if (hardwareSort.key === 'type') { aValue = a.type || ''; bValue = b.type || ''; }
       if (hardwareSort.key === 'brand') { aValue = `${a.brand} ${a.model}`; bValue = `${b.brand} ${b.model}`; }
+      if (hardwareSort.key === 'deviceName') {
+        aValue = a.deviceName || a.glpiComputerName || '';
+        bValue = b.deviceName || b.glpiComputerName || '';
+      }
       if (hardwareSort.key === 'serial') { aValue = a.serial || ''; bValue = b.serial || ''; }
       if (hardwareSort.key === 'status') { aValue = a.status || ''; bValue = b.status || ''; }
       if (hardwareSort.key === 'person') {
@@ -4585,6 +4589,14 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         </th>
                         <th
                           className="p-4 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 transition-colors"
+                          onClick={() => handleSortHardware('deviceName')}
+                        >
+                          <div className="flex items-center gap-1">
+                            Bilgisayar Adı {getSortIcon(hardwareSort, 'deviceName')}
+                          </div>
+                        </th>
+                        <th
+                          className="p-4 font-semibold text-gray-600 cursor-pointer hover:bg-gray-100 transition-colors"
                           onClick={() => handleSortHardware('serial')}
                         >
                           <div className="flex items-center gap-1">
@@ -4613,6 +4625,9 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       {paginatedHardware.map((item) => {
                         const personName =
                           personnelById.get(item.assignedTo)?.name || item.assignedTo;
+                        const computerName = String(
+                          item.deviceName || item.glpiComputerName || ''
+                        ).trim();
                         const isSelected = selectedHardwareIdSet.has(item.id);
                         const getIcon = (type) => {
                           const t = String(type || '').toLowerCase();
@@ -4736,6 +4751,22 @@ setTimeout(() => setSuccessMessage(null), 2500);
                               })()}
                             </td>
                             <td className="p-4">
+                              {computerName ? (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setHardwareSearchQuery(computerName);
+                                  }}
+                                  className="inventory-device-name block max-w-[180px] truncate rounded px-1.5 py-0.5 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-blue-50 hover:text-blue-600"
+                                  title={`${computerName} bilgisayar adını ara`}
+                                >
+                                  {computerName}
+                                </button>
+                              ) : (
+                                <span className="text-gray-400 font-medium">-</span>
+                              )}
+                            </td>
+                            <td className="p-4">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
@@ -4810,7 +4841,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                       {paginatedHardware.length === 0 && (
                         <tr>
                           <td
-                            colSpan="6"
+                            colSpan="7"
                             className="p-8 text-center text-gray-500"
                           >
                             Kayıt bulunamadı.
@@ -4831,8 +4862,11 @@ setTimeout(() => setSuccessMessage(null), 2500);
                 {/* --- Donanım MOBİL GÖRÜNÜM --- */}
                 <div className="block md:hidden space-y-2 mt-0">
                   {paginatedHardware.map((item) => {
-                      const personName =
-                        personnelById.get(item.assignedTo)?.name || item.assignedTo;
+                    const personName =
+                      personnelById.get(item.assignedTo)?.name || item.assignedTo;
+                    const computerName = String(
+                      item.deviceName || item.glpiComputerName || ''
+                    ).trim();
                     const isSelected = selectedHardwareIdSet.has(item.id);
 
                     const getIcon = (type) => {
@@ -4972,9 +5006,28 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 </div>
                               </div>
                             </div>
-                            <p className="inventory-serial-inline text-xs text-gray-500 font-medium truncate mt-0.5">
-                              S/N: {item.serial}
-                            </p>
+                            <div className="inventory-mobile-identifiers mt-0.5 flex w-full min-w-0 items-center gap-1.5 overflow-hidden text-xs text-gray-500">
+                              {computerName && (
+                                <>
+                                  <span
+                                    className="inventory-device-name min-w-0 truncate font-semibold text-slate-600"
+                                    title={`Bilgisayar adı: ${computerName}`}
+                                    aria-label={`Bilgisayar adı: ${computerName}`}
+                                  >
+                                    {computerName}
+                                  </span>
+                                  <span
+                                    className="shrink-0 text-gray-300"
+                                    aria-hidden="true"
+                                  >
+                                    •
+                                  </span>
+                                </>
+                              )}
+                              <span className="inventory-serial-inline shrink-0 font-medium">
+                                S/N: {item.serial}
+                              </span>
+                            </div>
                           </div>
                         </div>
 

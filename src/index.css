@@ -584,6 +584,10 @@ html[data-theme='dark'] .user-settings-popover {
   text-transform: none;
 }
 
+.inventory-device-name {
+  letter-spacing: 0;
+}
+
 .inventory-serial-link,
 .inventory-serial-inline {
   font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
@@ -1085,6 +1089,16 @@ html[data-theme='dark'] .inventory-table-row.bg-blue-50\/50 {
 
 html[data-theme='dark'] .inventory-campus-label {
   color: var(--app-text-secondary) !important;
+}
+
+html[data-theme='dark'] .inventory-device-name {
+  color: var(--app-text-secondary) !important;
+}
+
+html[data-theme='dark'] .inventory-device-name:hover,
+html[data-theme='dark'] .inventory-device-name:focus-visible {
+  color: var(--app-link-hover) !important;
+  background-color: rgba(43, 159, 216, 0.1) !important;
 }
 
 html[data-theme='dark'] .inventory-serial-link {
