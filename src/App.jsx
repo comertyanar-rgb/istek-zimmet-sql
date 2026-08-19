@@ -2936,7 +2936,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
       const personName = personnelById.get(h.assignedTo)?.name || h.assignedTo || '';
       const groupN = h.groupName || '';
       const combinedString = toTrLower(
-        `${h.brand} ${h.model} ${h.serial} ${personName} ${groupN}`
+        `${h.brand} ${h.model} ${h.serial} ${h.deviceName || ''} ${h.glpiComputerName || ''} ${personName} ${groupN}`
       );
 
       const matchSearch =
@@ -7365,7 +7365,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                         <div className="responsive-tab-toolbar__search flex items-center flex-1 min-w-0 h-10 px-4 border border-gray-200 rounded-xl bg-white focus-within:ring-2 focus-within:ring-[#8bcdc5] focus-within:border-[#0066b1] transition-all">
                           <input
                             type="text"
-                            placeholder="Cihaz ara (Marka, model, seri no)..."
+                            placeholder="Marka, model, seri no veya bilgisayar adı ara..."
                             className="flex-1 bg-transparent outline-none min-w-0 text-sm"
                             value={assignSearchQuery}
                             onChange={(e) =>
@@ -7687,6 +7687,7 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                 const brandStr = String(h.brand || '');
                                 const modelStr = String(h.model || '');
                                 const cleanModel = modelStr.toLowerCase().startsWith(brandStr.toLowerCase()) ? modelStr.substring(brandStr.length).trim() : modelStr;
+                                const deviceName = String(h.deviceName || h.glpiComputerName || '').trim();
 
                                 return (
                                   <label
@@ -7710,7 +7711,18 @@ setTimeout(() => setSuccessMessage(null), 2500);
                                         </p>
                                         {h.type && <span className="shrink-0 text-[10px] uppercase tracking-wider font-bold bg-gray-100 text-gray-500 px-2 py-0.5 rounded">{h.type}</span>}
                                       </div>
-                                      <p className="text-xs text-gray-500 font-medium mt-1 mb-3">S/N: {h.serial}</p>
+                                      <div className="mt-1 mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 font-medium">
+                                        <span>S/N: {h.serial}</span>
+                                        {deviceName && (
+                                          <span
+                                            className="inline-flex min-w-0 items-center gap-1 text-[#0066b1]"
+                                            title={`Bilgisayar adı: ${deviceName}`}
+                                          >
+                                            <Monitor className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                            <span className="truncate max-w-[220px]">{deviceName}</span>
+                                          </span>
+                                        )}
+                                      </div>
                                       {currentOwner && (
                                         <div className="mt-4">
                                           <span className="inline-flex items-center text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md shadow-sm">
