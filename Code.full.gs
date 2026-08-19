@@ -1710,20 +1710,117 @@ function findPdfBridgeLedgerRow_(sheet, queueId) {
   return match ? match.getRow() : 0;
 }
 
+function getInstitutionalMailSender_() {
+  var props = PropertiesService.getScriptProperties();
+  var fromEmail = (props.getProperty("GOOGLE_BRIDGE_FROM_EMAIL") || "zimmet@istek.k12.tr")
+    .toString()
+    .trim()
+    .toLowerCase();
+  var fromName = (props.getProperty("GOOGLE_BRIDGE_FROM_NAME") || "İSTEK Demirbaş Yönetim Sistemi")
+    .toString()
+    .trim();
+  var effectiveEmail = (Session.getEffectiveUser().getEmail() || "").toString().trim().toLowerCase();
+  var aliases = GmailApp.getAliases().map(function(alias) {
+    return alias.toString().trim().toLowerCase();
+  });
+
+  if (!fromEmail || (fromEmail !== effectiveEmail && aliases.indexOf(fromEmail) === -1)) {
+    throw new Error(
+      "Kurumsal gönderen adresi bu Apps Script hesabında doğrulanmamış: " +
+      (fromEmail || "(boş)") +
+      ". Gmail > Ayarlar > Hesaplar > Postayı şu adresten gönder bölümünden adresi doğrulayın " +
+      "veya web uygulamasını zimmet@istek.k12.tr hesabıyla dağıtın."
+    );
+  }
+
+  return {
+    email: fromEmail,
+    name: fromName || "İSTEK Demirbaş Yönetim Sistemi"
+  };
+}
+
+function buildInstitutionalEmailHtml_(config) {
+  config = config || {};
+  var title = escapeHtml(config.title || "İSTEK Bilgilendirme");
+  var personName = escapeHtml(config.personName || "Yetkili");
+  var paragraphs = Array.isArray(config.paragraphs) ? config.paragraphs : [];
+  var details = Array.isArray(config.details) ? config.details : [];
+  var paragraphHtml = paragraphs.filter(function(paragraph) {
+    return paragraph !== null && paragraph !== undefined && paragraph.toString().trim() !== "";
+  }).map(function(paragraph) {
+    return "<p style='margin:0 0 16px;color:#2d3a49;font-size:14px;line-height:1.65;'>" +
+      escapeHtml(paragraph).replace(/\n/g, "<br>") + "</p>";
+  }).join("");
+  var detailRows = details.filter(function(detail) {
+    return detail && detail.value !== null && detail.value !== undefined && detail.value.toString().trim() !== "";
+  }).map(function(detail, index) {
+    var background = index % 2 === 0 ? "#f2f7fa" : "#ffffff";
+    return "<tr>" +
+      "<td style='width:34%;padding:10px 12px;background:" + background + ";border-bottom:1px solid #e5ebf0;color:#607284;font-size:12px;font-weight:700;'>" + escapeHtml(detail.label) + "</td>" +
+      "<td style='padding:10px 12px;background:" + background + ";border-bottom:1px solid #e5ebf0;color:#172334;font-size:13px;font-weight:600;'>" + escapeHtml(detail.value) + "</td>" +
+      "</tr>";
+  }).join("");
+  var detailsHtml = detailRows
+    ? "<table role='presentation' width='100%' cellspacing='0' cellpadding='0' style='margin:22px 0;border-collapse:collapse;border:1px solid #dce5ec;'>" + detailRows + "</table>"
+    : "";
+  var codeHtml = config.code
+    ? "<div style='margin:22px 0;padding:18px 20px;border:1px solid #b9dce9;border-radius:6px;background:#eef8fb;text-align:center;'>" +
+        "<div style='margin-bottom:7px;color:#607284;font-size:11px;font-weight:700;text-transform:uppercase;'>Güvenlik kodunuz</div>" +
+        "<div style='color:#006eb8;font-family:Arial,sans-serif;font-size:32px;font-weight:800;letter-spacing:8px;'>" + escapeHtml(config.code) + "</div>" +
+      "</div>"
+    : "";
+
+  return "<!doctype html><html lang='tr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head>" +
+    "<body style='margin:0;padding:0;background:#f3f6f8;font-family:Arial,Helvetica,sans-serif;'>" +
+    "<table role='presentation' width='100%' cellspacing='0' cellpadding='0' style='background:#f3f6f8;'><tr><td align='center' style='padding:28px 12px;'>" +
+    "<table role='presentation' width='100%' cellspacing='0' cellpadding='0' style='max-width:620px;background:#ffffff;border:1px solid #dce5ec;border-radius:8px;overflow:hidden;'>" +
+    "<tr><td style='height:6px;background:#87cfcc;font-size:0;line-height:0;'>&nbsp;</td></tr>" +
+    "<tr><td style='padding:25px 30px 18px;border-bottom:3px solid #006eb8;'>" +
+    "<div style='color:#006eb8;font-size:19px;font-weight:800;'>İSTEK OKULLARI</div>" +
+    "<div style='margin-top:4px;color:#68798a;font-size:12px;'>Bilgi İşlem Demirbaş Yönetim Sistemi</div></td></tr>" +
+    "<tr><td style='padding:28px 30px 24px;'>" +
+    "<h1 style='margin:0 0 20px;color:#172334;font-size:21px;line-height:1.35;'>" + title + "</h1>" +
+    "<p style='margin:0 0 16px;color:#172334;font-size:14px;line-height:1.65;font-weight:700;'>Sayın " + personName + ",</p>" +
+    paragraphHtml + codeHtml + detailsHtml +
+    "<p style='margin:22px 0 0;color:#68798a;font-size:12px;line-height:1.6;'>Bu ileti İSTEK Demirbaş Yönetim Sistemi tarafından otomatik olarak gönderilmiştir.</p>" +
+    "</td></tr></table></td></tr></table></body></html>";
+}
+
+function sendInstitutionalEmail_(data) {
+  data = data || {};
+  if (!data.to || data.to.toString().indexOf("@") === -1) {
+    throw new Error("E-posta alıcısı geçersiz.");
+  }
+
+  var sender = getInstitutionalMailSender_();
+  var options = {
+    from: sender.email,
+    name: sender.name
+  };
+  if (data.cc) options.cc = data.cc;
+  if (data.replyTo) options.replyTo = data.replyTo;
+  if (data.htmlBody) options.htmlBody = data.htmlBody;
+  if (data.attachments) options.attachments = data.attachments;
+
+  GmailApp.sendEmail(
+    data.to,
+    data.subject || "İSTEK Bilgilendirme",
+    data.body || "",
+    options
+  );
+}
+
 function sendGeneratedDocumentEmail_(email, blob) {
   if (!email || !email.to) return;
-  var mailOptions = {
+  sendInstitutionalEmail_({
+    to: email.to,
+    subject: email.subject || "Donanım Belgesi",
+    body: email.body || "Tutanak ektedir.",
+    htmlBody: email.htmlBody || "",
+    cc: email.cc || "",
+    replyTo: email.replyTo || "",
     attachments: [blob],
-    name: "İSTEK Demirbaş Yönetim Sistemi"
-  };
-  if (email.cc) mailOptions.cc = email.cc;
-  if (email.replyTo) mailOptions.replyTo = email.replyTo;
-  GmailApp.sendEmail(
-    email.to,
-    email.subject || "Donanım Belgesi",
-    email.body || "Tutanak ektedir.",
-    mailOptions
-  );
+  });
 }
 
 function isBridgeSecretAuthorized_(secret) {
@@ -1855,18 +1952,14 @@ function handleBridgeEmail_(data) {
     throw new Error("E-posta alıcısı geçersiz.");
   }
 
-  var options = {
-    name: data.name || "İSTEK Demirbaş Yönetimi"
-  };
-  if (data.cc) options.cc = data.cc;
-  if (data.replyTo) options.replyTo = data.replyTo;
-
-  GmailApp.sendEmail(
-    data.to,
-    data.subject || "İSTEK Bilgilendirme",
-    data.body || "",
-    options
-  );
+  sendInstitutionalEmail_({
+    to: data.to,
+    subject: data.subject || "İSTEK Bilgilendirme",
+    body: data.body || "",
+    htmlBody: data.htmlBody || "",
+    cc: data.cc || "",
+    replyTo: data.replyTo || ""
+  });
 
   return jsonOut({ success: true });
 }
@@ -2570,13 +2663,36 @@ function doPost(e) {
       var otpCode = Math.floor(100000 + Math.random() * 900000).toString();
       CacheService.getScriptCache().put('OTP_' + data.personEmail.toLowerCase(), otpCode, 180);
       var otpChannel = data.otpChannel === "sms" ? "sms" : "email";
+      var otpIsReturn = data.otpAction === "return";
+      var otpOperationName = otpIsReturn ? "donanım iade" : "donanım zimmet teslim";
+      var otpPersonName = (data.personName || "Personel").toString().trim() || "Personel";
       if (otpChannel === "sms") {
         var otpPhone = validateTrMobilePhone_(data.personPhone);
         if (data.personId) otpPhone = updatePersonPhone_(ss, data.personId, otpPhone);
-        sendSmsViaMobildev(otpPhone, "ISTEK Demirbas teslim/iade onay kodunuz: " + otpCode + ". Kod 2 dakika gecerlidir. Bu kodu IT personeliyle paylasarak donanim tutanagini onaylamis olursunuz.");
+        sendSmsViaMobildev(otpPhone, "ISTEK " + otpOperationName + " onay kodunuz: " + otpCode + ". Kod 3 dakika gecerlidir. Kodu yalnizca islemi yapan yetkili IT personeliyle paylasiniz.");
         return jsonOut({ success: true, channel: "sms", phone: otpPhone });
       }
-      GmailApp.sendEmail(data.personEmail, "GÜVENLİK KODU: Donanım Teslim/İade Onayı", "Sayın " + (data.personName || "Personel") + ",\n\nDonanım teslim/iade tutanağını onaylamak için güvenlik kodunuz: " + otpCode + "\n\nBu kod 2 dakika geçerlidir. Kodu işlemi yapan IT personeliyle paylaşarak ilgili donanım tutanağını dijital olarak onaylamış olursunuz.", { name: "İSTEK Demirbaş Yönetimi" });
+      var otpTitle = otpIsReturn ? "Donanım İade Onay Kodu" : "Donanım Teslim Onay Kodu";
+      var otpBody = "Sayın " + otpPersonName + ",\n\n" +
+        "İSTEK " + otpOperationName + " işleminizi onaylamak için güvenlik kodunuz: " + otpCode + "\n\n" +
+        "Kod 3 dakika geçerlidir. Kodu yalnızca işlemi gerçekleştiren yetkili IT personeliyle paylaşınız.\n\n" +
+        "Bu işlemi siz başlatmadıysanız kodu paylaşmayınız ve kampüs IT biriminize bilgi veriniz.\n\n" +
+        "İSTEK Okulları\nBilgi İşlem Demirbaş Yönetim Sistemi";
+      sendInstitutionalEmail_({
+        to: data.personEmail,
+        subject: "İSTEK Demirbaş | " + otpTitle,
+        body: otpBody,
+        htmlBody: buildInstitutionalEmailHtml_({
+          title: otpTitle,
+          personName: otpPersonName,
+          paragraphs: [
+            "İSTEK " + otpOperationName + " işleminizi onaylamak için aşağıdaki güvenlik kodunu kullanınız.",
+            "Kod 3 dakika geçerlidir. Kodu yalnızca işlemi gerçekleştiren yetkili IT personeliyle paylaşınız.",
+            "Bu işlemi siz başlatmadıysanız kodu paylaşmayınız ve kampüs IT biriminize bilgi veriniz."
+          ],
+          code: otpCode
+        })
+      });
       return jsonOut({ success: true, channel: "email" });
     }
 
@@ -2957,23 +3073,42 @@ function doPost(e) {
       CacheService.getScriptCache().remove('VALID_OTP_' + data.personOtpHash);
       appendSecureLog(ss, isReturn ? "İADE" : "ZİMMET", sessionEmail, personData.name + " -> " + hwRowsZ.length + " cihaz", pdfHashZ, fileUrlZ, data.clientIp);
 
-      // --- KURUMSAL VE UZUN E-POSTA GÖNDERİMİ (Senin 09:12 İstediğin Format) ---
       try {
-        var mailOptions = { attachments: [blobZ], name: "İSTEK Demirbaş Yönetim Sistemi" };
         var hasPersonEmail = (personData.email && personData.email.indexOf("@") > -1);
-        var toEmail = hasPersonEmail ? personData.email : data.itEmail; 
-        
-        if (hasPersonEmail && data.itEmail) {
-           mailOptions.cc = data.itEmail;
-           mailOptions.replyTo = data.itEmail;
-        }
+        var toEmail = hasPersonEmail ? personData.email : data.itEmail;
+        var documentTitle = isReturn ? "Donanım İade İşleminiz Tamamlandı" : "Donanım Zimmet İşleminiz Tamamlandı";
+        var documentSubject = "İSTEK Demirbaş | " + (isReturn ? "Donanım İade Belgeniz" : "Donanım Zimmet Belgeniz");
+        var documentOperation = isReturn ? "iade" : "zimmet teslim";
+        var documentName = isReturn ? "donanım iade tutanağınız" : "donanım zimmet teslim tutanağınız";
+        var documentBody = "Sayın " + personData.name + ",\n\n" +
+          hwRowsZ.length + " adet donanıma ilişkin " + documentOperation + " işleminiz tamamlanmıştır. " +
+          documentName.charAt(0).toUpperCase() + documentName.slice(1) + " bu e-postaya PDF olarak eklenmiştir.\n\n" +
+          "Belgedeki bilgilerde bir hata olduğunu düşünüyorsanız bu e-postayı yanıtlayarak işlemi yapan IT yetkilisine ulaşabilirsiniz.\n\n" +
+          "İyi çalışmalar dileriz.\nİSTEK Okulları\nBilgi İşlem Demirbaş Yönetim Sistemi";
 
-        var subject = isReturn ? "BİLGİLENDİRME: Donanım İade İşlemi Tamamlandı" : "ÖNEMLİ: Yeni Donanım Zimmet Bilgilendirmesi";
-        var body = isReturn 
-            ? "Sayın " + data.personName + ",\n\nÜzerinizde zimmetli olan donanımların iade işlemi başarıyla tamamlanmıştır. Cihazın iade anındaki fiziksel durum raporu ve karşılıklı atılan imzalar ekteki PDF tutanağında yer almaktadır.\n\nBilgilerinize sunar, iyi çalışmalar dileriz."
-            : "Sayın " + data.personName + ",\n\nEkteki PDF tutanağında belirtilen cihazlar şahsen tarafınıza teslim edilmiştir. E-Posta doğrulama kodunuz ile cihazı eksiksiz teslim aldığınızı onayladınız.\n\nEğer bu cihazı teslim almadıysanız veya tutanakta bir hata olduğunu düşünüyorsanız, lütfen 24 saat içerisinde \"Tümünü Yanıtla\" diyerek IT departmanına itirazınızı bildiriniz.\n\nİyi çalışmalar dileriz.";
-        
-        GmailApp.sendEmail(toEmail, subject, body, mailOptions);
+        sendInstitutionalEmail_({
+          to: toEmail,
+          subject: documentSubject,
+          body: documentBody,
+          htmlBody: buildInstitutionalEmailHtml_({
+            title: documentTitle,
+            personName: personData.name,
+            paragraphs: [
+              hwRowsZ.length + " adet donanıma ilişkin " + documentOperation + " işleminiz tamamlanmıştır. " + documentName.charAt(0).toUpperCase() + documentName.slice(1) + " bu e-postaya PDF olarak eklenmiştir.",
+              "Belgedeki bilgilerde bir hata olduğunu düşünüyorsanız bu e-postayı yanıtlayarak işlemi yapan IT yetkilisine ulaşabilirsiniz.",
+              "İyi çalışmalar dileriz."
+            ],
+            details: [
+              { label: "İşlem", value: isReturn ? "Donanım iade" : "Donanım zimmet teslim" },
+              { label: "Donanım sayısı", value: hwRowsZ.length + " adet" },
+              { label: "Kampüs", value: personData.campus || verifiedUser.campus },
+              { label: "IT yetkilisi", value: data.itName || sessionEmail }
+            ]
+          }),
+          cc: hasPersonEmail && data.itEmail ? data.itEmail : "",
+          replyTo: data.itEmail || sessionEmail,
+          attachments: [blobZ]
+        });
       } catch (mailErr) {
         appendSecureLog(ss, "MAIL HATASI", sessionEmail, mailErr.message, "-", fileUrlZ, data.clientIp);
       }
@@ -3148,22 +3283,45 @@ function doPost(e) {
       appendSecureLog(ss, "TRANSFER " + (isOut ? "ÇIKIŞ" : "GİRİŞ"), sessionEmail, hwRowsT.length + " cihaz -> " + targetCamp, pdfHashT, fileUrlT, data.clientIp);
       
       try {
-        var mailOptionsTransfer = { attachments: [blobT], name: "İSTEK Demirbaş Yönetim Sistemi" };
-        var toTransferEmail = data.currentUserEmail; 
-        
-        if (data.targetItEmail && data.targetItEmail.indexOf("@") > -1) { 
+        var toTransferEmail = data.currentUserEmail;
+        if (data.targetItEmail && data.targetItEmail.indexOf("@") > -1) {
            toTransferEmail = data.targetItEmail;
-           mailOptionsTransfer.cc = data.currentUserEmail;
-           mailOptionsTransfer.replyTo = data.currentUserEmail;
         }
+        var receiverCampus = isOut ? data.targetCampus : data.receiverCampus;
+        var transferTitle = isOut ? "Cihaz Transferi Başlatıldı" : "Cihaz Transferi Teslim Alındı";
+        var transferText = isOut
+          ? data.senderCampus + " kampüsünden " + receiverCampus + " kampüsüne " + hwRowsT.length + " adet donanımın transferi başlatılmıştır."
+          : data.senderCampus + " kampüsünden " + receiverCampus + " kampüsüne gönderilen " + hwRowsT.length + " adet donanım teslim alınarak envantere eklenmiştir.";
+        var transferBody = "Sayın IT Yetkilisi,\n\n" + transferText + "\n" +
+          "Transfer tutanağı ve cihaz listesi bu e-postaya PDF olarak eklenmiştir.\n" +
+          (isOut ? "Cihazlar ulaştığında sistem üzerinden Teslim Al işlemini tamamlayınız.\n" : "") +
+          "\nİyi çalışmalar dileriz.\nİSTEK Okulları\nBilgi İşlem Demirbaş Yönetim Sistemi";
 
-        if (isOut) {
-          GmailApp.sendEmail(toTransferEmail, "BİLGİLENDİRME: Kampüsler Arası Cihaz Transferi (Çıkış)", "Merhaba,\n\n" + data.senderCampus + " kampüsünden " + data.targetCampus + " kampüsüne donanım gönderimi başlatılmıştır. İlgili çıkış tutanağı ve cihaz listesi ektedir.\n\nLütfen cihazlar size ulaştığında sistem üzerinden 'Teslim Al' işlemi yaparak donanımları kendi envanterinize geçiriniz.\n\nİyi çalışmalar.", mailOptionsTransfer);
-        } else {
-          GmailApp.sendEmail(toTransferEmail, "BİLGİLENDİRME: Kampüsler Arası Cihaz Transferi (Teslim Alındı)", "Merhaba,\n\n" + data.senderCampus + " kampüsünden " + data.receiverCampus + " kampüsüne gönderilen donanımlar başarıyla teslim alınmış ve envantere eklenmiştir. İlgili giriş tutanağı ektedir.\n\nİyi çalışmalar.", mailOptionsTransfer);
-        }
-      } catch(err) { 
-        console.error("Transfer Mail hatası: " + err.message); 
+        sendInstitutionalEmail_({
+          to: toTransferEmail,
+          subject: "İSTEK Demirbaş | " + transferTitle,
+          body: transferBody,
+          htmlBody: buildInstitutionalEmailHtml_({
+            title: transferTitle,
+            personName: "IT Yetkilisi",
+            paragraphs: [
+              transferText,
+              "Transfer tutanağı ve cihaz listesi bu e-postaya PDF olarak eklenmiştir.",
+              isOut ? "Cihazlar ulaştığında sistem üzerinden Teslim Al işlemini tamamlayınız." : "",
+              "İyi çalışmalar dileriz."
+            ],
+            details: [
+              { label: "Gönderen kampüs", value: data.senderCampus },
+              { label: "Alıcı kampüs", value: receiverCampus },
+              { label: "Donanım sayısı", value: hwRowsT.length + " adet" }
+            ]
+          }),
+          cc: data.targetItEmail && data.currentUserEmail ? data.currentUserEmail : "",
+          replyTo: data.currentUserEmail || sessionEmail,
+          attachments: [blobT]
+        });
+      } catch(err) {
+        console.error("Transfer Mail hatası: " + err.message);
       }
 
       return jsonOut({ success: true, url: fileUrlT });

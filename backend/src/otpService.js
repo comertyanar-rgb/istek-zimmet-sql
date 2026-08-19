@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { config } from './config.js';
 import { sendEmailThroughGoogleBridge } from './googleBridge.js';
 import { fetchWithTimeout } from './fetchWithTimeout.js';
+import { buildOtpEmail } from './emailTemplates.js';
 
 const OTP_TTL_MS = 180 * 1000;
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -176,11 +177,10 @@ async function sendSmsViaMobildev(phone, message) {
   return { delivery: 'sms', providerResponse: body };
 }
 
-async function sendEmailOtp(email, message) {
+async function sendEmailOtp(email, emailContent) {
   return sendEmailThroughGoogleBridge({
     to: email,
-    subject: 'GÜVENLİK KODU: Donanım Teslim/İade Onayı',
-    body: message,
+    ...emailContent,
     name: 'İSTEK Demirbaş Yönetimi'
   });
 }
@@ -216,7 +216,8 @@ export async function sendOtpChallenge({ person, personPhone, channel, context }
   const challengeId = crypto.randomUUID();
   const requestedChannel = channel === 'sms' ? 'sms' : 'email';
   const actionLabel = normalizedContext.action === 'return' ? 'donanım iade' : 'donanım zimmet teslim';
-  const message = `İSTEK ${actionLabel} işlemi onay kodunuz: ${otpCode}. Kod 2 dakika geçerlidir. Bu kodu işlemi yapan IT personeliyle paylaşarak ilgili tutanağı onaylamış olursunuz.`;
+  const expiresMinutes = Math.ceil(OTP_TTL_MS / 60000);
+  const message = `İSTEK ${actionLabel} işlemi onay kodunuz: ${otpCode}. Kod ${expiresMinutes} dakika geçerlidir. Bu kodu yalnızca işlemi yapan yetkili IT personeliyle paylaşınız.`;
 
   let phone = '';
   let deliveryResult;
@@ -224,7 +225,15 @@ export async function sendOtpChallenge({ person, personPhone, channel, context }
     phone = normalizeTrMobile(personPhone || person?.phone);
     deliveryResult = await sendSmsViaMobildev(phone, message);
   } else {
-    deliveryResult = await sendEmailOtp(normalizedContext.personEmail, message);
+    deliveryResult = await sendEmailOtp(
+      normalizedContext.personEmail,
+      buildOtpEmail({
+        personName: person?.name,
+        code: otpCode,
+        action: normalizedContext.action,
+        expiresMinutes
+      })
+    );
   }
 
   const existingPersonChallengeId = challengeIdByPerson.get(personKey);

@@ -4,6 +4,8 @@ import { GAS_URL } from '../config/appConfig.js';
 import { postApiAction } from '../services/apiClient.js';
 import { showAppAlert } from '../services/uiMessageService.js';
 
+const OTP_TTL_SECONDS = 180;
+
 function normalizePhone(value) {
   const digits = String(value || '').replace(/\D/g, '');
   if (digits.startsWith('0090')) return digits.slice(4);
@@ -30,7 +32,7 @@ export const OtpVerification = ({
   const [step, setStep] = useState(1);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(120);
+  const [timeLeft, setTimeLeft] = useState(OTP_TTL_SECONDS);
   const [channel, setChannel] = useState('email');
   const [phone, setPhone] = useState(personPhone || '');
   const [phoneConfirmed, setPhoneConfirmed] = useState(false);
@@ -48,7 +50,7 @@ export const OtpVerification = ({
     setStep(1);
     setCode('');
     setChallengeId('');
-    setTimeLeft(120);
+    setTimeLeft(OTP_TTL_SECONDS);
   }, [personId, otpAction, hardwareContextKey]);
 
   useEffect(() => {
@@ -98,7 +100,7 @@ export const OtpVerification = ({
       setChallengeId(data.challengeId);
       if (data.phone && onPhoneSaved) onPhoneSaved(personId, data.phone);
       setStep(2);
-      setTimeLeft(120);
+      setTimeLeft(OTP_TTL_SECONDS);
       setCode('');
     } catch (error) {
       showAppAlert('Kod gönderilemedi: ' + error.message);

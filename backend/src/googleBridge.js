@@ -128,7 +128,7 @@ export async function uploadFileThroughGoogleBridge({ fileBuffer, fileName, mime
   return { url: data.url || data.fileUrl || '', fileHash, pdfHash: fileHash, delivery: 'google', response: data };
 }
 
-export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, replyTo, name }) {
+export async function sendEmailThroughGoogleBridge({ to, subject, body, htmlBody, cc, replyTo, name }) {
   if (!config.googleBridge.url || !config.googleBridge.secret) {
     if (config.nodeEnv !== 'production') {
       console.info(`[DEV EMAIL] ${to}: ${subject}\n${body}`);
@@ -146,6 +146,7 @@ export async function sendEmailThroughGoogleBridge({ to, subject, body, cc, repl
       to,
       subject,
       body,
+      htmlBody,
       cc,
       replyTo,
       name

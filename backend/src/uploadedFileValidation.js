@@ -1,6 +1,25 @@
-const BASE64_PATTERN = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
 export const MAX_UPLOADED_FILE_BYTES = 15 * 1024 * 1024;
+
+function isBase64AlphabetCode(code) {
+  return (
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    code === 43 ||
+    code === 47
+  );
+}
+
+function hasCanonicalBase64Characters(text, padding) {
+  const contentLength = text.length - padding;
+  for (let index = 0; index < contentLength; index += 1) {
+    if (!isBase64AlphabetCode(text.charCodeAt(index))) return false;
+  }
+  for (let index = contentLength; index < text.length; index += 1) {
+    if (text.charCodeAt(index) !== 61) return false;
+  }
+  return true;
+}
 
 export function decodeCanonicalBase64(value, options = {}) {
   const label = String(options.label || 'Dosya');
@@ -12,11 +31,11 @@ export function decodeCanonicalBase64(value, options = {}) {
   if (text.length > maxEncodedLength) {
     throw new Error(`${label} çok büyük. Maksimum ${Math.floor(maxBytes / 1024 / 1024)} MB yüklenebilir.`);
   }
-  if (text.length % 4 !== 0 || !BASE64_PATTERN.test(text)) {
+  const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
+  if (text.length % 4 !== 0 || !hasCanonicalBase64Characters(text, padding)) {
     throw new Error(`${label} Base64 biçimi geçersiz.`);
   }
 
-  const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0;
   const expectedBytes = (text.length / 4) * 3 - padding;
   if (expectedBytes > maxBytes) {
     throw new Error(`${label} çok büyük. Maksimum ${Math.floor(maxBytes / 1024 / 1024)} MB yüklenebilir.`);
@@ -28,4 +47,3 @@ export function decodeCanonicalBase64(value, options = {}) {
   }
   return buffer;
 }
-

@@ -21,6 +21,7 @@ import {
   normalizeNationalId
 } from '../personnelContactImport.js';
 import { getSignatureTemplateVariant } from '../signatureTemplate.js';
+import { buildDocumentEmail, buildTransferEmail } from '../emailTemplates.js';
 
 export const KONYAALTI_CAMPUS_NAME = 'Konyaaltı Kampüsü';
 
@@ -3439,8 +3440,12 @@ export async function startTransferForUser(user, data) {
           to: transferRecipients.to,
           cc: transferRecipients.cc,
           replyTo: user.email,
-          subject: 'Kampüsler Arası Cihaz Transferi (Çıkış)',
-          body: `${user.campus} kampüsünden ${targetCampus} kampüsüne cihaz transferi başlatılmıştır. Tutanak ektedir.`
+          ...buildTransferEmail({
+            direction: 'out',
+            senderCampus: user.campus,
+            receiverCampus: targetCampus,
+            hardwareCount: hardware.length
+          })
         }
       }
     }, execute);
@@ -3546,8 +3551,12 @@ export async function completeTransferForUser(user, data) {
           to: transferRecipients.to,
           cc: transferRecipients.cc,
           replyTo: user.email,
-          subject: 'Kampüsler Arası Cihaz Transferi (Teslim Alındı)',
-          body: `${senderCampus || 'Gönderen kampüs'} tarafından gönderilen cihazlar ${user.campus} kampüsünde teslim alınmıştır. Tutanak ektedir.`
+          ...buildTransferEmail({
+            direction: 'in',
+            senderCampus,
+            receiverCampus: user.campus,
+            hardwareCount: hardware.length
+          })
         }
       }
     }, execute);
@@ -4690,10 +4699,13 @@ export async function saveZimmetOrReturnForUser(user, data) {
       to: person.email,
       cc: user.email,
       replyTo: user.email,
-      subject: isReturn ? 'Donanım İade Belgeniz' : 'Donanım Zimmet Belgeniz',
-      body: isReturn
-        ? 'Donanım iade tutanağınız ektedir.'
-        : 'Donanım zimmet teslim tutanağınız ektedir.'
+      ...buildDocumentEmail({
+        personName: person.name,
+        isReturn,
+        hardwareCount: hardware.length,
+        campus: user.campus,
+        operatorName: user.name || user.email
+      })
     }
   };
 
