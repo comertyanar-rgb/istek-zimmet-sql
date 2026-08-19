@@ -1712,29 +1712,11 @@ function findPdfBridgeLedgerRow_(sheet, queueId) {
 
 function getInstitutionalMailSender_() {
   var props = PropertiesService.getScriptProperties();
-  var fromEmail = (props.getProperty("GOOGLE_BRIDGE_FROM_EMAIL") || "zimmet@istek.k12.tr")
-    .toString()
-    .trim()
-    .toLowerCase();
   var fromName = (props.getProperty("GOOGLE_BRIDGE_FROM_NAME") || "İSTEK Demirbaş Yönetim Sistemi")
     .toString()
     .trim();
-  var effectiveEmail = (Session.getEffectiveUser().getEmail() || "").toString().trim().toLowerCase();
-  var aliases = GmailApp.getAliases().map(function(alias) {
-    return alias.toString().trim().toLowerCase();
-  });
-
-  if (!fromEmail || (fromEmail !== effectiveEmail && aliases.indexOf(fromEmail) === -1)) {
-    throw new Error(
-      "Kurumsal gönderen adresi bu Apps Script hesabında doğrulanmamış: " +
-      (fromEmail || "(boş)") +
-      ". Gmail > Ayarlar > Hesaplar > Postayı şu adresten gönder bölümünden adresi doğrulayın " +
-      "veya web uygulamasını zimmet@istek.k12.tr hesabıyla dağıtın."
-    );
-  }
 
   return {
-    email: fromEmail,
     name: fromName || "İSTEK Demirbaş Yönetim Sistemi"
   };
 }
@@ -1794,7 +1776,6 @@ function sendInstitutionalEmail_(data) {
 
   var sender = getInstitutionalMailSender_();
   var options = {
-    from: sender.email,
     name: sender.name
   };
   if (data.cc) options.cc = data.cc;
