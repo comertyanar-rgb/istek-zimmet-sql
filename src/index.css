@@ -977,6 +977,16 @@ html[data-theme='dark'] .bulk-initial-warning {
   color: #fde68a !important;
 }
 
+html[data-theme='dark'] .bulk-hardware-guidance {
+  border-color: rgba(56, 189, 248, 0.42) !important;
+  background-color: rgba(14, 116, 144, 0.16) !important;
+  color: #bae6fd !important;
+}
+
+html[data-theme='dark'] .bulk-hardware-guidance strong {
+  color: #e0f2fe !important;
+}
+
 html[data-theme='dark'] .operation-queue-count-badge {
   background: #facc15 !important;
   color: #111827 !important;

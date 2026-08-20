@@ -426,7 +426,7 @@ export function BulkHardwareImportModal({
 
         <div className="flex-1 overflow-y-auto bg-slate-50/70 p-4 sm:p-5">
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
-            <div className="rounded-xl border border-blue-200 bg-blue-50/80 px-3.5 py-3 text-xs leading-relaxed text-blue-900">
+            <div className="bulk-hardware-guidance rounded-xl border border-blue-200 bg-blue-50/80 px-3.5 py-3 text-xs leading-relaxed text-blue-900">
               <strong>Zorunlu sütunlar:</strong> Seri No <strong>*</strong>, Marka <strong>*</strong> ve Model <strong>*</strong>.
               Cihaz Tipi boşsa Laptop kabul edilir.
               Seri numaralarının bozulmaması için Excel’de bu sütunu <strong>Metin</strong> biçiminde tutun.
