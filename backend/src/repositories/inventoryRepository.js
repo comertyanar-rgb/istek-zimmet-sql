@@ -1059,13 +1059,19 @@ export async function fetchDataForUser(user, options = {}) {
         latestHistory.PersonName AS LastEventPersonName,
         latestHistory.EventType AS LastEventType,
         c.Name AS Campus,
-        CASE WHEN EXISTS (SELECT 1 FROM dbo.HardwareHistory hh WHERE hh.HardwareId = h.HardwareId) THEN 1 ELSE 0 END AS HasHistory
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM dbo.HardwareHistory hh
+          WHERE hh.HardwareId = h.HardwareId
+            AND UPPER(LTRIM(RTRIM(REPLACE(REPLACE(hh.EventType, N'_', N' '), N'-', N' ')))) <> N'GLPI IMPORT'
+        ) THEN 1 ELSE 0 END AS HasHistory
       FROM dbo.Hardware h
       LEFT JOIN dbo.Campuses c ON c.CampusId = h.CampusId
       OUTER APPLY (
         SELECT TOP (1) hh.EventDate, hh.PersonName, hh.EventType
         FROM dbo.HardwareHistory hh
         WHERE hh.HardwareId = h.HardwareId
+          AND UPPER(LTRIM(RTRIM(REPLACE(REPLACE(hh.EventType, N'_', N' '), N'-', N' ')))) <> N'GLPI IMPORT'
         ORDER BY hh.EventDate DESC, hh.HistoryId DESC
       ) latestHistory
       WHERE ${hardwareVisibilityClause}
@@ -1213,6 +1219,7 @@ export async function fetchHardwareHistoryForUser(user, serialNo) {
           ELSE NULL
         END
       WHERE hh.HardwareId = @hardwareId
+        AND UPPER(LTRIM(RTRIM(REPLACE(REPLACE(hh.EventType, N'_', N' '), N'-', N' ')))) <> N'GLPI IMPORT'
       ORDER BY hh.EventDate DESC, hh.HistoryId DESC
     `,
     { hardwareId: { type: sql.Int, value: device.HardwareId } }

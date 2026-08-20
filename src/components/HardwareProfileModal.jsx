@@ -59,6 +59,15 @@ function getGlpiMismatchInfo(value) {
   };
 }
 
+function isVisibleAssignmentHistory(record) {
+  const eventType = String(record?.type || '')
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLocaleUpperCase('tr-TR');
+  return eventType !== 'GLPI IMPORT';
+}
+
 export const HardwareProfileModal = ({ deps }) => {
   const {
     viewingHardwareId,
@@ -150,6 +159,13 @@ export const HardwareProfileModal = ({ deps }) => {
   };
 
   const glpiMismatchInfo = getGlpiMismatchInfo(viewedHardware?.glpiMismatch);
+  const visibleHardwareHistory = React.useMemo(
+    () => (viewedHardware?.history || []).filter(isVisibleAssignmentHistory),
+    [viewedHardware?.history]
+  );
+  const hasVisibleHardwareHistory = viewedHardware?.historyLoaded
+    ? visibleHardwareHistory.length > 0
+    : Boolean(viewedHardware?.hasHistory);
   const historyPersonNameByKey = React.useMemo(() => {
     const names = new Map();
     const addName = (key, name) => {
@@ -1067,25 +1083,25 @@ export const HardwareProfileModal = ({ deps }) => {
               <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
                 <button
                   onClick={() => handleOpenHistory(viewedHardware.id)}
-                  disabled={!viewedHardware.hasHistory}
+                  disabled={!hasVisibleHardwareHistory}
                   className={`w-full p-3 sm:p-3.5 flex justify-between items-center transition-colors ${
                     showHardwareHistory ? 'bg-slate-50 border-b border-gray-200' : 'hover:bg-slate-50'
-                  } ${!viewedHardware.hasHistory ? 'opacity-60 cursor-not-allowed' : ''}`}
+                  } ${!hasVisibleHardwareHistory ? 'opacity-60 cursor-not-allowed' : ''}`}
                 >
                   <div className="flex items-center gap-2">
                     <History className="w-4 h-4 text-gray-500" />
                     <span className="text-[12px] font-bold text-gray-800">
                       Zimmet Geçmişi
-                      {viewedHardware.historyLoaded && viewedHardware.history?.length > 0 && (
+                      {viewedHardware.historyLoaded && visibleHardwareHistory.length > 0 && (
                         <span className="ml-1.5 text-[10px] bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded-full">
-                          {viewedHardware.history.length}
+                          {visibleHardwareHistory.length}
                         </span>
                       )}
                     </span>
                   </div>
                   {isLoadingHistory ? (
                      <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                  ) : viewedHardware.hasHistory ? (
+                  ) : hasVisibleHardwareHistory ? (
                     <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform duration-300 ${showHardwareHistory ? 'rotate-180' : ''}`} />
                   ) : (
                     <span className="text-[10px] font-semibold text-gray-400">Kayıt Yok</span>
@@ -1093,9 +1109,9 @@ export const HardwareProfileModal = ({ deps }) => {
                 </button>
 
                 {showHardwareHistory &&
-                  viewedHardware.history?.length > 0 && (
+                  visibleHardwareHistory.length > 0 && (
                     <div className="p-2 bg-slate-50/50 space-y-1.5 animate-in slide-in-from-top-2 duration-200 max-h-[180px] overflow-y-auto">
-                      {viewedHardware.history.map((record, idx) => {
+                      {visibleHardwareHistory.map((record, idx) => {
                         const historyPersonName = resolveHistoryPersonName(record);
                         return (
                           <div
