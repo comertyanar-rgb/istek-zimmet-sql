@@ -54,10 +54,16 @@ test('Türkiye cep telefonu biçimlerini 10 haneye indirger', () => {
   assert.equal(normalizePhone('2125551212'), '');
 });
 
-test('skip-invalid seçeneğini açık kullanıcı onayı olarak ayrıştırır', () => {
-  const options = parseArguments(['personel.xlsx', '--skip-invalid', '--apply']);
+test('atlama seçeneklerini açık kullanıcı onayı olarak ayrıştırır', () => {
+  const options = parseArguments([
+    'personel.xlsx',
+    '--skip-invalid',
+    '--skip-unmatched',
+    '--apply'
+  ]);
   assert.equal(options.filePath, 'personel.xlsx');
   assert.equal(options.skipInvalid, true);
+  assert.equal(options.skipUnmatched, true);
   assert.equal(options.apply, true);
 });
 
@@ -206,6 +212,35 @@ test('yalnız güvenilir hesap anahtarları aynı personeli gösterdiğinde gün
   assert.equal(result.changes.length, 1);
   assert.equal(result.changes[0].phone, '5384142088');
   assert.equal(result.changes[0].nationalIdHash, sourceHash);
+});
+
+test('skip-unmatched yalnız SQL’de bulunmayan personeli raporlayıp atlar', () => {
+  const result = prepareChanges(
+    [
+      {
+        rowNumber: 7,
+        email: 'olmayan@istek.k12.tr',
+        phone: '5384142088',
+        nationalIdHash: ''
+      }
+    ],
+    [
+      {
+        PersonId: 'google-1',
+        Email: 'personel@istek.k12.tr',
+        AdUsername: 'personel',
+        Phone: null,
+        NationalIdHash: null
+      }
+    ],
+    false,
+    { skipUnmatched: true }
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.changes.length, 0);
+  assert.equal(result.skippedRows.length, 1);
+  assert.match(result.skippedRows[0].reasons[0], /SQL’de bulunamadı/);
 });
 
 test('aynı T.C. özeti için mevcut şifreli değeri korur', () => {

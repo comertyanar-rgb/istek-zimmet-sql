@@ -33,6 +33,7 @@ function usage() {
     '  --apply          Doğrulanan değişiklikleri SQL Server’a yazar.',
     '  --overwrite      Farklı mevcut telefon/T.C. özetini bilinçli olarak değiştirir.',
     '  --skip-invalid   Geçersiz telefon/T.C. içeren kaynak satırlarını tamamen atlar.',
+    '  --skip-unmatched SQL’de personeli bulunmayan kaynak satırlarını raporlayıp atlar.',
     '  --sheet=Sayfa    Çok sayfalı dosyada kullanılacak sayfayı seçer.',
     '  --help           Bu yardımı gösterir.'
   ].join('\n');
@@ -44,6 +45,7 @@ export function parseArguments(argv) {
     apply: false,
     overwrite: false,
     skipInvalid: false,
+    skipUnmatched: false,
     sheet: ''
   };
 
@@ -56,6 +58,8 @@ export function parseArguments(argv) {
       result.overwrite = true;
     } else if (argument === '--skip-invalid') {
       result.skipInvalid = true;
+    } else if (argument === '--skip-unmatched') {
+      result.skipUnmatched = true;
     } else if (argument.startsWith('--sheet=')) {
       result.sheet = argument.slice('--sheet='.length).trim();
     } else if (argument.startsWith('--')) {
@@ -301,8 +305,9 @@ export function parseSourceRows(sheet, hmacSecret, options = {}) {
   return { parsed: filtered, errors, skippedRows, sourceCount };
 }
 
-export function prepareChanges(sourceRows, personnelRows, overwrite) {
+export function prepareChanges(sourceRows, personnelRows, overwrite, options = {}) {
   const errors = [];
+  const skippedRows = [];
   const indexes = buildPersonnelIndexes(personnelRows);
   const changes = [];
   const matchedPersonRows = new Map();
@@ -311,8 +316,22 @@ export function prepareChanges(sourceRows, personnelRows, overwrite) {
   let unchangedCount = 0;
 
   for (const source of sourceRows) {
-    const personnel = resolvePersonnelForRow(source, indexes, errors);
-    if (!personnel) continue;
+    const rowErrors = [];
+    const personnel = resolvePersonnelForRow(source, indexes, rowErrors);
+    if (!personnel) {
+      const onlyUnmatchedErrors =
+        rowErrors.length > 0 &&
+        rowErrors.every((error) => error.reason.endsWith('SQL’de bulunamadı.'));
+      if (options.skipUnmatched === true && onlyUnmatchedErrors) {
+        skippedRows.push({
+          rowNumber: source.rowNumber,
+          reasons: rowErrors.map((error) => error.reason)
+        });
+      } else {
+        errors.push(...rowErrors);
+      }
+      continue;
+    }
     matchedCount += 1;
 
     const previousSourceRow = matchedPersonRows.get(personnel.PersonId);
@@ -406,7 +425,7 @@ export function prepareChanges(sourceRows, personnelRows, overwrite) {
     });
   }
 
-  return { changes, errors, matchedCount, unchangedCount };
+  return { changes, errors, skippedRows, matchedCount, unchangedCount };
 }
 
 function reportErrors(errors) {
@@ -567,20 +586,23 @@ export async function runImport(argv = process.argv.slice(2)) {
   const pool = await getPool();
   await assertDatabaseReady(pool);
   const personnelRows = await loadPersonnel(pool);
-  const prepared = prepareChanges(sourceResult.parsed, personnelRows, options.overwrite);
+  const prepared = prepareChanges(sourceResult.parsed, personnelRows, options.overwrite, {
+    skipUnmatched: options.skipUnmatched
+  });
   const errors = [...sourceResult.errors, ...prepared.errors];
+  const skippedRows = [...sourceResult.skippedRows, ...prepared.skippedRows];
 
   reportSummary({
     filePath,
     sheetName: sheet.sheet,
     sourceCount: sourceResult.sourceCount,
-    skippedRows: sourceResult.skippedRows,
+    skippedRows,
     matchedCount: prepared.matchedCount,
     unchangedCount: prepared.unchangedCount,
     changes: prepared.changes,
     errors
   });
-  reportSkippedRows(sourceResult.skippedRows);
+  reportSkippedRows(skippedRows);
   reportErrors(errors);
 
   if (errors.length > 0) {
