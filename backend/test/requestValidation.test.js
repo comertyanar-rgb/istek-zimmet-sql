@@ -260,6 +260,55 @@ test('dışa aktarım biçimini doğrular', () => {
   );
 });
 
+test('HQ IT personel XLSX dışa aktarımı için personel kimliklerini doğrular', () => {
+  const payload = {
+    action: 'createSheet',
+    data: [{ Ad: 'Cömert' }],
+    format: 'xlsx',
+    exportKind: 'personnel',
+    personnelIds: ['google-1']
+  };
+  assert.equal(validateActionRequest(payload), payload);
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...payload,
+        format: 'google-sheet'
+      }),
+    (error) => error instanceof RequestValidationError && /yalnız XLSX/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...payload,
+        personnelIds: []
+      }),
+    (error) => error instanceof RequestValidationError && /kimlikleri gereklidir/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        ...payload,
+        personnelIds: ['google-1', 'google-2']
+      }),
+    (error) => error instanceof RequestValidationError && /eşleşmiyor/i.test(error.message)
+  );
+
+  assert.throws(
+    () =>
+      validateActionRequest({
+        action: 'createSheet',
+        data: [{ Ad: 'Cömert' }],
+        format: 'xlsx',
+        personnelIds: ['google-1']
+      }),
+    (error) => error instanceof RequestValidationError && /yalnız personel/i.test(error.message)
+  );
+});
+
 test('imza işi iptalinde kuyruk kimliğini zorunlu tutar', () => {
   const payload = { action: 'cancelSignatureJob', authToken: 'x'.repeat(43), queueId: 'SIG-TEST-001' };
   assert.equal(validateActionRequest(payload), payload);

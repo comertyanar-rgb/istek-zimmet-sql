@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  assertPersonnelIdEncryptionKey,
+  decryptNationalId,
+  encryptNationalId,
   hashNationalId,
   isValidTurkishNationalId,
   normalizeAdUsername,
@@ -15,6 +18,7 @@ import {
 } from '../scripts/import-personnel-contact-data.js';
 
 const TEST_SECRET = 'test-only-personnel-hmac-secret-32-characters-minimum';
+const TEST_ENCRYPTION_KEY = Buffer.alloc(32, 7).toString('base64');
 
 test('Türkçe kolon başlıklarını kararlı biçimde normalize eder', () => {
   assert.equal(normalizeHeader(' T.C. Kimlik No '), 't c kimlik no');
@@ -131,6 +135,48 @@ test('T.C. kimlik HMAC özeti deterministik, anahtara bağlı ve geri döndürü
   assert.equal(first.includes('10000000146'), false);
 });
 
+test('T.C. kimlik numarasını AES-256-GCM ile geri çözülebilir ve rastgele şifreler', () => {
+  assert.equal(assertPersonnelIdEncryptionKey(TEST_ENCRYPTION_KEY).length, 32);
+
+  const first = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+  const second = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+
+  assert.match(first, /^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.notEqual(first, second);
+  assert.equal(decryptNationalId(first, TEST_ENCRYPTION_KEY), '10000000146');
+  assert.equal(decryptNationalId(second, TEST_ENCRYPTION_KEY), '10000000146');
+});
+
+test('oynanmış şifreli T.C. verisini reddeder', () => {
+  const encrypted = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+  const tampered = `${encrypted.slice(0, -1)}${encrypted.endsWith('A') ? 'B' : 'A'}`;
+
+  assert.throws(
+    () => decryptNationalId(tampered, TEST_ENCRYPTION_KEY),
+    /çözülemedi/i
+  );
+});
+
+test('kaynak T.C. verisini içe aktarım sırasında şifreler', () => {
+  const result = parseSourceRows(
+    {
+      data: [
+        ['User Id', 'Email', 'Telefon', 'T.C'],
+        ['google-1', 'bir@istek.k12.tr', '0538 111 22 33', '10000000146']
+      ]
+    },
+    TEST_SECRET,
+    { encryptionKey: TEST_ENCRYPTION_KEY }
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.parsed.length, 1);
+  assert.equal(
+    decryptNationalId(result.parsed[0].nationalIdEncrypted, TEST_ENCRYPTION_KEY),
+    '10000000146'
+  );
+});
+
 test('yalnız güvenilir hesap anahtarları aynı personeli gösterdiğinde güncelleme hazırlar', () => {
   const sourceHash = hashNationalId('10000000146', TEST_SECRET);
   const result = prepareChanges(
@@ -160,6 +206,73 @@ test('yalnız güvenilir hesap anahtarları aynı personeli gösterdiğinde gün
   assert.equal(result.changes.length, 1);
   assert.equal(result.changes[0].phone, '5384142088');
   assert.equal(result.changes[0].nationalIdHash, sourceHash);
+});
+
+test('aynı T.C. özeti için mevcut şifreli değeri korur', () => {
+  const nationalIdHash = hashNationalId('10000000146', TEST_SECRET);
+  const currentEncrypted = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+  const replacementEncrypted = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+  const result = prepareChanges(
+    [
+      {
+        rowNumber: 2,
+        personId: 'google-1',
+        email: 'personel@istek.k12.tr',
+        adUsername: 'personel',
+        phone: '5384142088',
+        nationalIdHash,
+        nationalIdEncrypted: replacementEncrypted
+      }
+    ],
+    [
+      {
+        PersonId: 'google-1',
+        Email: 'personel@istek.k12.tr',
+        AdUsername: 'personel',
+        Phone: null,
+        NationalIdHash: nationalIdHash,
+        NationalIdEncrypted: currentEncrypted
+      }
+    ],
+    false
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.changes.length, 1);
+  assert.equal(result.changes[0].nationalIdEncrypted, currentEncrypted);
+});
+
+test('eski kayıtta şifreli T.C. yoksa aynı özet üzerinden alanı tamamlar', () => {
+  const nationalIdHash = hashNationalId('10000000146', TEST_SECRET);
+  const encrypted = encryptNationalId('10000000146', TEST_ENCRYPTION_KEY);
+  const result = prepareChanges(
+    [
+      {
+        rowNumber: 2,
+        personId: 'google-1',
+        email: 'personel@istek.k12.tr',
+        adUsername: 'personel',
+        phone: '',
+        nationalIdHash,
+        nationalIdEncrypted: encrypted
+      }
+    ],
+    [
+      {
+        PersonId: 'google-1',
+        Email: 'personel@istek.k12.tr',
+        AdUsername: 'personel',
+        Phone: null,
+        NationalIdHash: nationalIdHash,
+        NationalIdEncrypted: null
+      }
+    ],
+    false
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.changes.length, 1);
+  assert.equal(result.changes[0].nationalIdEncrypted, encrypted);
 });
 
 test('eşleştirme alanları farklı hesapları gösteriyorsa güncellemeyi engeller', () => {

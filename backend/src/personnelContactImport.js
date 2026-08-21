@@ -1,4 +1,9 @@
-import { createHmac } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  randomBytes
+} from 'node:crypto';
 
 export const PERSONNEL_CONTACT_HEADERS = Object.freeze({
   personId: ['PersonId', 'Person ID', 'User Id', 'User ID', 'Google ID', 'Kullanıcı ID'],
@@ -86,6 +91,82 @@ export function hashNationalId(value, secret) {
   return createHmac('sha256', assertPersonnelIdHmacSecret(secret))
     .update(nationalId, 'utf8')
     .digest('hex');
+}
+
+export function assertPersonnelIdEncryptionKey(value) {
+  const normalized = String(value ?? '').trim();
+  let key;
+
+  try {
+    key = Buffer.from(normalized, 'base64');
+  } catch {
+    key = Buffer.alloc(0);
+  }
+
+  const canonicalInput = normalized.replace(/=+$/u, '');
+  const canonicalDecoded = key.toString('base64').replace(/=+$/u, '');
+  if (key.length !== 32 || !canonicalInput || canonicalInput !== canonicalDecoded) {
+    throw new Error(
+      'PERSONNEL_ID_ENCRYPTION_KEY geçersiz. 32 baytlık Base64 AES anahtarı tanımlayın.'
+    );
+  }
+
+  return key;
+}
+
+export function encryptNationalId(value, encryptionKey) {
+  const nationalId = normalizeNationalId(value);
+  if (!isValidTurkishNationalId(nationalId)) {
+    throw new Error('T.C. kimlik numarası doğrulama basamakları geçersiz.');
+  }
+
+  const key = assertPersonnelIdEncryptionKey(encryptionKey);
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(nationalId, 'utf8'),
+    cipher.final()
+  ]);
+  const authTag = cipher.getAuthTag();
+
+  return [
+    'v1',
+    iv.toString('base64url'),
+    authTag.toString('base64url'),
+    encrypted.toString('base64url')
+  ].join('.');
+}
+
+export function decryptNationalId(payload, encryptionKey) {
+  const parts = String(payload ?? '').split('.');
+  if (parts.length !== 4 || parts[0] !== 'v1') {
+    throw new Error('Şifreli T.C. verisi geçersiz.');
+  }
+
+  try {
+    const key = assertPersonnelIdEncryptionKey(encryptionKey);
+    const iv = Buffer.from(parts[1], 'base64url');
+    const authTag = Buffer.from(parts[2], 'base64url');
+    const encrypted = Buffer.from(parts[3], 'base64url');
+    if (iv.length !== 12 || authTag.length !== 16 || encrypted.length === 0) {
+      throw new Error('invalid encrypted payload');
+    }
+
+    const decipher = createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(authTag);
+    const nationalId = Buffer.concat([
+      decipher.update(encrypted),
+      decipher.final()
+    ]).toString('utf8');
+
+    if (!isValidTurkishNationalId(nationalId)) {
+      throw new Error('invalid national id');
+    }
+    return nationalId;
+  } catch (error) {
+    if (String(error?.message || '').startsWith('PERSONNEL_ID_ENCRYPTION_KEY')) throw error;
+    throw new Error('Şifreli T.C. verisi çözülemedi.');
+  }
 }
 
 export function getColumnIndex(headers, aliases) {

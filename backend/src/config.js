@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { assertPersonnelIdEncryptionKey } from './personnelContactImport.js';
 
 const bool = (value, fallback = false) => {
   if (value === undefined || value === null || value === '') return fallback;
@@ -91,6 +92,7 @@ export const config = {
   superAdminEmails: csv(process.env.SUPER_ADMIN_EMAILS).map((email) => email.toLowerCase()),
   appSecret: process.env.APP_SECRET || 'development-only-change-me',
   personnelIdHmacSecret: process.env.PERSONNEL_ID_HMAC_SECRET || '',
+  personnelIdEncryptionKey: process.env.PERSONNEL_ID_ENCRYPTION_KEY || '',
   adAgentSecret: process.env.AD_AGENT_SECRET || '',
   glpiSyncSecret:
     process.env.GLPI_SYNC_SECRET ||
@@ -185,6 +187,13 @@ export function assertConfig() {
     missing.push('PERSONNEL_ID_HMAC_SECRET (en az 32 karakter)');
   } else if (config.personnelIdHmacSecret === config.appSecret) {
     missing.push('PERSONNEL_ID_HMAC_SECRET, APP_SECRET değerinden farklı olmalı');
+  }
+  if (config.nodeEnv === 'production' || config.personnelIdEncryptionKey) {
+    try {
+      assertPersonnelIdEncryptionKey(config.personnelIdEncryptionKey);
+    } catch {
+      missing.push('PERSONNEL_ID_ENCRYPTION_KEY (32 bayt Base64 AES anahtarı)');
+    }
   }
   if (config.session.cookieEnabled && config.nodeEnv === 'production' && !config.session.cookieSecure) {
     missing.push('SESSION_COOKIE_SECURE=true (production cookie modu)');

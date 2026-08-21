@@ -60,6 +60,7 @@ const ROOT_ARRAY_LIMITS = {
   hardwareIds: 5000,
   hardwareList: 5000,
   glpiIds: 5000,
+  personnelIds: 10000,
   signatureIds: 25,
   scans: 5000
 };
@@ -132,6 +133,7 @@ function validateScalarIdArray(value, field, maxItems) {
 function validateActionSpecificShape(data) {
   if (Object.hasOwn(data, 'hardwareIds')) validateScalarIdArray(data.hardwareIds, 'hardwareIds', 5000);
   if (Object.hasOwn(data, 'glpiIds')) validateScalarIdArray(data.glpiIds, 'glpiIds', 5000);
+  if (Object.hasOwn(data, 'personnelIds')) validateScalarIdArray(data.personnelIds, 'personnelIds', 10000);
   if (Object.hasOwn(data, 'signatureIds')) validateScalarIdArray(data.signatureIds, 'signatureIds', 25);
 
   if (Object.hasOwn(data, 'scans')) {
@@ -184,6 +186,22 @@ function validateActionSpecificShape(data) {
     }
     if (data.format !== undefined && !['xlsx', 'google-sheet'].includes(data.format)) {
       throw new RequestValidationError('Dışa aktarım biçimi geçersiz.');
+    }
+    if (data.exportKind !== undefined && data.exportKind !== 'personnel') {
+      throw new RequestValidationError('Dışa aktarım türü geçersiz.');
+    }
+    if (data.exportKind === 'personnel') {
+      if (data.format !== 'xlsx') {
+        throw new RequestValidationError('Personel kimlik bilgileri yalnız XLSX olarak aktarılabilir.');
+      }
+      if (!Array.isArray(data.personnelIds) || !data.personnelIds.length) {
+        throw new RequestValidationError('Personel dışa aktarımı için personel kimlikleri gereklidir.');
+      }
+      if (data.personnelIds.length !== data.data.length) {
+        throw new RequestValidationError('Personel dışa aktarım satırları ile kimlikleri eşleşmiyor.');
+      }
+    } else if (Object.hasOwn(data, 'personnelIds')) {
+      throw new RequestValidationError('personnelIds yalnız personel dışa aktarımında kullanılabilir.');
     }
   }
 

@@ -5,7 +5,9 @@ import readExcelFile from 'read-excel-file/node';
 import { config } from '../src/config.js';
 import { closePool, getPool, sql, withTransaction } from '../src/db.js';
 import {
+  assertPersonnelIdEncryptionKey,
   assertPersonnelIdHmacSecret,
+  encryptNationalId,
   hashNationalId,
   isValidTurkishNationalId,
   normalizeAdUsername,
@@ -195,6 +197,7 @@ function resolvePersonnelForRow(source, indexes, errors) {
 
 export function parseSourceRows(sheet, hmacSecret, options = {}) {
   const skipInvalid = options.skipInvalid === true;
+  const encryptionKey = options.encryptionKey || '';
   const [headers, ...rows] = sheet.data;
   const columns = resolvePersonnelContactColumns(headers);
   const parsed = [];
@@ -220,6 +223,7 @@ export function parseSourceRows(sheet, hmacSecret, options = {}) {
       adUsername: normalizeAdUsername(rawAdUsername),
       nationalId: normalizeNationalId(rawNationalId),
       nationalIdHash: '',
+      nationalIdEncrypted: '',
       phone: normalizePhone(rawPhone)
     };
     const rowErrors = [];
@@ -234,6 +238,9 @@ export function parseSourceRows(sheet, hmacSecret, options = {}) {
       addError(rowErrors, rowNumber, 'T.C. kimlik numarasının biçimi veya doğrulama basamakları geçersiz.');
     } else if (source.nationalId) {
       source.nationalIdHash = hashNationalId(source.nationalId, hmacSecret);
+      if (encryptionKey) {
+        source.nationalIdEncrypted = encryptNationalId(source.nationalId, encryptionKey);
+      }
     }
     if (!source.phone && !source.nationalIdHash) {
       addError(rowErrors, rowNumber, 'Telefon veya T.C. kimlik numarasından en az biri gereklidir.');
@@ -341,6 +348,7 @@ export function prepareChanges(sourceRows, personnelRows, overwrite) {
     const currentPhone = normalizeText(personnel.Phone);
     const comparableCurrentPhone = normalizePhone(currentPhone);
     const currentHash = normalizeMatchKey(personnel.NationalIdHash);
+    const currentEncrypted = normalizeText(personnel.NationalIdEncrypted);
     let rowHasConflict = false;
 
     if (
@@ -373,10 +381,16 @@ export function prepareChanges(sourceRows, personnelRows, overwrite) {
 
     const desiredPhone = source.phone || currentPhone || null;
     const desiredNationalIdHash = source.nationalIdHash || currentHash || null;
+    const desiredNationalIdEncrypted = source.nationalIdHash
+      ? source.nationalIdHash === currentHash && currentEncrypted
+        ? currentEncrypted
+        : source.nationalIdEncrypted || currentEncrypted || null
+      : currentEncrypted || null;
     const phoneChanged = (desiredPhone || '') !== currentPhone;
     const hashChanged = (desiredNationalIdHash || '') !== currentHash;
+    const encryptedChanged = (desiredNationalIdEncrypted || '') !== currentEncrypted;
 
-    if (!phoneChanged && !hashChanged) {
+    if (!phoneChanged && !hashChanged && !encryptedChanged) {
       unchangedCount += 1;
       continue;
     }
@@ -385,8 +399,10 @@ export function prepareChanges(sourceRows, personnelRows, overwrite) {
       personId: personnel.PersonId,
       phone: desiredPhone,
       nationalIdHash: desiredNationalIdHash,
+      nationalIdEncrypted: desiredNationalIdEncrypted,
       expectedPhone: currentPhone || null,
-      expectedNationalIdHash: currentHash || null
+      expectedNationalIdHash: currentHash || null,
+      expectedNationalIdEncrypted: currentEncrypted || null
     });
   }
 
@@ -441,20 +457,24 @@ function reportSummary({
 async function assertDatabaseReady(pool) {
   const readiness = await pool.request().query(`
 SELECT CAST(
-  CASE WHEN COL_LENGTH(N'dbo.Personnel', N'NationalIdHash') IS NULL THEN 0 ELSE 1 END
+  CASE
+    WHEN COL_LENGTH(N'dbo.Personnel', N'NationalIdHash') IS NULL THEN 0
+    WHEN COL_LENGTH(N'dbo.Personnel', N'NationalIdEncrypted') IS NULL THEN 0
+    ELSE 1
+  END
   AS BIT
 ) AS Ready;
 `);
   if (!readiness.recordset[0]?.Ready) {
     throw new Error(
-      'NationalIdHash kolonu bulunamadı. Önce backend/sql/016_personnel_contact_identity.sql migration dosyasını çalıştırın.'
+      'Şifreli T.C. kolonları bulunamadı. Önce backend/sql/022_personnel_national_id_encryption.sql migration dosyasını çalıştırın.'
     );
   }
 }
 
 async function loadPersonnel(pool) {
   const result = await pool.request().query(`
-SELECT PersonId, FullName, Email, AdUsername, Phone, NationalIdHash
+SELECT PersonId, FullName, Email, AdUsername, Phone, NationalIdHash, NationalIdEncrypted
 FROM dbo.Personnel;
 `);
   if (result.recordset.length === 0) {
@@ -477,27 +497,33 @@ WITH SourceRows AS (
     PersonId,
     Phone,
     NationalIdHash,
+    NationalIdEncrypted,
     ExpectedPhone,
-    ExpectedNationalIdHash
+    ExpectedNationalIdHash,
+    ExpectedNationalIdEncrypted
   FROM OPENJSON(@ChangesJson)
   WITH (
     PersonId NVARCHAR(160) '$.personId',
     Phone NVARCHAR(20) '$.phone',
     NationalIdHash CHAR(64) '$.nationalIdHash',
+    NationalIdEncrypted NVARCHAR(512) '$.nationalIdEncrypted',
     ExpectedPhone NVARCHAR(20) '$.expectedPhone',
-    ExpectedNationalIdHash CHAR(64) '$.expectedNationalIdHash'
+    ExpectedNationalIdHash CHAR(64) '$.expectedNationalIdHash',
+    ExpectedNationalIdEncrypted NVARCHAR(512) '$.expectedNationalIdEncrypted'
   )
 )
 UPDATE personnel WITH (UPDLOCK)
 SET
   Phone = source.Phone,
   NationalIdHash = source.NationalIdHash,
+  NationalIdEncrypted = source.NationalIdEncrypted,
   UpdatedAt = SYSUTCDATETIME()
 OUTPUT INSERTED.PersonId INTO @Updated(PersonId)
 FROM dbo.Personnel AS personnel
 INNER JOIN SourceRows AS source ON source.PersonId = personnel.PersonId
 WHERE ISNULL(personnel.Phone, N'') = ISNULL(source.ExpectedPhone, N'')
-  AND ISNULL(personnel.NationalIdHash, '') = ISNULL(source.ExpectedNationalIdHash, '');
+  AND ISNULL(personnel.NationalIdHash, '') = ISNULL(source.ExpectedNationalIdHash, '')
+  AND ISNULL(personnel.NationalIdEncrypted, N'') = ISNULL(source.ExpectedNationalIdEncrypted, N'');
 
 SELECT COUNT_BIG(1) AS UpdatedCount FROM @Updated;
 `,
@@ -530,9 +556,13 @@ export async function runImport(argv = process.argv.slice(2)) {
   const filePath = path.resolve(options.filePath);
   if (!fs.existsSync(filePath)) throw new Error(`Excel dosyası bulunamadı: ${filePath}`);
   const hmacSecret = assertPersonnelIdHmacSecret(config.personnelIdHmacSecret);
+  const encryptionKey = assertPersonnelIdEncryptionKey(
+    config.personnelIdEncryptionKey
+  );
   const sheet = await readSourceSheet(filePath, options.sheet);
   const sourceResult = parseSourceRows(sheet, hmacSecret, {
-    skipInvalid: options.skipInvalid
+    skipInvalid: options.skipInvalid,
+    encryptionKey
   });
 
   const pool = await getPool();

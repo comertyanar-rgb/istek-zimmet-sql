@@ -35,6 +35,7 @@ try {
       COL_LENGTH(N'dbo.OperationQueue', N'LeaseExpiresAt') AS QueueLeaseExpiryColumn,
       COL_LENGTH(N'dbo.SystemLogs', N'ChainHash') AS LogChainHashColumn,
       COL_LENGTH(N'dbo.Personnel', N'NationalIdHash') AS PersonnelNationalIdHashColumn,
+      COL_LENGTH(N'dbo.Personnel', N'NationalIdEncrypted') AS PersonnelNationalIdEncryptedColumn,
       COALESCE(IS_ROLEMEMBER(N'db_owner'), 0) AS IsDbOwner,
       COALESCE(IS_ROLEMEMBER(N'db_datareader'), 0) AS IsDataReader,
       COALESCE(IS_ROLEMEMBER(N'db_datawriter'), 0) AS IsDataWriter,
@@ -67,6 +68,7 @@ try {
   expectTruthy('Queue LeaseExpiresAt kolonu', runtime.QueueLeaseExpiryColumn);
   expectTruthy('SystemLogs ChainHash kolonu', runtime.LogChainHashColumn);
   expectTruthy('Personnel NationalIdHash kolonu', runtime.PersonnelNationalIdHashColumn);
+  expectTruthy('Personnel NationalIdEncrypted kolonu', runtime.PersonnelNationalIdEncryptedColumn);
   expectValue('db_owner rolü kapalı', runtime.IsDbOwner, 0);
   expectValue('db_datareader rolü kapalı', runtime.IsDataReader, 0);
   expectValue('db_datawriter rolü kapalı', runtime.IsDataWriter, 0);

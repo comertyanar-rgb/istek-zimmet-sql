@@ -16,6 +16,7 @@ import {
 } from '../exportTokens.js';
 import { decodeCanonicalBase64, MAX_UPLOADED_FILE_BYTES } from '../uploadedFileValidation.js';
 import {
+  decryptNationalId,
   hashNationalId,
   isValidTurkishNationalId,
   normalizeNationalId
@@ -2231,7 +2232,7 @@ export async function recordInventoryScanForUser(user, data) {
 }
 
 export async function createSheetForUser(user, data) {
-  const exportData = Array.isArray(data.data) ? data.data : [];
+  let exportData = Array.isArray(data.data) ? data.data : [];
   const templateHeaders = Array.isArray(data.templateHeaders)
     ? data.templateHeaders.map((header) => cleanText(header, 240)).filter(Boolean)
     : [];
@@ -2239,6 +2240,71 @@ export async function createSheetForUser(user, data) {
     throw new Error('Aktarılacak veri veya şablon başlığı bulunamadı.');
   }
   if (exportData.length > 10000) throw new Error('Tek seferde en fazla 10.000 kayıt dışa aktarılabilir.');
+
+  const exportFormat = String(data.format || 'xlsx').toLocaleLowerCase('tr-TR');
+  if (data.exportKind === 'personnel') {
+    if (user.role !== 'HQ IT') {
+      throw new Error('T.C. kimlik bilgisi içeren personel aktarımı yalnız HQ IT yetkisine açıktır.');
+    }
+    if (exportFormat !== 'xlsx') {
+      throw new Error('T.C. kimlik bilgisi yalnız XLSX personel aktarımına eklenebilir.');
+    }
+
+    const personnelIds = Array.isArray(data.personnelIds)
+      ? data.personnelIds.map((value) => String(value || '').trim())
+      : [];
+    if (!personnelIds.length || personnelIds.length !== exportData.length) {
+      throw new Error('Personel dışa aktarım satırları ile kimlikleri eşleşmiyor.');
+    }
+
+    const encryptedRows = await query(
+      `
+        SELECT personnel.PersonId, personnel.NationalIdEncrypted
+        FROM dbo.Personnel personnel
+        INNER JOIN OPENJSON(@personnelIdsJson)
+          WITH (PersonId NVARCHAR(160) '$') selected
+          ON selected.PersonId = personnel.PersonId
+      `,
+      {
+        personnelIdsJson: {
+          type: sql.NVarChar(sql.MAX),
+          value: JSON.stringify(personnelIds)
+        }
+      }
+    );
+    const nationalIdByPersonId = new Map();
+    for (const row of encryptedRows) {
+      const personId = String(row.PersonId || '').trim();
+      if (!personId || !row.NationalIdEncrypted) continue;
+      try {
+        nationalIdByPersonId.set(
+          personId,
+          decryptNationalId(row.NationalIdEncrypted, config.personnelIdEncryptionKey)
+        );
+      } catch {
+        // Bozuk/eski kayıt dışa aktarımı durdurmaz ve açık kimlik bilgisi loglanmaz.
+      }
+    }
+
+    if (nationalIdByPersonId.size) {
+      exportData = exportData.map((item, index) => {
+        const source = item && typeof item === 'object' ? item : {};
+        const output = {};
+        let inserted = false;
+        for (const [key, value] of Object.entries(source)) {
+          output[key] = value;
+          if (key === 'E-Posta') {
+            output['T.C. Kimlik No'] = nationalIdByPersonId.get(personnelIds[index]) || '-';
+            inserted = true;
+          }
+        }
+        if (!inserted) {
+          output['T.C. Kimlik No'] = nationalIdByPersonId.get(personnelIds[index]) || '-';
+        }
+        return output;
+      });
+    }
+  }
 
   const rawHeaders = exportData.length ? Object.keys(exportData[0] || {}) : templateHeaders;
   if (!rawHeaders.length) throw new Error('Dışa aktarılacak sütun bulunamadı.');
@@ -2253,7 +2319,6 @@ export async function createSheetForUser(user, data) {
   );
 
   const sheetName = cleanText(data.sheetName, 180) || 'Dışa Aktarım';
-  const exportFormat = String(data.format || 'xlsx').toLocaleLowerCase('tr-TR');
 
   if (exportFormat === 'google-sheet') {
     const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);

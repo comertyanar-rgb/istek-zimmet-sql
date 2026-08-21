@@ -133,6 +133,7 @@ CREATE TABLE dbo.Personnel (
   AdUsername NVARCHAR(160) NULL,
   Phone NVARCHAR(20) NULL,
   NationalIdHash CHAR(64) NULL,
+  NationalIdEncrypted NVARCHAR(512) NULL,
   SignatureUrl NVARCHAR(1000) NULL,
   SignatureStatus NVARCHAR(80) NULL,
   SignatureId NVARCHAR(80) NULL,

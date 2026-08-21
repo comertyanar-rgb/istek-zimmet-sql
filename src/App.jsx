@@ -1990,6 +1990,12 @@ setTimeout(() => setSuccessMessage(null), 2500);
           format: 'xlsx',
           sheetName: `${filename.replace(/_/g, ' ')} (${new Date().toLocaleDateString('tr-TR')})`,
           data: getFormattedDataForExport(data, type),
+          ...(type === 'personnel' && currentUser.role === 'HQ IT'
+            ? {
+                exportKind: 'personnel',
+                personnelIds: data.map((person) => String(person?.id || '').trim()),
+              }
+            : {}),
         },
         { timeoutMs: 120000 }
       );
