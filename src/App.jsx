@@ -392,6 +392,7 @@ function getAdPasswordJobView(status) {
 export default function App() {
   const { theme, toggleTheme } = useAppTheme();
   const serviceWorkerRegistrationRef = useRef(null);
+  const needRefreshRef = useRef(false);
   const [isCheckingForUpdate, setIsCheckingForUpdate] = useState(false);
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
 
@@ -406,6 +407,10 @@ export default function App() {
       console.log('SW registration error', error);
     },
   });
+
+  useEffect(() => {
+    needRefreshRef.current = needRefresh;
+  }, [needRefresh]);
 
   const handleCheckForUpdates = async () => {
     if (isCheckingForUpdate) return;
@@ -440,52 +445,71 @@ export default function App() {
       }
 
       if (registration.waiting) {
+        needRefreshRef.current = true;
         setNeedRefresh(true);
         return;
       }
 
-      // Önceki denetimden kalmış bir UI durumu gerçek bir güncelleme değildir.
-      // Elle denetimde yalnızca registration.waiting doğruluk kaynağıdır.
-      if (needRefresh) setNeedRefresh(false);
+      let updateFound = Boolean(registration.installing);
+      const markUpdateFound = () => {
+        updateFound = true;
+      };
+      registration.addEventListener('updatefound', markUpdateFound);
 
-      const updateDetected = new Promise((resolve) => {
-        let settled = false;
-        let timeoutId;
+      let updateResult = 'checking';
+      try {
+        await registration.update();
 
-        const finish = (found) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeoutId);
-          resolve(Boolean(found));
-        };
+        // registration.update() yeni worker'ın kurulumunun tamamlanmasını beklemez.
+        // Özellikle iPadOS'ta "güncel" sonucundan birkaç saniye sonra waiting oluşabilir.
+        const decisionStartedAt = Date.now();
+        while (Date.now() - decisionStartedAt < 15000) {
+          if (registration.waiting || needRefreshRef.current) {
+            updateResult = 'available';
+            break;
+          }
 
-        const watchInstallingWorker = () => {
-          const worker = registration.installing;
-          if (!worker) return;
-
-          const handleStateChange = () => {
-            if (worker.state === 'installed') {
-              // Safari/iPadOS'ta "installed" olayı registration.waiting alanından
-              // hemen önce gelebiliyor. Kartı ancak etkinleştirilebilir worker hazırsa aç.
-              setTimeout(() => finish(Boolean(registration.waiting)), 300);
-            } else if (worker.state === 'redundant') {
-              finish(false);
+          const installingWorker = registration.installing;
+          if (installingWorker) {
+            updateFound = true;
+            if (installingWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              updateResult = 'available';
+              break;
             }
-          };
+            if (installingWorker.state === 'redundant') {
+              updateResult = 'failed';
+              break;
+            }
+          } else if (!updateFound && Date.now() - decisionStartedAt >= 2500) {
+            updateResult = 'current';
+            break;
+          }
 
-          worker.addEventListener('statechange', handleStateChange);
-          handleStateChange();
-        };
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
 
-        registration.addEventListener('updatefound', watchInstallingWorker, { once: true });
-        timeoutId = setTimeout(() => finish(Boolean(registration.waiting)), 4000);
-      });
+        if (updateResult === 'checking') {
+          updateResult = updateFound ? 'pending' : 'current';
+        }
+      } finally {
+        registration.removeEventListener('updatefound', markUpdateFound);
+      }
 
-      await registration.update();
-      const hasUpdate = Boolean(registration.waiting) || (await updateDetected);
-
-      if (hasUpdate) {
+      if (updateResult === 'available') {
+        needRefreshRef.current = true;
         setNeedRefresh(true);
+      } else if (updateResult === 'pending') {
+        void showAppAlert('Yeni sürüm indiriliyor. Hazır olduğunda yenileme bildirimi otomatik gösterilecek.', {
+          type: 'info',
+          title: 'Güncelleme hazırlanıyor',
+          dedupeKey: 'pwa-update-pending',
+        });
+      } else if (updateResult === 'failed') {
+        void showAppAlert('Yeni sürüm indirilemedi. Birkaç dakika sonra yeniden deneyin.', {
+          type: 'warning',
+          title: 'Güncelleme hazırlanamadı',
+          dedupeKey: 'pwa-update-failed',
+        });
       } else {
         void showAppAlert('Kullandığınız sürüm güncel.', {
           type: 'success',
