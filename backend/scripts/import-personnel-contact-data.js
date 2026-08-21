@@ -556,9 +556,8 @@ export async function runImport(argv = process.argv.slice(2)) {
   const filePath = path.resolve(options.filePath);
   if (!fs.existsSync(filePath)) throw new Error(`Excel dosyası bulunamadı: ${filePath}`);
   const hmacSecret = assertPersonnelIdHmacSecret(config.personnelIdHmacSecret);
-  const encryptionKey = assertPersonnelIdEncryptionKey(
-    config.personnelIdEncryptionKey
-  );
+  assertPersonnelIdEncryptionKey(config.personnelIdEncryptionKey);
+  const encryptionKey = config.personnelIdEncryptionKey;
   const sheet = await readSourceSheet(filePath, options.sheet);
   const sourceResult = parseSourceRows(sheet, hmacSecret, {
     skipInvalid: options.skipInvalid,
